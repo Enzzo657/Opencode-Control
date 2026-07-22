@@ -398,6 +398,22 @@ describe("OpenCode Studio", () => {
     expect(screen.getByText("Проверяю варианты")).not.toBeVisible();
     expect(screen.getByText("provider failed")).toBeInTheDocument();
     expect(screen.getByText("build · openai/gpt-test")).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Сессия Fix checkout" }).querySelector('.status[data-status="failed"]')).toHaveTextContent("Ошибка");
+    expect(screen.getByRole("button", { name: "Отправить в эту сессию" })).toBeInTheDocument();
+  });
+
+  it("does not keep a stale unfinished response running", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_stale", role: "assistant", time: { created: Date.now() - 16 * 60 * 1000 } }, parts: [{ type: "step-start" }] }]);
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(await screen.findByText("Fix checkout"));
+    expect(await screen.findByRole("button", { name: "Отправить в эту сессию" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Остановить ответ" })).not.toBeInTheDocument();
   });
 
   it("shows tools, active todos, permissions and MCP runtime", async () => {

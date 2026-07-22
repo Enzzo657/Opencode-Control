@@ -566,6 +566,7 @@ def test_snapshot_derives_busy_status_from_external_session_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
+    monkeypatch.setattr("opencode_studio.opencode_client.time.time", lambda: 10.0)
     fixtures: dict[str, Any] = {
         "/global/health": {"healthy": True},
         "/session": [
@@ -621,3 +622,59 @@ def test_snapshot_derives_busy_status_from_external_session_messages(
     }
     assert ("/session/ses_running/message", {"limit": 1}) in calls
     assert ("/session/ses_done/message", {"limit": 1}) in calls
+
+
+def test_snapshot_ignores_stale_unfinished_messages_but_preserves_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
+    monkeypatch.setattr("opencode_studio.opencode_client.time.time", lambda: 1_000.0)
+    fixtures: dict[str, Any] = {
+        "/global/health": {"healthy": True},
+        "/session": [
+            {
+                "id": "ses_failed",
+                "directory": "/tmp/project",
+                "time": {"updated": 2_000},
+            },
+            {
+                "id": "ses_stale",
+                "directory": "/tmp/project",
+                "time": {"updated": 1_000},
+            },
+        ],
+        "/session/status": {},
+        "/agent": [],
+        "/mcp": {},
+        "/provider": {},
+        "/config": {},
+        "/session/ses_failed/message": [
+            {
+                "info": {
+                    "role": "assistant",
+                    "time": {"created": 2_000},
+                    "error": {
+                        "name": "ProviderError",
+                        "data": {"message": "token limit exhausted"},
+                    },
+                },
+                "parts": [],
+            }
+        ],
+        "/session/ses_stale/message": [
+            {
+                "info": {"role": "assistant", "time": {"created": 1_000}},
+                "parts": [{"type": "step-start"}],
+            }
+        ],
+    }
+
+    monkeypatch.setattr(client, "request", lambda method, path, **kwargs: fixtures[path])
+
+    assert client.snapshot()["statuses"] == {
+        "ses_failed": {
+            "type": "failed",
+            "status": None,
+            "error": "token limit exhausted",
+        }
+    }

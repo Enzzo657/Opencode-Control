@@ -1004,11 +1004,12 @@ function SessionDrawer({ project, session, status, taskStatus, agents, providers
   const contextTokens = latestContextTokens(messages.data ?? []);
   const activeTodos = (todos.data ?? []).filter((todo) => todo.status !== "completed" && todo.status !== "cancelled");
   const mcpEntries = Object.entries(mcp).filter(([, value]) => value.status === "connected").sort(([left], [right]) => left.localeCompare(right));
-  const liveStatus = runtimeStatus(messages.data ?? []);
+  const liveStatus = runtimeStatus(messages.data ?? [], now);
   const linkedTaskStatus = taskStatusOverride ?? taskStatus ?? session.studio_task?.status;
   const stopped = aborted || linkedTaskStatus === "aborted";
-  const effectiveStatus = stopped ? "aborted" : busy || pendingFrom ? "busy" : liveStatus ?? status;
-  const responseActive = !stopped && (busy || aborting || pendingFrom !== null || activeSessionStatus(liveStatus ?? status));
+  const observedStatus = activeSessionStatus(status) ? status : liveStatus ?? status;
+  const effectiveStatus = stopped ? "aborted" : busy || pendingFrom ? "busy" : observedStatus;
+  const responseActive = !stopped && (busy || aborting || pendingFrom !== null || activeSessionStatus(observedStatus));
   const gitVisible = git.data?.available === true && (gitVisibility === "shown" || (gitVisibility === "auto" && git.data.changes.length > 0));
   useEffect(() => { setTaskStatusOverride(null); }, [taskStatus, session.studio_task?.status]);
   useEffect(() => {
@@ -1291,7 +1292,7 @@ function taskSessionIds(task: Task) { return task.session_ids?.length ? task.ses
 function sessionLifetimeTokens(session: Session) { return (session.tokens?.input ?? 0) + (session.tokens?.output ?? 0) + (session.tokens?.reasoning ?? 0); }
 function latestContextTokens(messages: SessionMessage[]) { for (let index = messages.length - 1; index >= 0; index -= 1) { const message = messages[index]; const tokens = message.info?.role === "assistant" ? message.info.tokens : undefined; if (!tokens) continue; const total = (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.reasoning ?? 0) + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0); if (total > 0) return total; } return null; }
 function messageFinished(message: SessionMessage) { return message.info?.time?.completed !== undefined || Boolean(message.info?.error) || Boolean(message.parts?.some((part) => part.type === "step-finish")); }
-function runtimeStatus(messages: SessionMessage[]) { for (let index = messages.length - 1; index >= 0; index -= 1) { const entry = messages[index]; if (entry.info?.role === "user") return "busy"; if (entry.info?.role !== "assistant") continue; if (entry.parts?.some((part) => part.type === "tool" && (part.state?.status === "pending" || part.state?.status === "running"))) return "busy"; if (entry.info.time?.created !== undefined && !messageFinished(entry)) return "busy"; return null; } return null; }
+function runtimeStatus(messages: SessionMessage[], now: number) { for (let index = messages.length - 1; index >= 0; index -= 1) { const entry = messages[index]; if (entry.info?.error) return "failed"; const unfinished = entry.info?.role === "user" || (entry.info?.role === "assistant" && !messageFinished(entry)); if (!unfinished) { if (entry.info?.role === "assistant") return null; continue; } const created = entry.info?.time?.created; return created !== undefined && now > 0 && now - created > 15 * 60 * 1000 ? null : "busy"; } return null; }
 function activeSessionStatus(value: string | null) { return value !== null && ["busy", "queued", "dispatching", "running", "pending", "retry"].includes(value); }
 function scrollAtBottom(element: HTMLElement) { return element.scrollHeight - element.scrollTop - element.clientHeight < 48; }
 function formatDuration(milliseconds: number) { const seconds = Math.max(0, Math.floor(milliseconds / 1000)); if (seconds < 60) return `${seconds} с`; const minutes = Math.floor(seconds / 60); const rest = seconds % 60; if (minutes < 60) return `${minutes} мин ${String(rest).padStart(2, "0")} с`; const hours = Math.floor(minutes / 60); return `${hours} ч ${String(minutes % 60).padStart(2, "0")} мин`; }

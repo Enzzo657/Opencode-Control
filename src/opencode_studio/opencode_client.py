@@ -6,11 +6,14 @@ import ipaddress
 import json
 import math
 import re
+import time
 import urllib.parse
 from collections.abc import Callable
 from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
+
+_STATUSLESS_ACTIVE_TTL_MS = 15 * 60 * 1000
 
 
 class OpenCodeError(RuntimeError):
@@ -180,6 +183,7 @@ class OpenCodeClient:
             key=lambda item: item["time"]["updated"],
             reverse=True,
         )
+        observed_at = time.time() * 1000
         for session in statusless[:5]:
             try:
                 latest = self.request(
@@ -190,8 +194,17 @@ class OpenCodeClient:
                 )
             except OpenCodeError:
                 continue
-            if _latest_message_busy(latest):
-                statuses[str(session["id"])] = {"type": "busy", "status": None}
+            message_status, message_error = _latest_message_status(latest)
+            if message_status == "failed":
+                statuses[str(session["id"])] = {
+                    "type": "failed",
+                    "status": None,
+                    "error": message_error or "OpenCode session failed",
+                }
+            elif message_status == "busy":
+                updated_at = float(session["time"]["updated"])
+                if observed_at - updated_at <= _STATUSLESS_ACTIVE_TTL_MS:
+                    statuses[str(session["id"])] = {"type": "busy", "status": None}
         return {
             "state": "connected" if not errors else "degraded",
             "errors": errors,
@@ -475,26 +488,30 @@ def _statuses(raw: Any) -> dict[str, dict[str, Any]]:
                 "type": value.get("type") if isinstance(value.get("type"), str) else None,
                 "status": value.get("status") if isinstance(value.get("status"), str) else None,
             }
+            if isinstance(value.get("error"), str):
+                result[session_id]["error"] = value["error"][:4000]
     return result
 
 
-def _latest_message_busy(raw: Any) -> bool:
+def _latest_message_status(raw: Any) -> tuple[str | None, str]:
     if not isinstance(raw, list) or not raw:
-        return False
+        return None, ""
     entry = raw[-1]
     if not isinstance(entry, dict) or not isinstance(entry.get("info"), dict):
-        return False
+        return None, ""
     info = entry["info"]
     role = info.get("role")
     if role == "user":
-        return True
+        return "busy", ""
     if role != "assistant":
-        return False
+        return None, ""
+    if info.get("error") is not None:
+        return "failed", _message_error(info["error"])
     message_time = info.get("time")
     if isinstance(message_time, dict) and isinstance(
         message_time.get("completed"), (int, float)
     ):
-        return False
+        return None, ""
     parts = entry.get("parts")
     if isinstance(parts, list):
         for part in parts:
@@ -502,10 +519,10 @@ def _latest_message_busy(raw: Any) -> bool:
                 continue
             state = part.get("state")
             if isinstance(state, dict) and state.get("status") in {"pending", "running"}:
-                return True
-    return isinstance(message_time, dict) and isinstance(
-        message_time.get("created"), (int, float)
-    )
+                return "busy", ""
+    if isinstance(message_time, dict) and isinstance(message_time.get("created"), (int, float)):
+        return "busy", ""
+    return None, ""
 
 
 def _messages(raw: Any) -> list[dict[str, Any]]:
@@ -709,6 +726,8 @@ def _messages(raw: Any) -> list[dict[str, Any]]:
 
 
 def _message_error(raw: Any) -> str:
+    if isinstance(raw, str):
+        return raw[:4000]
     if not isinstance(raw, dict):
         return ""
     data = raw.get("data")

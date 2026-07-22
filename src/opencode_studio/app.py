@@ -1141,6 +1141,8 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
                 [task["session_id"]] if task.get("session_id") else []
             )
             active = False
+            failed = False
+            failure_error: str | None = None
             for session_id in linked_ids:
                 status = statuses.get(session_id, {}) if isinstance(statuses, dict) else {}
                 value = (
@@ -1151,17 +1153,26 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
                 if value in active_states:
                     active = True
                     break
+                if value in {"error", "failed"}:
+                    failed = True
+                    if isinstance(status.get("error"), str):
+                        failure_error = status["error"]
             try:
                 age = (now - datetime.fromisoformat(str(task["updated_at"]))).total_seconds()
             except ValueError:
                 age = 0
             has_known_session = any(session_id in session_ids for session_id in linked_ids)
-            if has_known_session and not active and age >= 3:
+            if has_known_session and not active and (failed or age >= 3):
                 if task.get("cron"):
                     next_status = "scheduled" if task.get("schedule_enabled") else "paused"
                 else:
-                    next_status = "completed"
-                state.store.update_task(project_id, str(task["id"]), status=next_status)
+                    next_status = "failed" if failed else "completed"
+                state.store.update_task(
+                    project_id,
+                    str(task["id"]),
+                    status=next_status,
+                    error=failure_error,
+                )
         return state.store.list_tasks(project_id)
 
     @app.post("/api/v1/projects/{project_id}/tasks", status_code=202)

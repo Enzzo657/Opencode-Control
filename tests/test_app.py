@@ -452,6 +452,7 @@ def test_task_launch_uses_dedicated_opencode_session(
     root.mkdir()
     calls: list[tuple[str, Any]] = []
     created_sessions = iter(("ses_task", "ses_extra", "ses_extra_2"))
+    runtime_statuses: dict[str, dict[str, str]] = {}
 
     class FakeOpenCodeClient:
         def __init__(self, endpoint: str, directory: str, **kwargs: Any) -> None:
@@ -491,7 +492,7 @@ def test_task_launch_uses_dedicated_opencode_session(
                     {"id": "ses_child", "title": "Subagent", "parentID": "ses_task"},
                     {"id": "ses_cli", "title": "CLI session"},
                 ],
-                "statuses": {},
+                "statuses": runtime_statuses,
                 "agents": [],
                 "mcp": {},
                 "providers": {},
@@ -563,6 +564,15 @@ def test_task_launch_uses_dedicated_opencode_session(
                 ],
             ),
         ) in calls
+
+        runtime_statuses["ses_task"] = {
+            "type": "failed",
+            "error": "token limit exhausted",
+        }
+        failed = client.get(f"/api/v1/projects/{project_id}/tasks").json()[0]
+        assert failed["status"] == "failed"
+        assert failed["error"] == "token limit exhausted"
+        runtime_statuses.clear()
 
         client.app.state.studio.store.update_task(
             project_id, response.json()["id"], status="completed"
