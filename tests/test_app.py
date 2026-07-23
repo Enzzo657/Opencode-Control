@@ -402,6 +402,7 @@ def test_workspace_rejects_invalid_ids_and_symlink_targets(tmp_path: Path) -> No
             json={"content": "unsafe"},
         )
         assert invalid.status_code == 400
+        assert "lowercase Latin letter (a-z)" in invalid.json()["detail"]
         linked = client.put(
             f"/api/v1/projects/{project_id}/instructions",
             headers=headers,

@@ -29,7 +29,10 @@ class WorkspaceRoot:
 
 def validate_item_id(value: str) -> str:
     if not _ID.fullmatch(value):
-        raise WorkspaceError("identifier must use lowercase letters, digits, '-' or '_'")
+        raise WorkspaceError(
+            "identifier must be 1-64 characters, start with a lowercase Latin letter "
+            "(a-z) or digit (0-9), and use only a-z, 0-9, '-' or '_'"
+        )
     return value
 
 
