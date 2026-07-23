@@ -557,6 +557,7 @@ describe("OpenCode Studio", () => {
     fireEvent.click(screen.getByRole("button", { name: "Агенты" }));
     fireEvent.click(await screen.findByRole("button", { name: "Создать агента" }));
     fireEvent.change(screen.getByPlaceholderText("security-reviewer"), { target: { value: "reviewer" } });
+    fireEvent.change(screen.getByLabelText(/Режим агента/), { target: { value: "primary" } });
     fireEvent.change(screen.getByLabelText(/Область действия/), { target: { value: "global" } });
     fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
 
@@ -564,6 +565,7 @@ describe("OpenCode Studio", () => {
       const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes("/agents/reviewer") && init?.method === "PUT");
       expect(call).toBeDefined();
       expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ scope: "global" });
+      expect(JSON.parse(String(call?.[1]?.body)).content).toContain("mode: primary");
     });
   });
 
