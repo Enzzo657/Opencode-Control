@@ -256,6 +256,54 @@ def test_session_messages_keep_cli_events_without_provider_metadata(
     assert result["parts"][7]["state"]["input"] == '{\n  "filePath": "/tmp/project/app.py"\n}'
 
 
+def test_session_messages_preserve_full_shell_output_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
+    raw = [
+        {
+            "info": {"id": "msg_shell", "role": "assistant"},
+            "parts": [
+                {
+                    "type": "tool",
+                    "tool": "bash",
+                    "state": {
+                        "status": "completed",
+                        "title": "python3 script.py",
+                        "input": {
+                            "command": "python3 script.py",
+                            "workdir": "/tmp/project",
+                            "token": "drop",
+                        },
+                        "output": "...output truncated...",
+                        "metadata": {
+                            "output": "first line\nsecond line\n",
+                            "exit": 0,
+                            "truncated": True,
+                            "secret": "drop",
+                        },
+                        "time": {"start": 1_000, "end": 2_500},
+                    },
+                }
+            ],
+        }
+    ]
+    monkeypatch.setattr(client, "request", lambda method, path, **kwargs: raw)
+
+    state = client.session_messages("ses_shell")[0]["parts"][0]["state"]
+    assert state == {
+        "status": "completed",
+        "title": "python3 script.py",
+        "output": "first line\nsecond line\n",
+        "full_output": True,
+        "exit_code": 0,
+        "time": {"start": 1_000, "end": 2_500},
+        "input": '{\n  "command": "python3 script.py",\n  "workdir": "/tmp/project"\n}',
+        "command": "python3 script.py",
+        "workdir": "/tmp/project",
+    }
+
+
 def test_session_runtime_projects_todos_and_permissions(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

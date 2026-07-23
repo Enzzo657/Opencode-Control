@@ -831,7 +831,7 @@ function FileAttachments({ value, onChange, onError, compact = false }: { value:
 }
 
 type TimeRange = { start?: number; end?: number };
-type ToolState = { status: "pending" | "running" | "completed" | "error"; title?: string; command?: string; input?: string; output?: string; error?: string; time?: TimeRange };
+type ToolState = { status: "pending" | "running" | "completed" | "error"; title?: string; command?: string; input?: string; output?: string; error?: string; workdir?: string; exit_code?: number; truncated?: boolean; full_output?: boolean; time?: TimeRange };
 type SessionPart = { type?: string; text?: string; mime?: string; filename?: string; tool?: string; state?: ToolState; time?: TimeRange; reason?: string; agent?: string; name?: string; files?: string[]; attempt?: number; error?: string; cost?: number; tokens?: MessageTokens };
 type MessageTokens = { total?: number; input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } };
 type SessionMessage = { info?: { id?: string; role?: string; tokens?: MessageTokens; time?: { created?: number; completed?: number }; agent?: string; modelID?: string; providerID?: string; cost?: number; finish?: string; error?: string }; parts?: SessionPart[] };
@@ -857,11 +857,15 @@ function SessionPartView({ part, index, now }: { part: SessionPart; index: numbe
   if (part.type !== "tool" || !part.tool || !part.state) return null;
   const native = new Set(["bash", "shell", "read", "write", "edit", "glob", "grep", "task", "skill", "webfetch", "todowrite", "question"]);
   const isMcp = part.tool.includes("_") && !native.has(part.tool);
-  return <details className={`tool-event ${part.state.status}`} open={part.state.status === "running" || part.state.status === "error"}>
-    <summary><span className="tool-event-icon">{isMcp ? <Network size={14} /> : <SquareTerminal size={14} />}</span><span><strong>{part.state.title || part.tool}</strong><small>{isMcp ? `MCP / ${part.tool}` : part.tool}{part.state.time?.start !== undefined ? ` · ${formatDuration((part.state.time.end ?? now) - part.state.time.start)}` : ""}</small></span><Status value={part.state.status} /></summary>
-    {part.state.command && <pre><code>{part.state.command}</code></pre>}
-    {!part.state.command && part.state.input && <pre><code>{part.state.input}</code></pre>}
-    {part.state.output && <pre><code>{part.state.output}</code></pre>}
+  const isShell = part.tool === "bash" || part.tool === "shell";
+  const duration = part.state.time?.start !== undefined ? formatDuration((part.state.time.end ?? now) - part.state.time.start) : null;
+  const details = [isMcp ? `MCP / ${part.tool}` : part.tool, duration, part.state.exit_code !== undefined ? `exit ${part.state.exit_code}` : null, isShell ? part.state.workdir : null].filter(Boolean).join(" · ");
+  return <details className={`tool-event ${part.state.status} ${isShell ? "shell-tool" : ""}`} open={part.state.status === "running" || part.state.status === "error"}>
+    <summary><span className="tool-event-icon">{isMcp ? <Network size={14} /> : <SquareTerminal size={14} />}</span><span><strong>{isShell && part.state.command ? `$ ${part.state.command}` : part.state.title || part.tool}</strong><small>{details}</small></span><Status value={part.state.status} /></summary>
+    {!isShell && part.state.command && <pre className="tool-command"><code>{part.state.command}</code></pre>}
+    {!part.state.command && part.state.input && <pre className="tool-command"><code>{part.state.input}</code></pre>}
+    {part.state.output && <pre className="tool-output"><code>{part.state.output}</code></pre>}
+    {part.state.truncated && <div className="tool-output-notice">OpenCode сохранил только часть вывода.</div>}
     {part.state.error && <pre className="tool-error"><code>{part.state.error}</code></pre>}
     <span className="sr-only">tool-{index}</span>
   </details>;

@@ -672,15 +672,32 @@ def _messages(raw: Any) -> list[dict[str, Any]]:
                     if status not in {"pending", "running", "completed", "error"}:
                         continue
                     safe_state: dict[str, Any] = {"status": status}
-                    for key in ("title", "output", "error"):
+                    for key in ("title", "error"):
                         value = state.get(key)
                         if not isinstance(value, str) or not value:
                             continue
-                        limit = remaining if key in {"output", "error"} else 500
+                        limit = remaining if key == "error" else 500
                         text, consumed = _bounded_text(value, remaining, limit)
                         remaining -= consumed
                         if text:
                             safe_state[key] = text
+                    raw_output = state.get("output")
+                    metadata = state.get("metadata")
+                    metadata_output = metadata.get("output") if isinstance(metadata, dict) else None
+                    if isinstance(metadata_output, str) and metadata_output:
+                        raw_output = metadata_output
+                        safe_state["full_output"] = True
+                    if isinstance(raw_output, str) and raw_output:
+                        text, consumed = _bounded_text(raw_output, remaining, remaining)
+                        remaining -= consumed
+                        if text:
+                            safe_state["output"] = text
+                    if isinstance(metadata, dict):
+                        exit_code = metadata.get("exit")
+                        if isinstance(exit_code, int):
+                            safe_state["exit_code"] = exit_code
+                        if metadata.get("truncated") is True and not safe_state.get("full_output"):
+                            safe_state["truncated"] = True
                     raw_time = state.get("time")
                     if isinstance(raw_time, dict):
                         safe_time = {
@@ -707,6 +724,9 @@ def _messages(raw: Any) -> list[dict[str, Any]]:
                             remaining -= consumed
                             if text:
                                 safe_state["command"] = text
+                        workdir = tool_input.get("workdir")
+                        if isinstance(workdir, str) and workdir:
+                            safe_state["workdir"] = workdir[:4000]
                     safe_parts.append({"type": "tool", "tool": tool, "state": safe_state})
                     continue
                 if part.get("type") != "text":

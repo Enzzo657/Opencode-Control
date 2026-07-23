@@ -440,6 +440,27 @@ describe("OpenCode Studio", () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).includes("/permissions/per_1/reply") && init?.method === "POST")).toBe(true));
   });
 
+  it("shows complete shell commands and output like the OpenCode CLI", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_shell", role: "assistant" }, parts: [{ type: "tool", tool: "bash", state: { status: "completed", command: "python3 script.py --all", workdir: "/tmp/project", output: "Fetching…\nfirst result\nlast result", full_output: true, exit_code: 0, time: { start: 1000, end: 7500 } } }] }]);
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(await screen.findByText("Fix checkout"));
+    const command = await screen.findByText("$ python3 script.py --all");
+    const tool = command.closest("details")!;
+    expect(tool).not.toHaveAttribute("open");
+    fireEvent.click(command);
+    expect(tool).toHaveAttribute("open");
+    expect(tool).toHaveTextContent("bash · 6 с · exit 0 · /tmp/project");
+    expect(tool).toHaveTextContent("Fetching…");
+    expect(tool).toHaveTextContent("last result");
+    expect(tool).not.toHaveTextContent("output truncated");
+  });
+
   it("derives busy status and elapsed time from an unfinished message", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
