@@ -860,11 +860,12 @@ function SessionPartView({ part, index, now }: { part: SessionPart; index: numbe
   const isShell = part.tool === "bash" || part.tool === "shell";
   const duration = part.state.time?.start !== undefined ? formatDuration((part.state.time.end ?? now) - part.state.time.start) : null;
   const details = [isMcp ? `MCP / ${part.tool}` : part.tool, duration, part.state.exit_code !== undefined ? `exit ${part.state.exit_code}` : null, isShell ? part.state.workdir : null].filter(Boolean).join(" · ");
-  return <details className={`tool-event ${part.state.status} ${isShell ? "shell-tool" : ""}`} open={part.state.status === "running" || part.state.status === "error"}>
+  return <details className={`tool-event ${part.state.status} ${isShell ? "shell-tool" : ""}`}>
     <summary><span className="tool-event-icon">{isMcp ? <Network size={14} /> : <SquareTerminal size={14} />}</span><span><strong>{isShell && part.state.command ? `$ ${part.state.command}` : part.state.title || part.tool}</strong><small>{details}</small></span><Status value={part.state.status} /></summary>
     {!isShell && part.state.command && <pre className="tool-command"><code>{part.state.command}</code></pre>}
     {!part.state.command && part.state.input && <pre className="tool-command"><code>{part.state.input}</code></pre>}
     {part.state.output && <pre className="tool-output"><code>{part.state.output}</code></pre>}
+    {isShell && part.state.status === "running" && !part.state.output && <div className="tool-output-waiting">Вывод пока не поступил…</div>}
     {part.state.truncated && <div className="tool-output-notice">OpenCode сохранил только часть вывода.</div>}
     {part.state.error && <pre className="tool-error"><code>{part.state.error}</code></pre>}
     <span className="sr-only">tool-{index}</span>

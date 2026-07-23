@@ -4,6 +4,7 @@ import json
 import threading
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
@@ -295,7 +296,8 @@ def test_session_messages_preserve_full_shell_output_metadata(
         "status": "completed",
         "title": "python3 script.py",
         "output": "first line\nsecond line\n",
-        "full_output": True,
+        "full_output": False,
+        "truncated": True,
         "exit_code": 0,
         "time": {"start": 1_000, "end": 2_500},
         "input": '{\n  "command": "python3 script.py",\n  "workdir": "/tmp/project"\n}',
@@ -388,6 +390,10 @@ def test_messages_hide_synthetic_compaction_continuation(
             "parts": [{"type": "text", "text": "## Objective\nInternal summary"}],
         },
         {
+            "info": {"id": "msg_internal_compaction", "role": "user"},
+            "parts": [{"type": "compaction", "auto": True}],
+        },
+        {
             "info": {"id": "msg_real", "role": "user"},
             "parts": [{"type": "text", "text": "Продолжи проверку"}],
         },
@@ -399,6 +405,44 @@ def test_messages_hide_synthetic_compaction_continuation(
             "parts": [{"type": "text", "text": "Продолжи проверку"}],
         }
     ]
+
+
+def test_session_messages_read_complete_managed_tool_output(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("HOME", str(tmp_path))
+    output_root = tmp_path / ".local/share/opencode/tool-output"
+    output_root.mkdir(parents=True)
+    output_path = output_root / "tool_abc123"
+    output_path.write_text("complete first line\ncomplete last line\n")
+    client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
+    raw = [
+        {
+            "info": {"id": "msg_shell", "role": "assistant"},
+            "parts": [
+                {
+                    "type": "tool",
+                    "tool": "bash",
+                    "state": {
+                        "status": "completed",
+                        "input": {"command": "python3 script.py"},
+                        "output": (
+                            "...output truncated...\n\n"
+                            f"Full output saved to: {output_path}\n\npartial tail"
+                        ),
+                        "metadata": {"output": "...\npartial tail", "truncated": True},
+                    },
+                }
+            ],
+        }
+    ]
+    monkeypatch.setattr(client, "request", lambda method, path, **kwargs: raw)
+
+    state = client.session_messages("ses_shell")[0]["parts"][0]["state"]
+    assert state["output"] == "complete first line\ncomplete last line\n"
+    assert state["full_output"] is True
+    assert "truncated" not in state
 
 
 def test_prompt_accepts_generic_attachment_without_synthetic_text(

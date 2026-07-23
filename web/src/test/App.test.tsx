@@ -473,7 +473,11 @@ describe("OpenCode Studio", () => {
     fireEvent.click(await screen.findByText("Fix checkout"));
     const dialog = await screen.findByRole("dialog", { name: /Сессия Fix checkout/ });
     await waitFor(() => expect(dialog.querySelector(".status")).toHaveTextContent("Выполняется"));
-    expect(await screen.findByText(/webfetch · [3-9] с/)).toBeInTheDocument();
+    const liveToolTitle = await screen.findByText(/webfetch · [3-9] с/);
+    const liveTool = liveToolTitle.closest("details")!;
+    expect(liveTool).not.toHaveAttribute("open");
+    fireEvent.click(liveToolTitle);
+    expect(liveTool).toHaveAttribute("open");
     expect(dialog.querySelector(".message")).not.toHaveTextContent("$");
   });
 

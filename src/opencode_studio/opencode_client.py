@@ -5,6 +5,7 @@ import http.client
 import ipaddress
 import json
 import math
+import os
 import re
 import time
 import urllib.parse
@@ -542,10 +543,18 @@ def _messages(raw: Any) -> list[dict[str, Any]]:
             and part["metadata"].get("compaction_continue") is True
             for part in parts
         )
+        internal_compaction = (
+            isinstance(info, dict)
+            and info.get("role") == "user"
+            and isinstance(parts, list)
+            and bool(parts)
+            and all(isinstance(part, dict) and part.get("type") == "compaction" for part in parts)
+        )
         if isinstance(info, dict) and (
             info.get("mode") == "compaction"
             or info.get("summary") is True
             or synthetic_continuation
+            or internal_compaction
         ):
             continue
         safe_info = {
@@ -684,9 +693,18 @@ def _messages(raw: Any) -> list[dict[str, Any]]:
                     raw_output = state.get("output")
                     metadata = state.get("metadata")
                     metadata_output = metadata.get("output") if isinstance(metadata, dict) else None
-                    if isinstance(metadata_output, str) and metadata_output:
+                    managed_output, managed_complete = _managed_tool_output(
+                        raw_output,
+                        remaining,
+                    )
+                    if managed_output:
+                        raw_output = managed_output
+                        safe_state["full_output"] = managed_complete
+                    elif isinstance(metadata_output, str) and metadata_output:
                         raw_output = metadata_output
-                        safe_state["full_output"] = True
+                        safe_state["full_output"] = not (
+                            isinstance(metadata, dict) and metadata.get("truncated") is True
+                        )
                     if isinstance(raw_output, str) and raw_output:
                         text, consumed = _bounded_text(raw_output, remaining, remaining)
                         remaining -= consumed
@@ -808,6 +826,31 @@ def _bounded_text(value: str, remaining: int, limit: int) -> tuple[str, int]:
         return "", 0
     text = encoded[:allowed].decode("utf-8", errors="ignore")
     return f"{text}\n[Предпросмотр обрезан]", allowed
+
+
+def _managed_tool_output(raw: Any, limit: int) -> tuple[str, bool]:
+    if not isinstance(raw, str) or limit <= 0:
+        return "", False
+    match = re.search(r"(?:^|\n)Full output saved to: (/[^\n]+)", raw)
+    if not match:
+        return "", False
+    candidate = Path(match.group(1))
+    if not re.fullmatch(r"tool_[A-Za-z0-9]+", candidate.name):
+        return "", False
+    roots = [Path.home() / ".local/share/opencode/tool-output"]
+    xdg_data_home = os.environ.get("XDG_DATA_HOME")
+    if xdg_data_home:
+        roots.append(Path(xdg_data_home).expanduser() / "opencode/tool-output")
+    try:
+        resolved = candidate.resolve(strict=True)
+        if not any(resolved.parent == root.resolve() for root in roots):
+            return "", False
+        with resolved.open("rb") as handle:
+            payload = handle.read(limit + 1)
+    except OSError:
+        return "", False
+    complete = len(payload) <= limit
+    return payload[:limit].decode("utf-8", errors="replace"), complete
 
 
 def _agents(raw: Any) -> list[dict[str, Any]]:
