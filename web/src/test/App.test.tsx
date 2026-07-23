@@ -322,7 +322,7 @@ describe("OpenCode Studio", () => {
   it("treats step-finish as a completed response without completed time", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_done", role: "assistant", time: { created: Date.now() - 1000 } }, parts: [{ type: "step-start" }, { type: "step-finish", reason: "stop" }] }]);
+      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_done", role: "assistant", time: { created: Date.now() - 1000 } }, parts: [{ type: "step-start" }, { type: "step-finish", reason: "stop", duration: 9000 }] }]);
       return fallback(input, init);
     });
     render(<App />);
@@ -330,6 +330,7 @@ describe("OpenCode Studio", () => {
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     expect(await screen.findByRole("button", { name: "Отправить в эту сессию" })).toBeInTheDocument();
+    expect(screen.getByText(/stop · 9 с всего/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Остановить ответ" })).not.toBeInTheDocument();
   });
 

@@ -832,7 +832,7 @@ function FileAttachments({ value, onChange, onError, compact = false }: { value:
 
 type TimeRange = { start?: number; end?: number };
 type ToolState = { status: "pending" | "running" | "completed" | "error"; title?: string; command?: string; input?: string; output?: string; error?: string; workdir?: string; exit_code?: number; truncated?: boolean; full_output?: boolean; time?: TimeRange };
-type SessionPart = { type?: string; text?: string; mime?: string; filename?: string; tool?: string; state?: ToolState; time?: TimeRange; reason?: string; agent?: string; name?: string; files?: string[]; attempt?: number; error?: string; cost?: number; tokens?: MessageTokens };
+type SessionPart = { type?: string; text?: string; mime?: string; filename?: string; tool?: string; state?: ToolState; time?: TimeRange; duration?: number; reason?: string; agent?: string; name?: string; files?: string[]; attempt?: number; error?: string; cost?: number; tokens?: MessageTokens };
 type MessageTokens = { total?: number; input?: number; output?: number; reasoning?: number; cache?: { read?: number; write?: number } };
 type SessionMessage = { info?: { id?: string; role?: string; tokens?: MessageTokens; time?: { created?: number; completed?: number }; agent?: string; modelID?: string; providerID?: string; cost?: number; finish?: string; error?: string }; parts?: SessionPart[] };
 type SessionTodo = { content: string; status: "pending" | "in_progress" | "completed" | "cancelled"; priority: "high" | "medium" | "low" };
@@ -853,7 +853,7 @@ function SessionPartView({ part, index, now }: { part: SessionPart; index: numbe
   if (part.type === "compaction") return <div className="step-divider"><span>Контекст сжат</span></div>;
   if (part.type === "snapshot") return <div className="cli-event"><Check size={13} /><span>Снимок состояния сохранён</span></div>;
   if (part.type === "step-start") return <div className="step-divider"><span>Шаг агента</span></div>;
-  if (part.type === "step-finish") return <div className="step-finish"><Check size={12} /> {part.reason ?? "Шаг завершён"}{part.tokens?.output !== undefined ? ` · ${compact(part.tokens.output)} токенов` : ""}{part.cost !== undefined ? ` · $${part.cost.toFixed(4)}` : ""}</div>;
+  if (part.type === "step-finish") return <div className="step-finish"><Check size={12} /> {part.reason ?? "Шаг завершён"}{part.tokens?.output !== undefined ? ` · ${compact(part.tokens.output)} токенов` : ""}{part.cost !== undefined ? ` · $${part.cost.toFixed(4)}` : ""}{part.duration !== undefined ? ` · ${formatDuration(part.duration)} всего` : ""}</div>;
   if (part.type !== "tool" || !part.tool || !part.state) return null;
   const native = new Set(["bash", "shell", "read", "write", "edit", "glob", "grep", "task", "skill", "webfetch", "todowrite", "question"]);
   const isMcp = part.tool.includes("_") && !native.has(part.tool);

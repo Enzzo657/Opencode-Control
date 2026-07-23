@@ -445,6 +445,39 @@ def test_session_messages_read_complete_managed_tool_output(
     assert "truncated" not in state
 
 
+def test_session_messages_add_total_duration_to_final_step(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
+    raw = [
+        {
+            "info": {"id": "msg_user", "role": "user", "time": {"created": 1_000}},
+            "parts": [{"type": "text", "text": "Сделай задачу"}],
+        },
+        {
+            "info": {
+                "id": "msg_tool",
+                "role": "assistant",
+                "time": {"created": 2_000, "completed": 5_000},
+            },
+            "parts": [{"type": "step-finish", "reason": "tool-calls"}],
+        },
+        {
+            "info": {
+                "id": "msg_done",
+                "role": "assistant",
+                "time": {"created": 5_001, "completed": 11_000},
+            },
+            "parts": [{"type": "step-finish", "reason": "stop"}],
+        },
+    ]
+    monkeypatch.setattr(client, "request", lambda method, path, **kwargs: raw)
+
+    messages = client.session_messages("ses_duration")
+    assert "duration" not in messages[1]["parts"][0]
+    assert messages[2]["parts"][0]["duration"] == 10_000
+
+
 def test_prompt_accepts_generic_attachment_without_synthetic_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

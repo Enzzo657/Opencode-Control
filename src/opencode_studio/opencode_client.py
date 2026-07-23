@@ -531,6 +531,7 @@ def _messages(raw: Any) -> list[dict[str, Any]]:
         return []
     result: list[dict[str, Any]] = []
     remaining = 128 * 1024 * 1024
+    turn_started_at: float | None = None
     for entry in raw:
         if not isinstance(entry, dict) or remaining <= 0:
             continue
@@ -557,6 +558,20 @@ def _messages(raw: Any) -> list[dict[str, Any]]:
             or internal_compaction
         ):
             continue
+        entry_time = info.get("time") if isinstance(info, dict) else None
+        if (
+            isinstance(info, dict)
+            and info.get("role") == "user"
+            and isinstance(entry_time, dict)
+            and isinstance(entry_time.get("created"), (int, float))
+        ):
+            turn_started_at = float(entry_time["created"])
+        message_completed = (
+            float(entry_time["completed"])
+            if isinstance(entry_time, dict)
+            and isinstance(entry_time.get("completed"), (int, float))
+            else None
+        )
         safe_info = {
             "id": info.get("id") if isinstance(info, dict) else None,
             "role": info.get("role") if isinstance(info, dict) else None,
@@ -619,6 +634,12 @@ def _messages(raw: Any) -> list[dict[str, Any]]:
                     cost = part.get("cost")
                     if isinstance(cost, (int, float)) and math.isfinite(cost) and cost >= 0:
                         safe_step["cost"] = cost
+                    if (
+                        part.get("reason") != "tool-calls"
+                        and message_completed is not None
+                        and turn_started_at is not None
+                    ):
+                        safe_step["duration"] = max(0, message_completed - turn_started_at)
                     safe_parts.append(safe_step)
                     continue
                 if part.get("type") in {"reasoning", "subtask"}:
