@@ -97,6 +97,25 @@ describe("OpenCode Studio", () => {
     });
   });
 
+  it("shows consistent AGENTS.md status and themed save actions", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith("/api/v1/projects")) return response([project]);
+      if (path.includes("/snapshot")) return response({ state: "stopped", errors: [], sessions: [], statuses: {}, agents: [], mcp: {}, providers: { connected: [], available: [] }, server: project.server });
+      if (path.endsWith("/instructions")) return response({ content: "# Project", path: "/code/checkout/AGENTS.md", global_content: "", global_path: "/home/dev/.config/opencode/AGENTS.md", global_exists: false });
+      if (path.endsWith("/api/v1/session")) return response({ csrf_token: "csrf" });
+      return response({});
+    }));
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "AGENTS.md" }));
+    expect(await screen.findByText("/code/checkout/AGENTS.md")).toBeInTheDocument();
+    expect(screen.getByText("файл создан")).toHaveClass("state-enabled");
+    expect(screen.getByText("не создан")).toHaveClass("state-pending");
+    expect(screen.getByRole("button", { name: "Сохранить проектный файл" })).toHaveClass("primary-button", "instruction-save");
+    expect(screen.getByRole("button", { name: "Сохранить глобальный файл" })).toHaveClass("primary-button", "instruction-save");
+  });
+
   it("renders onboarding when no projects are registered", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => response([])));
     render(<App />);

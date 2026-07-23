@@ -98,6 +98,18 @@ def read_text(root: WorkspaceRoot, relative: Path, *, missing: str = "") -> str:
         os.close(descriptor)
 
 
+def file_exists(root: WorkspaceRoot, relative: Path) -> bool:
+    _validate_relative(relative)
+    try:
+        with _open_parent(root, relative.parent, create=False) as parent_fd:
+            info = os.stat(relative.name, dir_fd=parent_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise WorkspaceError("workspace file is unavailable or unsafe") from error
+    return stat.S_ISREG(info.st_mode) and info.st_nlink == 1
+
+
 def write_text(root: WorkspaceRoot, relative: Path, content: str) -> None:
     encoded = content.encode("utf-8")
     if len(encoded) > _MAX_TEXT:
@@ -278,6 +290,14 @@ def read_external_text(path: Path) -> str:
     except (FileNotFoundError, OSError, UnicodeDecodeError):
         return ""
     return content if len(content.encode("utf-8")) <= _MAX_TEXT else ""
+
+
+def external_file_exists(path: Path) -> bool:
+    try:
+        info = path.lstat()
+    except OSError:
+        return False
+    return stat.S_ISREG(info.st_mode) and info.st_nlink == 1
 
 
 def parse_frontmatter(content: str) -> dict[str, str]:

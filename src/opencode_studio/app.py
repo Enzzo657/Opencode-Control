@@ -41,6 +41,8 @@ from opencode_studio.workspace import (
     config_target,
     delete_empty_directory,
     delete_file,
+    external_file_exists,
+    file_exists,
     list_external_markdown,
     list_markdown,
     preserve_redacted,
@@ -1460,14 +1462,17 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
     @app.get("/api/v1/projects/{project_id}/instructions")
     def instructions(project_id: str) -> dict[str, Any]:
         project = project_or_404(project_id)
+        project_root = workspace_for(project)
+        project_file = Path("AGENTS.md")
         global_path = Path.home() / ".config/opencode/AGENTS.md"
         global_content = read_external_text(global_path)
         return {
-            "content": read_text(workspace_for(project), Path("AGENTS.md")),
+            "content": read_text(project_root, project_file),
             "path": str(Path(str(project["root"])) / "AGENTS.md"),
+            "project_exists": file_exists(project_root, project_file),
             "global_content": global_content,
             "global_path": str(global_path),
-            "global_exists": bool(global_content),
+            "global_exists": external_file_exists(global_path),
         }
 
     @app.put("/api/v1/projects/{project_id}/instructions")

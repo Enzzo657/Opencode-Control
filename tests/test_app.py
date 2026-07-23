@@ -107,6 +107,9 @@ def test_workspace_configuration_surfaces(tmp_path: Path) -> None:
         )
         assert instructions.status_code == 200
         assert (root / "AGENTS.md").read_text() == "# Work carefully\n"
+        instruction_state = client.get(f"/api/v1/projects/{project_id}/instructions")
+        assert instruction_state.status_code == 200
+        assert instruction_state.json()["project_exists"] is True
 
         agent = client.put(
             f"/api/v1/projects/{project_id}/agents/reviewer",
