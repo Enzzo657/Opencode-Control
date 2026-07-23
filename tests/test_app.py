@@ -152,9 +152,12 @@ def test_workspace_configuration_surfaces(tmp_path: Path) -> None:
             },
         )
         assert mcp.status_code == 200
-        assert mcp.json()["config"]["headers"]["Authorization"] == "[REDACTED]"
-        assert mcp.json()["config"]["env"]["GITHUB_PAT"] == "[REDACTED]"
-        assert mcp.json()["config"]["command"][-1] == "[REDACTED]"
+        assert mcp.json()["config"]["headers"]["Authorization"] == "secret-value"
+        assert (
+            mcp.json()["config"]["env"]["GITHUB_PAT"]
+            == "github_pat_abcdefghijklmnopqrstuvwxyz"
+        )
+        assert mcp.json()["config"]["command"][-1] == "command-secret-value"
         persisted = json.loads((root / "opencode.json").read_text())
         assert persisted["mcp"]["github"]["headers"]["Authorization"] == "secret-value"
         assert persisted["mcp"]["github"]["command"][-1] == "command-secret-value"
@@ -162,7 +165,7 @@ def test_workspace_configuration_surfaces(tmp_path: Path) -> None:
         config_payload = client.get(f"/api/v1/projects/{project_id}/configuration").json()
         config = config_payload["project"]
         assert config_payload["project_path"] == str(root / "opencode.json")
-        assert config["mcp"]["github"]["headers"]["Authorization"] == "[REDACTED]"
+        assert config["mcp"]["github"]["headers"]["Authorization"] == "secret-value"
 
         ollama = client.put(
             f"/api/v1/projects/{project_id}/providers/ollama/configuration",
@@ -268,9 +271,9 @@ def test_project_and_global_jsonc_are_editable_without_losing_secrets(
         loaded = client.get(f"/api/v1/projects/{project_id}/configuration")
         assert loaded.status_code == 200
         assert loaded.json() == {
-            "project": {"model": "openai/project", "apiKey": "[REDACTED]"},
+            "project": {"model": "openai/project", "apiKey": "project-secret"},
             "project_path": str(project_path),
-            "global": {"model": "openai/global", "apiKey": "[REDACTED]"},
+            "global": {"model": "openai/global", "apiKey": "global-secret"},
             "global_path": str(global_path),
         }
 
@@ -279,7 +282,7 @@ def test_project_and_global_jsonc_are_editable_without_losing_secrets(
             headers=headers,
             json={
                 "scope": "project",
-                "values": {"model": "openai/new-project", "apiKey": "[REDACTED]"},
+                "values": {"model": "openai/new-project", "apiKey": "project-secret"},
             },
         )
         assert saved_project.status_code == 200
@@ -294,7 +297,7 @@ def test_project_and_global_jsonc_are_editable_without_losing_secrets(
             headers=headers,
             json={
                 "scope": "global",
-                "values": {"model": "openai/new-global", "apiKey": "[REDACTED]"},
+                "values": {"model": "openai/new-global", "apiKey": "global-secret"},
             },
         )
         assert saved_global.status_code == 200

@@ -14,7 +14,6 @@ from typing import Any
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _MAX_TEXT = 2 * 1024 * 1024
-_SECRET_KEYS = {"apikey", "api_key", "authorization", "password", "secret", "token"}
 
 
 class WorkspaceError(ValueError):
@@ -399,30 +398,6 @@ def _strip_jsonc_comments(raw: str) -> str:
     return "".join(without_trailing_commas)
 
 
-def redact(value: Any, key: str = "") -> Any:
-    normalized = re.sub(r"[^a-z0-9]", "", key.lower())
-    if (
-        normalized in {re.sub(r"[^a-z0-9]", "", item) for item in _SECRET_KEYS}
-        or any(part in normalized for part in ("secret", "token", "password", "credential"))
-        or "authorization" in normalized
-        or "privatekey" in normalized
-        or normalized.endswith("pat")
-        or normalized.endswith("auth")
-        or normalized.endswith("key")
-        or ("api" in normalized and "key" in normalized)
-    ):
-        return "[REDACTED]"
-    if isinstance(value, dict):
-        return {str(item_key): redact(item, str(item_key)) for item_key, item in value.items()}
-    if isinstance(value, list):
-        if normalized == "command":
-            return _redact_command(value)
-        return [redact(item, key) for item in value]
-    if isinstance(value, str):
-        return _redact_string(value)
-    return value
-
-
 def preserve_redacted(current: Any, proposed: Any) -> Any:
     if proposed == "[REDACTED]":
         return current
@@ -437,38 +412,6 @@ def preserve_redacted(current: Any, proposed: Any) -> Any:
             for index, value in enumerate(proposed)
         ]
     return proposed
-
-
-def _redact_command(value: list[Any]) -> list[Any]:
-    result: list[Any] = []
-    redact_next = False
-    for item in value:
-        if not isinstance(item, str):
-            result.append(redact(item, "command"))
-            continue
-        normalized = item.lower()
-        if redact_next:
-            result.append("[REDACTED]")
-            redact_next = False
-            continue
-        sensitive_markers = ("token", "secret", "password", "api-key", "apikey")
-        if any(marker in normalized for marker in sensitive_markers):
-            if "=" in item:
-                result.append(f"{item.split('=', 1)[0]}=[REDACTED]")
-            else:
-                result.append(item)
-                redact_next = True
-            continue
-        result.append(_redact_string(item))
-    return result
-
-
-def _redact_string(value: str) -> str:
-    if re.search(r"\b(?:sk|ghp|github_pat)_[A-Za-z0-9_-]{12,}\b", value, re.IGNORECASE):
-        return "[REDACTED]"
-    if re.search(r"\bBearer\s+[A-Za-z0-9._~+/=-]{12,}", value, re.IGNORECASE):
-        return "[REDACTED]"
-    return value
 
 
 def _validate_relative(relative: Path) -> None:
