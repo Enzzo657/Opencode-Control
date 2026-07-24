@@ -14,10 +14,13 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
-class StudioStore:
+class ControlStore:
     def __init__(self, data_dir: Path) -> None:
         data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        self._connection = sqlite3.connect(data_dir / "studio.sqlite", check_same_thread=False)
+        os.chmod(data_dir, 0o700)
+        database_path = data_dir / "control.sqlite"
+        self._connection = sqlite3.connect(database_path, check_same_thread=False)
+        os.chmod(database_path, 0o600)
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         with self._connection:

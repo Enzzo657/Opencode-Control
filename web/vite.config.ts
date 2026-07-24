@@ -4,7 +4,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   plugins: [react()],
   build: {
-    outDir: "../src/opencode_studio/static",
+    outDir: "../src/opencode_control/static",
     emptyOutDir: true,
   },
   server: {

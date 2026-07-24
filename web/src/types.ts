@@ -29,7 +29,7 @@ export type Session = {
     cache?: { read?: number; write?: number };
   };
   time?: { created?: number; updated?: number };
-  studio_task?: { id: string; title: string; status?: string };
+  control_task?: { id: string; title: string; status?: string };
 };
 
 export type Agent = {

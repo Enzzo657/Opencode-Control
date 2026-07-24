@@ -14,8 +14,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
-from opencode_studio.opencode_client import OpenCodeClient, OpenCodeError
-from opencode_studio.workspace import WorkspaceRoot, open_root_descriptor
+from opencode_control.opencode_client import OpenCodeClient, OpenCodeError
+from opencode_control.workspace import WorkspaceRoot, open_root_descriptor
 
 
 class ProcessError(RuntimeError):
@@ -74,7 +74,7 @@ class OpenCodeProcessManager:
                     [
                         sys.executable,
                         "-m",
-                        "opencode_studio.exec_in_dir",
+                        "opencode_control.exec_in_dir",
                         str(root_descriptor),
                         self.binary,
                         "serve",

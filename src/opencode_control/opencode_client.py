@@ -118,7 +118,7 @@ class OpenCodeClient:
                 "Accept": "application/json",
                 "Content-Type": "application/json",
                 "Connection": "close",
-                "User-Agent": "opencode-studio/0.1",
+                "User-Agent": "opencode-control/0.1",
             }
             if self.password:
                 credentials = base64.b64encode(

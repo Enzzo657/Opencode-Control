@@ -9,7 +9,7 @@ from typing import Any, ClassVar
 
 import pytest
 
-from opencode_studio.opencode_client import OpenCodeClient, OpenCodeError, OpenCodeHTTPError
+from opencode_control.opencode_client import OpenCodeClient, OpenCodeError, OpenCodeHTTPError
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -691,7 +691,7 @@ def test_snapshot_derives_busy_status_from_external_session_messages(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
-    monkeypatch.setattr("opencode_studio.opencode_client.time.time", lambda: 10.0)
+    monkeypatch.setattr("opencode_control.opencode_client.time.time", lambda: 10.0)
     fixtures: dict[str, Any] = {
         "/global/health": {"healthy": True},
         "/session": [
@@ -753,7 +753,7 @@ def test_snapshot_ignores_stale_unfinished_messages_but_preserves_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
-    monkeypatch.setattr("opencode_studio.opencode_client.time.time", lambda: 1_000.0)
+    monkeypatch.setattr("opencode_control.opencode_client.time.time", lambda: 1_000.0)
     fixtures: dict[str, Any] = {
         "/global/health": {"healthy": True},
         "/session": [

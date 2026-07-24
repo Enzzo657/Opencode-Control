@@ -53,7 +53,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-.studio-shell { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); }
+.control-shell { min-height: 100vh; display: grid; grid-template-columns: var(--sidebar) minmax(0, 1fr); }
 .sidebar { position: fixed; inset: 0 auto 0 0; z-index: 20; width: var(--sidebar); display: flex; flex-direction: column; padding: 18px 14px; background: var(--sidebar-bg); border-right: 1px solid var(--line); color: var(--text); }
 .brand { display: flex; align-items: center; gap: 11px; min-height: 42px; padding: 0 7px; }
 .brand-mark { width: 34px; height: 34px; display: grid; place-items: center; flex: 0 0 auto; color: var(--accent-contrast); background: var(--accent); border-radius: 9px; box-shadow: 0 8px 24px color-mix(in srgb, var(--accent) 25%, transparent); }
@@ -289,7 +289,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .schedule-builder { display: grid; gap: 10px; padding: 12px; background: var(--surface-2); border: 1px solid var(--line-strong); border-radius: 10px; }
 .schedule-summary { display: grid; gap: 3px; padding: 10px 12px; color: var(--muted); background: var(--accent-soft); border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent); border-radius: 9px; }.schedule-summary strong { color: var(--text); font-size: 14px; }.schedule-summary span { font-size: 12px; }.schedule-summary small { color: var(--muted); font-size: 11px; line-height: 1.4; }
 
-/* Studio is operated as a desktop control panel; keep all operational text readable. */
+/* Control is operated as a desktop control panel; keep all operational text readable. */
 body { font-size: 15px; }
 .brand strong { font-size: 16px; }.brand span { font-size: 13px; }
 .project-switcher small, .sidebar-foot > span { font-size: 11px; }.project-switcher strong, .theme-toggle { font-size: 14px; }
@@ -357,7 +357,7 @@ body { font-size: 15px; }
 
 @media (max-width: 760px) {
   :root { --sidebar: 260px; }
-  .studio-shell { display: block; }
+  .control-shell { display: block; }
   .sidebar { visibility: hidden; transform: translateX(-105%); transition: transform .2s ease, visibility .2s; box-shadow: 20px 0 60px rgb(0 0 0 / 40%); }.sidebar.mobile-open { visibility: visible; transform: translateX(0); }
   .workspace { min-height: 100vh; }
   .mobile-menu, .mobile-close { display: inline-grid; }.mobile-close { margin-left: auto; border-color: #252a31; }.mobile-scrim { position: fixed; inset: 0; z-index: 15; display: block; background: rgb(0 0 0 / 55%); border: 0; }

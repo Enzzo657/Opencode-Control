@@ -35,9 +35,9 @@ function formatError(detail: unknown, status: number): string {
   if (Array.isArray(detail)) {
     const issues = detail.filter((item): item is { loc?: unknown[]; msg?: string; type?: string } => typeof item === "object" && item !== null);
     const staleScheduleFields = issues.some((item) => item.type === "extra_forbidden" && item.loc?.some((part) => part === "cron" || part === "timezone"));
-    if (staleScheduleFields) return "Backend Studio ещё не обновлён. Выполните uv run opencode-studio --restart --open.";
+    if (staleScheduleFields) return "Backend OpenCode Control ещё не обновлён. Выполните uv run opencode-control --restart --open.";
     const staleMentions = issues.some((item) => item.type === "extra_forbidden" && item.loc?.includes("mentions"));
-    if (staleMentions) return "Backend Studio ещё не поддерживает @-подагентов. Перезапустите Studio: uv run opencode-studio --restart --open.";
+    if (staleMentions) return "Backend OpenCode Control ещё не поддерживает @-подагентов. Перезапустите Control: uv run opencode-control --restart --open.";
     const messages = issues.map((item) => { const field = item.loc?.filter((part) => part !== "body").join(" → "); return `${field ? `${field}: ` : ""}${item.msg ?? "Некорректное значение"}`; });
     if (messages.length) return messages.join(". ");
   }

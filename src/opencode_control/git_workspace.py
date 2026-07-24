@@ -167,7 +167,7 @@ def git_reset(root: Path, commit_hash: str) -> dict[str, Any]:
     if resolved == previous_hash:
         raise GitError("branch is already at this commit")
     timestamp = datetime.now(UTC).strftime("%Y%m%d-%H%M%S-%f")
-    backup_branch = f"studio-backup/{timestamp}-{previous_hash[:7]}"
+    backup_branch = f"control-backup/{timestamp}-{previous_hash[:7]}"
     _run(root, ["branch", backup_branch, previous_hash])
     _run(root, ["reset", "--hard", resolved], timeout=60)
     return {

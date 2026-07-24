@@ -30,7 +30,7 @@ function contrastRatio(left: string, right: string) {
   return (Math.max(first, second) + .05) / (Math.min(first, second) + .05);
 }
 
-describe("OpenCode Studio", () => {
+describe("OpenCode Control", () => {
   beforeEach(() => {
     window.localStorage.clear();
     window.history.replaceState({}, "", "/");
@@ -45,8 +45,8 @@ describe("OpenCode Studio", () => {
           errors: [],
           health: { healthy: true, version: "1.18.1" },
           sessions: [
-            { id: "ses_1", title: "Fix checkout", agent: "build", cost: 0.12, tokens: { input: 100, output: 50 }, studio_task: { id: "task_1", title: "Fix checkout task", status: "completed" } },
-            { id: "ses_child", parentID: "ses_1", title: "Inspect API", agent: "explore", tokens: { input: 20, output: 10 }, studio_task: { id: "task_1", title: "Fix checkout task", status: "completed" } },
+            { id: "ses_1", title: "Fix checkout", agent: "build", cost: 0.12, tokens: { input: 100, output: 50 }, control_task: { id: "task_1", title: "Fix checkout task", status: "completed" } },
+            { id: "ses_child", parentID: "ses_1", title: "Inspect API", agent: "explore", tokens: { input: 20, output: 10 }, control_task: { id: "task_1", title: "Fix checkout task", status: "completed" } },
           ],
           statuses: { ses_1: { type: "idle" } },
           agents: [{ name: "build", mode: "primary" }, { name: "plan", mode: "primary" }, { name: "explore", mode: "subagent" }, { name: "general", mode: "subagent" }],
@@ -198,7 +198,7 @@ describe("OpenCode Studio", () => {
     expect(screen.getAllByText(/Задача: Fix checkout task/).length).toBeGreaterThan(0);
   });
 
-  it("deletes a session from Studio", async () => {
+  it("deletes a session from Control", async () => {
     render(<App />);
     await screen.findByText("Центр управления");
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
@@ -250,7 +250,7 @@ describe("OpenCode Studio", () => {
     expect(screen.getByRole("button", { name: "Агент: build" })).toBeInTheDocument();
   });
 
-  it("connects a provider with an API key from Studio", async () => {
+  it("connects a provider with an API key from Control", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const path = String(input);
@@ -357,7 +357,7 @@ describe("OpenCode Studio", () => {
     const textarea = screen.getByPlaceholderText("Продолжите диалог в этой же сессии…");
     fireEvent.change(textarea, { target: { value: "Проверь ещё раз" } });
     fireEvent.click(screen.getByRole("button", { name: "Отправить в эту сессию" }));
-    await waitFor(() => expect(window.localStorage.getItem(`studio-session-selection:${project.id}:ses_1`)).toBe(JSON.stringify({ agent: "plan", model: "openai/gpt-other" })));
+    await waitFor(() => expect(window.localStorage.getItem(`control-session-selection:${project.id}:ses_1`)).toBe(JSON.stringify({ agent: "plan", model: "openai/gpt-other" })));
     fireEvent.click(screen.getByRole("button", { name: "Закрыть сессию" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     expect(await screen.findByRole("button", { name: "Агент: plan" })).toBeInTheDocument();
@@ -386,7 +386,7 @@ describe("OpenCode Studio", () => {
         const original = await fallback(input, init);
         const payload = await original.json();
         payload.statuses = { ses_1: { type: "busy" } };
-        payload.sessions[0].studio_task.status = "running";
+        payload.sessions[0].control_task.status = "running";
         return response(payload);
       }
       return fallback(input, init);
@@ -571,7 +571,7 @@ describe("OpenCode Studio", () => {
     fireEvent.click(await screen.findByText("Fix checkout"));
     const handle = await screen.findByRole("separator", { name: "Изменить ширину окна сессии" });
     fireEvent.keyDown(handle, { key: "ArrowRight" });
-    expect(Number(window.localStorage.getItem("studio-session-drawer-width"))).toBeLessThan(960);
+    expect(Number(window.localStorage.getItem("control-session-drawer-width"))).toBeLessThan(960);
   });
 
   it("shows Git changes, diff and creates a commit", async () => {
@@ -585,7 +585,7 @@ describe("OpenCode Studio", () => {
       if (path.endsWith("/git/unstage") && init?.method === "POST") { staged = false; return response({}); }
       if (path.endsWith("/git/commit") && init?.method === "POST") return response({ committed: true, hash: "def" });
       if (path.endsWith("/git/revert") && init?.method === "POST") return response({ reverted: true, hash: "ghi" });
-      if (path.endsWith("/git/reset") && init?.method === "POST") return response({ reset: true, hash: "abc", backup_branch: "studio-backup/test-def5678" });
+      if (path.endsWith("/git/reset") && init?.method === "POST") return response({ reset: true, hash: "abc", backup_branch: "control-backup/test-def5678" });
       if (path.includes("/sessions/ses_1/todos")) return response([{ content: "Проверить Git index", status: "in_progress", priority: "high" }]);
       return fallback(input, init);
     });
@@ -606,7 +606,7 @@ describe("OpenCode Studio", () => {
     await waitFor(() => expect(dialog.querySelector(".session-inspector")).toHaveTextContent("Проверить Git index"));
     expect(dialog.querySelector(".git-panel")?.parentElement).toHaveClass("session-workspace");
     for (let index = 0; index < 9; index += 1) fireEvent.keyDown(screen.getByRole("separator", { name: "Изменить ширину Git-панели" }), { key: "ArrowRight" });
-    expect(Number(window.localStorage.getItem("studio-git-panel-width"))).toBeGreaterThan(520);
+    expect(Number(window.localStorage.getItem("control-git-panel-width"))).toBeGreaterThan(520);
     await waitFor(() => expect(document.querySelector(".git-diff")).toHaveTextContent("+new"));
     fireEvent.click(screen.getByRole("button", { name: "Развернуть diff" }));
     expect(dialog.querySelector(".git-panel")).toHaveClass("diff-focused");
@@ -628,7 +628,7 @@ describe("OpenCode Studio", () => {
     fireEvent.click(screen.getByRole("button", { name: "Коммиты" }));
     fireEvent.click(screen.getByRole("button", { name: "Перейти к abc1234" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/git/reset") && init?.method === "POST")).toBe(true));
-    expect(await screen.findByText(/studio-backup\/test-def5678/)).toBeInTheDocument();
+    expect(await screen.findByText(/control-backup\/test-def5678/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Обратить изменения abc1234" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/git/revert") && init?.method === "POST")).toBe(true));
   });
@@ -740,7 +740,7 @@ describe("OpenCode Studio", () => {
     });
   });
 
-  it("explains when the browser is using an older Studio backend", async () => {
+  it("explains when the browser is using an older Control backend", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       if (String(input).endsWith("/tasks") && init?.method === "POST") return new Response(JSON.stringify({ detail: [{ type: "extra_forbidden", loc: ["body", "cron"], msg: "Extra inputs are not permitted" }, { type: "extra_forbidden", loc: ["body", "timezone"], msg: "Extra inputs are not permitted" }] }), { status: 422, headers: { "Content-Type": "application/json" } });
@@ -754,7 +754,7 @@ describe("OpenCode Studio", () => {
     fireEvent.change(screen.getByPlaceholderText(/Опишите задачу/), { target: { value: "Сформировать отчёт" } });
     fireEvent.change(screen.getByLabelText("Запуск"), { target: { value: "schedule" } });
     fireEvent.click(screen.getByRole("button", { name: "Создать расписание" }));
-    expect(await screen.findByText(/Backend Studio ещё не обновлён/)).toBeInTheDocument();
+    expect(await screen.findByText(/Backend OpenCode Control ещё не обновлён/)).toBeInTheDocument();
   });
 
   it("adds a dropped spreadsheet to a task", async () => {
@@ -808,6 +808,24 @@ describe("OpenCode Studio", () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/tasks/task_1/sessions") && init?.method === "POST")).toBe(true));
   });
 
+  it("migrates legacy Studio browser preferences to Control keys", async () => {
+    window.localStorage.setItem("studio-project", project.id);
+    window.localStorage.setItem("studio-theme", "aura");
+    window.localStorage.setItem(`studio-agent:${project.id}`, "plan");
+    window.localStorage.setItem(`studio-session-selection:${project.id}:ses_1`, JSON.stringify({ agent: "plan", model: "openai/gpt-other" }));
+    window.localStorage.setItem("studio-session-drawer-width", "880");
+
+    render(<App />);
+    await screen.findByText("Центр управления");
+
+    expect(window.localStorage.getItem("control-project")).toBe(project.id);
+    expect(window.localStorage.getItem("control-theme")).toBe("aura");
+    expect(window.localStorage.getItem(`control-agent:${project.id}`)).toBe("plan");
+    expect(window.localStorage.getItem(`control-session-selection:${project.id}:ses_1`)).toBe(JSON.stringify({ agent: "plan", model: "openai/gpt-other" }));
+    expect(window.localStorage.getItem("control-session-drawer-width")).toBe("880");
+    expect(Object.keys(window.localStorage).some((key) => key.startsWith("studio-"))).toBe(false);
+  });
+
   it("selects and persists an OpenCode-style theme", async () => {
     render(<App />);
     await screen.findByText("Центр управления");
@@ -815,7 +833,7 @@ describe("OpenCode Studio", () => {
     fireEvent.change(screen.getByPlaceholderText("Поиск темы"), { target: { value: "aura" } });
     fireEvent.click(screen.getByRole("option", { name: /Aura/ }));
     expect(document.documentElement.dataset.theme).toBe("aura");
-    expect(window.localStorage.getItem("studio-theme")).toBe("aura");
+    expect(window.localStorage.getItem("control-theme")).toBe("aura");
     expect(document.documentElement.style.getPropertyValue("--accent")).toBe("#a277ff");
     expect(document.documentElement.style.getPropertyValue("--bg")).toBe("#15141b");
   });

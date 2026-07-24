@@ -12,15 +12,15 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-import opencode_studio.app as app_module
-from opencode_studio.app import create_app
-from opencode_studio.config import StudioConfig
-from opencode_studio.store import StudioStore
-from opencode_studio.workspace import WorkspaceError, read_text, root_identity, write_text
+import opencode_control.app as app_module
+from opencode_control.app import create_app
+from opencode_control.config import ControlConfig
+from opencode_control.store import ControlStore
+from opencode_control.workspace import WorkspaceError, read_text, root_identity, write_text
 
 
 def _client(tmp_path: Path) -> TestClient:
-    return TestClient(create_app(StudioConfig(data_dir=tmp_path / "data")))
+    return TestClient(create_app(ControlConfig(data_dir=tmp_path / "data")))
 
 
 def _csrf(client: TestClient) -> dict[str, str]:
@@ -37,6 +37,15 @@ def _project(client: TestClient, root: Path, *, endpoint: str | None = None) -> 
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def test_control_branding_and_browser_session_cookie(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        assert client.get("/openapi.json").json()["info"]["title"] == "OpenCode Control"
+        session = client.get("/api/v1/session")
+        assert session.json()["product"] == "OpenCode Control"
+        assert "control_session=" in session.headers["set-cookie"]
+        assert "studio_session=" not in session.headers["set-cookie"]
 
 
 def test_project_registry_requires_csrf_and_stays_local(tmp_path: Path) -> None:
@@ -68,7 +77,7 @@ def test_store_backfills_legacy_task_session_links(tmp_path: Path) -> None:
     root = tmp_path / "project"
     root.mkdir()
     data = tmp_path / "data"
-    store = StudioStore(data)
+    store = ControlStore(data)
     project = store.create_project(name="Project", root=root, endpoint=None)
     task = store.create_task(
         str(project["id"]),
@@ -81,12 +90,12 @@ def test_store_backfills_legacy_task_session_links(tmp_path: Path) -> None:
         str(project["id"]), str(task["id"]), status="completed", session_id="ses_legacy"
     )
     store.close()
-    connection = sqlite3.connect(data / "studio.sqlite")
+    connection = sqlite3.connect(data / "control.sqlite")
     with connection:
         connection.execute("DELETE FROM task_sessions")
     connection.close()
 
-    reopened = StudioStore(data)
+    reopened = ControlStore(data)
     migrated = reopened.get_task(str(project["id"]), str(task["id"]))
     reopened.close()
     assert migrated is not None
@@ -712,7 +721,7 @@ def test_task_launch_uses_dedicated_opencode_session(
         assert failed["error"] == "token limit exhausted"
         runtime_statuses.clear()
 
-        client.app.state.studio.store.update_task(
+        client.app.state.control.store.update_task(
             project_id, response.json()["id"], status="completed"
         )
         rerun = client.post(
@@ -753,7 +762,7 @@ def test_task_launch_uses_dedicated_opencode_session(
         )
         assert follow_up.status_code == 202
         assert calls[-1] == ("mentions", ["explore"])
-        resumed = client.app.state.studio.store.get_task(project_id, response.json()["id"])
+        resumed = client.app.state.control.store.get_task(project_id, response.json()["id"])
         assert resumed is not None
         assert resumed["status"] == "running"
         assert resumed["prompt"] == "@explore Run the tests again"
@@ -766,11 +775,11 @@ def test_task_launch_uses_dedicated_opencode_session(
             json={},
         )
         assert stopped.status_code == 200
-        assert client.app.state.studio.store.get_task(project_id, response.json()["id"])[
+        assert client.app.state.control.store.get_task(project_id, response.json()["id"])[
             "status"
         ] == "aborted"
 
-        client.app.state.studio.store.update_task(
+        client.app.state.control.store.update_task(
             project_id, response.json()["id"], status="completed"
         )
         rerun_updated = client.post(
@@ -797,7 +806,7 @@ def test_task_launch_uses_dedicated_opencode_session(
         )
         assert file_only.status_code == 202
         assert calls[-1][1][-1][0]["mime"] == "application/pdf"
-        after_file = client.app.state.studio.store.get_task(project_id, response.json()["id"])
+        after_file = client.app.state.control.store.get_task(project_id, response.json()["id"])
         assert after_file is not None
         assert after_file["prompt"] == "@explore Run the tests again"
         assert after_file["agent"] == "plan"
@@ -815,11 +824,11 @@ def test_task_launch_uses_dedicated_opencode_session(
 
         snapshot = client.get(f"/api/v1/projects/{project_id}/snapshot").json()
         sessions = {item["id"]: item for item in snapshot["sessions"]}
-        assert sessions["ses_task"]["studio_task"]["title"] == "Review auth"
-        assert sessions["ses_task"]["studio_task"]["status"] == "running"
-        assert sessions["ses_extra"]["studio_task"]["title"] == "Review auth"
-        assert sessions["ses_child"]["studio_task"]["title"] == "Review auth"
-        assert "studio_task" not in sessions["ses_cli"]
+        assert sessions["ses_task"]["control_task"]["title"] == "Review auth"
+        assert sessions["ses_task"]["control_task"]["status"] == "running"
+        assert sessions["ses_extra"]["control_task"]["title"] == "Review auth"
+        assert sessions["ses_child"]["control_task"]["title"] == "Review auth"
+        assert "control_task" not in sessions["ses_cli"]
 
         removed_session = client.delete(
             f"/api/v1/projects/{project_id}/sessions/ses_extra",
@@ -886,7 +895,7 @@ def test_provider_auth_uses_managed_opencode_without_echoing_key(
     monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
     with _client(tmp_path) as client:
         project_id = _project(client, root)["id"]
-        manager = client.app.state.studio.processes
+        manager = client.app.state.control.processes
         monkeypatch.setattr(
             manager,
             "connection",
@@ -1043,7 +1052,7 @@ def test_scheduled_task_uses_a_fresh_session_by_default(
 
     monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
     client = _client(tmp_path)
-    store = client.app.state.studio.store
+    store = client.app.state.control.store
     project = store.create_project(
         name="Scheduled project",
         root=root,
@@ -1163,7 +1172,7 @@ def test_git_status_diff_and_commit_are_scoped_to_project(tmp_path: Path) -> Non
         )
         assert reset.status_code == 200
         assert reset.json()["reset"] is True
-        assert reset.json()["backup_branch"].startswith("studio-backup/")
+        assert reset.json()["backup_branch"].startswith("control-backup/")
         assert tracked.read_text() == "after\n"
         assert (root / "new.txt").read_text() == "new\n"
 
@@ -1189,7 +1198,7 @@ def test_skill_save_restarts_running_managed_server(
     root.mkdir()
     with _client(tmp_path) as client:
         project_id = _project(client, root)["id"]
-        manager = client.app.state.studio.processes
+        manager = client.app.state.control.processes
         restarted: list[str] = []
         monkeypatch.setattr(
             manager,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from opencode_studio.workspace import (
+from opencode_control.workspace import (
     WorkspaceRoot,
     delete_file,
     ensure_directory,

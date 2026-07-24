@@ -13,8 +13,10 @@ web/dist/
 web/*.tsbuildinfo
 web/vite.config.js
 web/vite.config.d.ts
-src/opencode_studio/static/*
-!src/opencode_studio/static/.gitkeep
+src/opencode_control/static/*
+!src/opencode_control/static/.gitkeep
+src/opencode_studio/static/
+.opencode-control/
 .opencode-studio/
 AGENTS.md
 opencode.json

@@ -6,9 +6,9 @@ from typing import Any
 
 import pytest
 
-import opencode_studio.processes as process_module
-from opencode_studio.processes import OpenCodeProcessManager
-from opencode_studio.workspace import root_identity
+import opencode_control.processes as process_module
+from opencode_control.processes import OpenCodeProcessManager
+from opencode_control.workspace import root_identity
 
 
 def test_concurrent_start_owns_only_one_process(

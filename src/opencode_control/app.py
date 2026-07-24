@@ -21,8 +21,8 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from opencode_studio.config import StudioConfig
-from opencode_studio.git_workspace import (
+from opencode_control.config import ControlConfig
+from opencode_control.git_workspace import (
     GitError,
     git_commit,
     git_diff,
@@ -32,11 +32,11 @@ from opencode_studio.git_workspace import (
     git_state,
     git_unstage,
 )
-from opencode_studio.opencode_client import OpenCodeClient, OpenCodeError
-from opencode_studio.processes import OpenCodeProcessManager, ProcessError
-from opencode_studio.secret_store import list_secrets, remove_secret, save_secret
-from opencode_studio.store import StudioStore
-from opencode_studio.workspace import (
+from opencode_control.opencode_client import OpenCodeClient, OpenCodeError
+from opencode_control.processes import OpenCodeProcessManager, ProcessError
+from opencode_control.secret_store import list_secrets, remove_secret, save_secret
+from opencode_control.store import ControlStore
+from opencode_control.workspace import (
     WorkspaceError,
     WorkspaceRoot,
     config_target,
@@ -297,10 +297,10 @@ class GitCommitTarget(StrictModel):
     commit: str = Field(pattern=r"^[0-9a-fA-F]{7,64}$")
 
 
-class StudioState:
-    def __init__(self, config: StudioConfig) -> None:
+class ControlState:
+    def __init__(self, config: ControlConfig) -> None:
         self.config = config
-        self.store = StudioStore(config.data_dir)
+        self.store = ControlStore(config.data_dir)
         self.processes = OpenCodeProcessManager(
             binary=config.opencode_binary,
             data_dir=config.data_dir,
@@ -316,8 +316,8 @@ def csrf_guard(
     request: Request,
     x_csrf_token: Annotated[str | None, Header()] = None,
 ) -> None:
-    state = cast(StudioState, request.app.state.studio)
-    session_id = request.cookies.get("studio_session")
+    state = cast(ControlState, request.app.state.control)
+    session_id = request.cookies.get("control_session")
     expected = state.browser_sessions.get(session_id or "")
     if expected is None or not secrets.compare_digest(expected, x_csrf_token or ""):
         raise HTTPException(status_code=403, detail="invalid browser session or CSRF token")
@@ -368,9 +368,9 @@ def _global_mcp_target(
     return relative, config
 
 
-def create_app(config: StudioConfig | None = None) -> FastAPI:
-    studio_config = config or StudioConfig.from_environment()
-    state = StudioState(studio_config)
+def create_app(config: ControlConfig | None = None) -> FastAPI:
+    control_config = config or ControlConfig.from_environment()
+    state = ControlState(control_config)
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -383,8 +383,8 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
                 await scheduler
             state.close()
 
-    app = FastAPI(title="OpenCode Studio", version="0.1.0", lifespan=lifespan)
-    app.state.studio = state
+    app = FastAPI(title="OpenCode Control", version="0.1.0", lifespan=lifespan)
+    app.state.control = state
 
     @app.middleware("http")
     async def local_boundary(request: Request, call_next: Any) -> Response:
@@ -393,7 +393,7 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
         server = request.scope.get("server")
         server_host = str(server[0]) if isinstance(server, (list, tuple)) and server else ""
         if not _local_host(host) or not _local_host(client_host) or not _local_host(server_host):
-            return JSONResponse({"detail": "OpenCode Studio is loopback-only"}, status_code=400)
+            return JSONResponse({"detail": "OpenCode Control is loopback-only"}, status_code=400)
         origin = request.headers.get("origin")
         if origin:
             parsed = urllib.parse.urlsplit(origin)
@@ -676,21 +676,21 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
 
     @app.get("/api/v1/session")
     def browser_session(request: Request, response: Response) -> dict[str, str]:
-        session_id = request.cookies.get("studio_session")
+        session_id = request.cookies.get("control_session")
         if session_id not in state.browser_sessions:
             if len(state.browser_sessions) >= 256:
                 state.browser_sessions.pop(next(iter(state.browser_sessions)))
             session_id = secrets.token_urlsafe(24)
             state.browser_sessions[session_id] = secrets.token_urlsafe(32)
         response.set_cookie(
-            "studio_session",
+            "control_session",
             session_id,
             httponly=True,
             samesite="strict",
             secure=False,
             path="/",
         )
-        return {"csrf_token": state.browser_sessions[session_id], "product": "OpenCode Studio"}
+        return {"csrf_token": state.browser_sessions[session_id], "product": "OpenCode Control"}
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
@@ -793,7 +793,7 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
         if project.get("endpoint"):
             raise HTTPException(
                 status_code=409,
-                detail="external OpenCode server must be restarted outside Studio",
+                detail="external OpenCode server must be restarted outside Control",
             )
         workspace = workspace_for(project)
         validate_root(workspace)
@@ -850,7 +850,7 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
                     visited.add(current_id)
                     task = linked.get(current_id)
                     if task:
-                        session["studio_task"] = task
+                        session["control_task"] = task
                         break
                     parent_id = current.get("parentID")
                     current = by_id.get(str(parent_id)) if parent_id else None
@@ -1726,7 +1726,7 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
         if not index.exists():
             return JSONResponse(
                 {
-                    "product": "OpenCode Studio",
+                    "product": "OpenCode Control",
                     "detail": "Frontend bundle is missing. Run npm run build --prefix web.",
                 }
             )

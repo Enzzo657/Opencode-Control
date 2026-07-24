@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "opencode-studio"
+name = "opencode-control"
 version = "0.1.0"
 description = "Local-first control plane for OpenCode projects, agents, sessions, MCP servers and skills"
 readme = "README.md"
@@ -26,10 +26,14 @@ dev = [
 ]
 
 [project.scripts]
-opencode-studio = "opencode_studio.cli:main"
+opencode-control = "opencode_control.cli:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/opencode_studio"]
+packages = ["src/opencode_control"]
+artifacts = ["src/opencode_control/static/**"]
+
+[tool.hatch.build.targets.sdist]
+artifacts = ["src/opencode_control/static/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
