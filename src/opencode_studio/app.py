@@ -34,6 +34,7 @@ from opencode_studio.git_workspace import (
 )
 from opencode_studio.opencode_client import OpenCodeClient, OpenCodeError
 from opencode_studio.processes import OpenCodeProcessManager, ProcessError
+from opencode_studio.secret_store import list_secrets, remove_secret, save_secret
 from opencode_studio.store import StudioStore
 from opencode_studio.workspace import (
     WorkspaceError,
@@ -50,6 +51,7 @@ from opencode_studio.workspace import (
     read_external_text,
     read_jsonc_config,
     read_text,
+    redact_for_browser,
     resolve_project_root,
     root_identity,
     validate_item_id,
@@ -258,6 +260,10 @@ class ProviderConfigWrite(StrictModel):
         ):
             raise ValueError("provider model ID is invalid")
         return self
+
+
+class SecretWrite(StrictModel):
+    value: str = Field(min_length=1, max_length=65_536)
 
 
 class PermissionReply(StrictModel):
@@ -696,6 +702,19 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
             _project_view(item, state.processes.status(str(item["id"])))
             for item in state.store.list_projects()
         ]
+
+    @app.get("/api/v1/secrets")
+    def secrets_catalog() -> list[dict[str, Any]]:
+        return list_secrets()
+
+    @app.put("/api/v1/secrets/{name}")
+    def put_secret(name: str, payload: SecretWrite, guard: WriteGuard) -> dict[str, Any]:
+        return save_secret(name, payload.value)
+
+    @app.delete("/api/v1/secrets/{name}", status_code=204)
+    def delete_secret(name: str, guard: WriteGuard) -> Response:
+        remove_secret(name)
+        return Response(status_code=204)
 
     @app.post("/api/v1/projects", status_code=201)
     def add_project(payload: ProjectCreate, guard: WriteGuard) -> dict[str, Any]:
@@ -1508,9 +1527,9 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
         project_value = read_jsonc_config(project_root, project_relative)
         global_value = global_configs.get(global_relative, {})
         return {
-            "project": project_value,
+            "project": redact_for_browser(project_value),
             "project_path": str(project_root.path / project_relative),
-            "global": global_value,
+            "global": redact_for_browser(global_value),
             "global_path": str(global_root.path / global_relative),
         }
 
@@ -1539,7 +1558,7 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
         return {
             "scope": payload.scope,
             "path": str(root.path / relative),
-            "values": config_value,
+            "values": redact_for_browser(config_value),
             "restarted": restarted,
         }
 
@@ -1548,13 +1567,13 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
         project = project_or_404(project_id)
         config_value = read_config(workspace_for(project))
         mcp = config_value.get("mcp", {})
-        return cast(dict[str, Any], mcp) if isinstance(mcp, dict) else {}
+        return cast(dict[str, Any], redact_for_browser(mcp)) if isinstance(mcp, dict) else {}
 
     @app.get("/api/v1/projects/{project_id}/mcp/global")
     def global_mcp_configuration(project_id: str) -> dict[str, Any]:
         project_or_404(project_id)
         _, configs = _global_opencode_configs()
-        return _merged_global_mcp(configs)
+        return cast(dict[str, Any], redact_for_browser(_merged_global_mcp(configs)))
 
     @app.get("/api/v1/projects/{project_id}/mcp/effective")
     def effective_mcp_configuration(project_id: str) -> dict[str, Any]:
@@ -1562,7 +1581,7 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
         if not isinstance(config_value, dict):
             return {}
         mcp = config_value.get("mcp", {})
-        return cast(dict[str, Any], mcp) if isinstance(mcp, dict) else {}
+        return cast(dict[str, Any], redact_for_browser(mcp)) if isinstance(mcp, dict) else {}
 
     @app.put("/api/v1/projects/{project_id}/mcp/{name}")
     def save_mcp(
@@ -1588,7 +1607,11 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
             write_json_config(root, relative, config_value)
         else:
             write_config(root, config_value)
-        return {"name": item_id, "scope": payload.scope, "config": mcp[item_id]}
+        return {
+            "name": item_id,
+            "scope": payload.scope,
+            "config": redact_for_browser(mcp[item_id]),
+        }
 
     @app.patch("/api/v1/projects/{project_id}/mcp/{name}/enabled")
     def set_mcp_enabled(

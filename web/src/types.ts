@@ -76,6 +76,12 @@ export type Attachment = {
   data_url: string;
 };
 
+export type SecretInfo = {
+  name: string;
+  path: string;
+  reference: string;
+};
+
 export type ProviderAuthPrompt = {
   type: "text" | "select";
   key: string;

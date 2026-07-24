@@ -155,12 +155,11 @@ def test_workspace_configuration_surfaces(tmp_path: Path) -> None:
             },
         )
         assert mcp.status_code == 200
-        assert mcp.json()["config"]["headers"]["Authorization"] == "secret-value"
-        assert (
-            mcp.json()["config"]["env"]["GITHUB_PAT"]
-            == "github_pat_abcdefghijklmnopqrstuvwxyz"
-        )
-        assert mcp.json()["config"]["command"][-1] == "command-secret-value"
+        assert mcp.json()["config"]["headers"]["Authorization"] == "[REDACTED]"
+        assert mcp.json()["config"]["env"]["GITHUB_PAT"] == "[REDACTED]"
+        assert mcp.json()["config"]["command"][-1] == "[REDACTED]"
+        assert "secret-value" not in mcp.text
+        assert "github_pat_" not in mcp.text
         persisted = json.loads((root / "opencode.json").read_text())
         assert persisted["mcp"]["github"]["headers"]["Authorization"] == "secret-value"
         assert persisted["mcp"]["github"]["command"][-1] == "command-secret-value"
@@ -168,7 +167,10 @@ def test_workspace_configuration_surfaces(tmp_path: Path) -> None:
         config_payload = client.get(f"/api/v1/projects/{project_id}/configuration").json()
         config = config_payload["project"]
         assert config_payload["project_path"] == str(root / "opencode.json")
-        assert config["mcp"]["github"]["headers"]["Authorization"] == "secret-value"
+        assert config["mcp"]["github"]["headers"]["Authorization"] == "[REDACTED]"
+        assert config["mcp"]["github"]["env"]["GITHUB_PAT"] == "[REDACTED]"
+        assert config["mcp"]["github"]["command"][-1] == "[REDACTED]"
+        assert "secret-value" not in json.dumps(config_payload)
 
         ollama = client.put(
             f"/api/v1/projects/{project_id}/providers/ollama/configuration",
@@ -201,6 +203,10 @@ def test_workspace_configuration_surfaces(tmp_path: Path) -> None:
         assert round_trip.status_code == 200
         persisted = json.loads((root / "opencode.json").read_text())
         assert persisted["mcp"]["github"]["headers"]["Authorization"] == "secret-value"
+        assert persisted["mcp"]["github"]["env"]["GITHUB_PAT"] == (
+            "github_pat_abcdefghijklmnopqrstuvwxyz"
+        )
+        assert persisted["mcp"]["github"]["command"][-1] == "command-secret-value"
 
 
 def test_global_agents_and_skills_use_global_scope(
@@ -274,18 +280,20 @@ def test_project_and_global_jsonc_are_editable_without_losing_secrets(
         loaded = client.get(f"/api/v1/projects/{project_id}/configuration")
         assert loaded.status_code == 200
         assert loaded.json() == {
-            "project": {"model": "openai/project", "apiKey": "project-secret"},
+            "project": {"model": "openai/project", "apiKey": "[REDACTED]"},
             "project_path": str(project_path),
-            "global": {"model": "openai/global", "apiKey": "global-secret"},
+            "global": {"model": "openai/global", "apiKey": "[REDACTED]"},
             "global_path": str(global_path),
         }
+        assert "project-secret" not in loaded.text
+        assert "global-secret" not in loaded.text
 
         saved_project = client.patch(
             f"/api/v1/projects/{project_id}/configuration",
             headers=headers,
             json={
                 "scope": "project",
-                "values": {"model": "openai/new-project", "apiKey": "project-secret"},
+                "values": {"model": "openai/new-project", "apiKey": "[REDACTED]"},
             },
         )
         assert saved_project.status_code == 200
@@ -300,7 +308,7 @@ def test_project_and_global_jsonc_are_editable_without_losing_secrets(
             headers=headers,
             json={
                 "scope": "global",
-                "values": {"model": "openai/new-global", "apiKey": "global-secret"},
+                "values": {"model": "openai/new-global", "apiKey": "[REDACTED]"},
             },
         )
         assert saved_global.status_code == 200
@@ -309,6 +317,118 @@ def test_project_and_global_jsonc_are_editable_without_losing_secrets(
             "model": "openai/new-global",
             "apiKey": "global-secret",
         }
+
+
+def test_secret_manager_writes_private_files_without_returning_values(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+
+    with _client(tmp_path) as client:
+        headers = _csrf(client)
+        assert client.get("/api/v1/secrets").json() == []
+
+        rejected = client.put(
+            "/api/v1/secrets/context7_api_key",
+            json={"value": "ctx7-secret"},
+        )
+        assert rejected.status_code == 403
+
+        saved = client.put(
+            "/api/v1/secrets/context7_api_key",
+            headers=headers,
+            json={"value": "ctx7-secret"},
+        )
+        assert saved.status_code == 200
+        assert saved.json() == {
+            "name": "context7_api_key",
+            "path": str(home / ".config/opencode/secrets/context7_api_key"),
+            "reference": "{file:~/.config/opencode/secrets/context7_api_key}",
+        }
+        assert "ctx7-secret" not in saved.text
+
+        secret_path = home / ".config/opencode/secrets/context7_api_key"
+        assert secret_path.read_text() == "ctx7-secret"
+        assert secret_path.stat().st_mode & 0o777 == 0o600
+        assert secret_path.parent.stat().st_mode & 0o777 == 0o700
+
+        listed = client.get("/api/v1/secrets")
+        assert listed.status_code == 200
+        assert listed.json() == [saved.json()]
+        assert "ctx7-secret" not in listed.text
+
+        replaced = client.put(
+            "/api/v1/secrets/context7_api_key",
+            headers=headers,
+            json={"value": "new-secret"},
+        )
+        assert replaced.status_code == 200
+        assert secret_path.read_text() == "new-secret"
+        assert "new-secret" not in replaced.text
+
+        unsafe = client.put(
+            "/api/v1/secrets/..%2Fescape",
+            headers=headers,
+            json={"value": "unsafe"},
+        )
+        assert unsafe.status_code in {400, 404, 405}
+        assert not (home / ".config/opencode/escape").exists()
+
+        outside = tmp_path / "outside-secret"
+        outside.write_text("outside")
+        linked = secret_path.parent / "linked_secret"
+        linked.symlink_to(outside)
+        assert all(item["name"] != "linked_secret" for item in client.get("/api/v1/secrets").json())
+        rejected_link = client.put(
+            "/api/v1/secrets/linked_secret",
+            headers=headers,
+            json={"value": "replacement"},
+        )
+        assert rejected_link.status_code == 400
+        assert outside.read_text() == "outside"
+
+        removed = client.delete("/api/v1/secrets/context7_api_key", headers=headers)
+        assert removed.status_code == 204
+        assert not secret_path.exists()
+
+
+def test_configuration_references_stay_visible_while_literal_secrets_are_redacted(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    (home / ".config/opencode").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "opencode.json").write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "safe-file": {
+                        "options": {
+                            "apiKey": "{file:~/.config/opencode/secrets/provider_key}"
+                        }
+                    },
+                    "safe-env": {"options": {"apiKey": "{env:PROVIDER_API_KEY}"}},
+                    "literal": {"options": {"apiKey": "literal-provider-secret"}},
+                }
+            }
+        )
+    )
+
+    with _client(tmp_path) as client:
+        project_id = _project(client, root)["id"]
+        response = client.get(f"/api/v1/projects/{project_id}/configuration")
+        assert response.status_code == 200
+        providers = response.json()["project"]["provider"]
+        assert providers["safe-file"]["options"]["apiKey"] == (
+            "{file:~/.config/opencode/secrets/provider_key}"
+        )
+        assert providers["safe-env"]["options"]["apiKey"] == "{env:PROVIDER_API_KEY}"
+        assert providers["literal"]["options"]["apiKey"] == "[REDACTED]"
+        assert "literal-provider-secret" not in response.text
 
 
 def test_mcp_enabled_updates_preserve_global_and_project_definitions(

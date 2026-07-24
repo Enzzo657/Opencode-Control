@@ -9,6 +9,7 @@ import {
   CircleHelp,
   CircleDollarSign,
   CircleStop,
+  Copy,
   Cpu,
   File,
   FileCode2,
@@ -43,7 +44,7 @@ import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { api, jsonBody } from "./api";
-import type { Agent, Attachment, GitState, Project, ProviderAuthEntry, ProviderSummary, RuntimeConfig, Session, Snapshot, Task, WorkspaceItem } from "./types";
+import type { Agent, Attachment, GitState, Project, ProviderAuthEntry, ProviderSummary, RuntimeConfig, SecretInfo, Session, Snapshot, Task, WorkspaceItem } from "./types";
 
 type View =
   | "overview"
@@ -52,6 +53,7 @@ type View =
   | "agents"
   | "skills"
   | "providers"
+  | "secrets"
   | "mcp"
   | "instructions"
   | "settings";
@@ -71,6 +73,7 @@ const nav: Array<{ group: string; items: Array<{ id: View; label: string; icon: 
       { id: "agents", label: "Агенты", icon: Bot },
       { id: "skills", label: "Навыки", icon: Sparkles },
       { id: "providers", label: "Провайдеры", icon: Plug },
+      { id: "secrets", label: "Секреты", icon: KeyRound },
       { id: "mcp", label: "MCP-серверы", icon: Network },
       { id: "instructions", label: "AGENTS.md", icon: FileCode2 },
       { id: "settings", label: "Настройки проекта", icon: Settings },
@@ -273,6 +276,7 @@ function ViewContent({ view, project, refreshKey, onProjectChange, navigate }: {
   if (view === "agents") return <MarkdownCollection project={project} kind="agents" refreshKey={refreshKey} />;
   if (view === "skills") return <MarkdownCollection project={project} kind="skills" />;
   if (view === "providers") return <Providers project={project} refreshKey={refreshKey} />;
+  if (view === "secrets") return <SecretsManager />;
   if (view === "mcp") return <Mcp project={project} refreshKey={refreshKey} />;
   if (view === "instructions") return <Instructions project={project} />;
   return <ProjectSettings project={project} onChange={onProjectChange} />;
@@ -490,6 +494,71 @@ function MarkdownCollection({ project, kind, refreshKey = 0 }: { project: Projec
       {inspecting && <AgentInfo item={inspecting} onClose={() => setInspecting(null)} />}
     </Page>
   );
+}
+
+function SecretsManager() {
+  const resource = useResource<SecretInfo[]>("/api/v1/secrets", 0);
+  const [selected, setSelected] = useState<SecretInfo | "new" | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  async function copyReference(secret: SecretInfo) {
+    try {
+      if (!navigator.clipboard) throw new Error("Clipboard API недоступен");
+      await navigator.clipboard.writeText(secret.reference);
+      setCopied(secret.name);
+      window.setTimeout(() => setCopied((current) => current === secret.name ? null : current), 1800);
+    } catch (reason) { setError(message(reason)); }
+  }
+  async function remove(secret: SecretInfo) {
+    if (!confirm(`Удалить secret «${secret.name}»? Конфигурации со ссылкой на него перестанут работать.`)) return;
+    try {
+      await api(`/api/v1/secrets/${encodeURIComponent(secret.name)}`, { method: "DELETE" });
+      setError(null);
+      resource.reload();
+    } catch (reason) { setError(message(reason)); }
+  }
+  return <Page title="Секреты" description="Единое локальное хранилище API-ключей и других чувствительных данных для всех проектов OpenCode." action={<button className="primary-button" onClick={() => setSelected("new")}><Plus size={15} /> Добавить secret</button>}>
+    {(error || resource.error) && <Banner tone="danger">{error || resource.error}</Banner>}
+    <Banner tone="notice">Чтобы изменить secret, задайте новое значение. Используйте скопированный секрет формата <code>{`{file:~/.config/opencode/secrets/...}`}</code> в <code>opencode.json(c)</code> через CLI или в разделе «Настройки проекта».</Banner>
+    <ScopeGuide><strong>Общее хранилище</strong><span>Действует для всех проектов</span><code>~/.config/opencode/secrets/</code></ScopeGuide>
+    <Panel className="secret-panel">
+      <div className="secret-list">
+        {(resource.data ?? []).map((secret) => <article className="secret-row" key={secret.name}>
+          <span className="secret-icon"><KeyRound size={17} /></span>
+          <span className="secret-identity"><strong>{secret.name}</strong><small>{secret.path}</small></span>
+          <code className="secret-mask">••••••••••••</code>
+          <code className="secret-reference">{secret.reference}</code>
+          <span className="secret-actions"><button className="secondary-button compact-button" onClick={() => void copyReference(secret)}><Copy size={13} /> {copied === secret.name ? "Скопировано" : "Reference"}</button><button className="secondary-button compact-button" onClick={() => setSelected(secret)}>Заменить</button><button className="icon-button" aria-label={`Удалить ${secret.name}`} title={`Удалить ${secret.name}`} onClick={() => void remove(secret)}><Trash2 size={14} /></button></span>
+        </article>)}
+        {resource.data?.length === 0 && <Empty icon={<KeyRound />} title="Секретов пока нет" detail="Добавьте API-ключ, затем скопируйте безопасную ссылку в конфигурацию provider или MCP." />}
+      </div>
+    </Panel>
+    {selected && <SecretDialog existing={selected === "new" ? null : selected} onClose={() => setSelected(null)} onSaved={() => { setSelected(null); resource.reload(); }} />}
+  </Page>;
+}
+
+function SecretDialog({ existing, onClose, onSaved }: { existing: SecretInfo | null; onClose: () => void; onSaved: () => void }) {
+  const [name, setName] = useState(existing?.name ?? "");
+  const [value, setValue] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      await api(`/api/v1/secrets/${encodeURIComponent(name)}`, { method: "PUT", ...jsonBody({ value }) });
+      onSaved();
+    } catch (reason) { setError(message(reason)); setBusy(false); }
+  }
+  return <Modal title={existing ? `Заменить ${existing.name}` : "Добавить secret"} subtitle="Значение записывается локально и больше не показывается в Studio." onClose={onClose}>
+    {error && <Banner tone="danger">{error}</Banner>}
+    <form className="form-stack" onSubmit={(event) => void submit(event)}>
+      <Field label="Имя файла" hint="1–64 символа: a-z, 0-9, дефис или подчеркивание."><input className="mono" value={name} onChange={(event) => setName(event.target.value.toLowerCase())} disabled={Boolean(existing)} required pattern="[a-z0-9][a-z0-9_-]{0,63}" maxLength={64} placeholder="context7_api_key" /></Field>
+      <Field label={existing ? "Новое значение" : "Значение"} hint="Старое значение нельзя посмотреть. Studio не добавляет перевод строки в конец файла."><input type="password" autoComplete="new-password" value={value} onChange={(event) => setValue(event.target.value)} required maxLength={65_536} placeholder="Вставьте API-ключ" /></Field>
+      <Banner tone="notice">После сохранения используйте <code>{`{file:~/.config/opencode/secrets/${name || "имя"}}`}</code>.</Banner>
+      <div className="modal-actions"><button type="button" className="secondary-button" onClick={onClose}>Отмена</button><button className="primary-button" disabled={busy || !name || !value}>{busy ? "Сохранение…" : existing ? "Заменить значение" : "Сохранить secret"}</button></div>
+    </form>
+  </Modal>;
 }
 
 function Providers({ project, refreshKey }: { project: Project; refreshKey: number }) {

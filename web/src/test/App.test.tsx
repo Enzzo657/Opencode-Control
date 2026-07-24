@@ -97,6 +97,37 @@ describe("OpenCode Studio", () => {
     });
   });
 
+  it("manages file-backed secrets without receiving their values", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/api/v1/projects")) return response([project]);
+      if (path.includes("/snapshot")) return response({ state: "stopped", errors: [], sessions: [], statuses: {}, agents: [], mcp: {}, providers: { connected: [], available: [] }, server: project.server });
+      if (path.endsWith("/api/v1/secrets") && (!init?.method || init.method === "GET")) return response([{ name: "context7_api_key", path: "/home/dev/.config/opencode/secrets/context7_api_key", reference: "{file:~/.config/opencode/secrets/context7_api_key}" }]);
+      if (path.endsWith("/api/v1/secrets/github_token") && init?.method === "PUT") return response({ name: "github_token", path: "/home/dev/.config/opencode/secrets/github_token", reference: "{file:~/.config/opencode/secrets/github_token}" });
+      if (path.endsWith("/api/v1/session")) return response({ csrf_token: "csrf" });
+      return response({});
+    }));
+
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Секреты" }));
+    expect(await screen.findByText("context7_api_key")).toBeInTheDocument();
+    expect(screen.getByText("{file:~/.config/opencode/secrets/context7_api_key}")).toBeInTheDocument();
+    expect(screen.queryByText("ctx7-secret")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Добавить secret" }));
+    fireEvent.change(screen.getByPlaceholderText("context7_api_key"), { target: { value: "github_token" } });
+    fireEvent.change(screen.getByPlaceholderText("Вставьте API-ключ"), { target: { value: "github-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить secret" }));
+
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/api/v1/secrets/github_token") && init?.method === "PUT");
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ value: "github-secret" });
+      expect(new Headers(call?.[1]?.headers).get("X-CSRF-Token")).toBe("csrf");
+    });
+    expect(screen.queryByText("github-secret")).not.toBeInTheDocument();
+  });
+
   it("shows consistent AGENTS.md status and themed save actions", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);

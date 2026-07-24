@@ -14,6 +14,31 @@ from typing import Any
 
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _MAX_TEXT = 2 * 1024 * 1024
+_CONFIG_REFERENCE = re.compile(r"^\{(?:env|file):[^{}]+\}$")
+_SECRET_MARKERS = (
+    "apikey",
+    "authorization",
+    "clientsecret",
+    "credential",
+    "password",
+    "privatekey",
+    "secret",
+    "token",
+)
+_SECRET_CONTAINER_NAMES = {"env", "environment", "headers"}
+_SECRET_CONTAINER_WORDS = {
+    "auth",
+    "authorization",
+    "credential",
+    "credentials",
+    "key",
+    "pass",
+    "password",
+    "pat",
+    "secret",
+    "token",
+}
+_REDACTED = "[REDACTED]"
 
 
 class WorkspaceError(ValueError):
@@ -176,6 +201,38 @@ def delete_empty_directory(root: WorkspaceRoot, relative: Path) -> None:
         if error.errno in {errno.ENOTEMPTY, errno.EEXIST}:
             return
         raise WorkspaceError("workspace directory is unavailable or unsafe") from error
+
+
+def ensure_directory(root: WorkspaceRoot, relative: Path) -> None:
+    _validate_relative(relative)
+    try:
+        with _open_parent(root, relative, create=True) as descriptor:
+            os.fchmod(descriptor, 0o700)
+    except OSError as error:
+        raise WorkspaceError("workspace directory is unavailable or unsafe") from error
+
+
+def list_regular_files(root: WorkspaceRoot, directory: Path) -> list[str]:
+    _validate_relative(directory)
+    try:
+        context = _open_parent(root, directory, create=False)
+        base_fd = context.__enter__()
+    except FileNotFoundError:
+        return []
+    except OSError as error:
+        raise WorkspaceError("workspace collection is unavailable or unsafe") from error
+    try:
+        result: list[str] = []
+        for candidate in os.listdir(base_fd):
+            try:
+                info = os.stat(candidate, dir_fd=base_fd, follow_symlinks=False)
+            except OSError:
+                continue
+            if stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                result.append(candidate)
+        return sorted(result)
+    finally:
+        context.__exit__(None, None, None)
 
 
 def list_markdown(
@@ -422,7 +479,7 @@ def _strip_jsonc_comments(raw: str) -> str:
 
 
 def preserve_redacted(current: Any, proposed: Any) -> Any:
-    if proposed == "[REDACTED]":
+    if proposed == _REDACTED:
         return current
     if isinstance(current, dict) and isinstance(proposed, dict):
         return {
@@ -435,6 +492,70 @@ def preserve_redacted(current: Any, proposed: Any) -> Any:
             for index, value in enumerate(proposed)
         ]
     return proposed
+
+
+def redact_for_browser(value: Any, key: str | None = None, parent: str | None = None) -> Any:
+    if isinstance(value, dict):
+        return {
+            item_key: redact_for_browser(item, str(item_key), key)
+            for item_key, item in value.items()
+        }
+    if isinstance(value, list):
+        if _normalized(key) == "command":
+            return _redact_command(value)
+        return [redact_for_browser(item, key, parent) for item in value]
+    if not isinstance(value, str) or value == _REDACTED or _CONFIG_REFERENCE.fullmatch(value):
+        return value
+    return _REDACTED if _secret_key(key, parent) else value
+
+
+def _redact_command(value: list[Any]) -> list[Any]:
+    result: list[Any] = []
+    redact_next = False
+    for item in value:
+        if not isinstance(item, str):
+            result.append(redact_for_browser(item))
+            redact_next = False
+            continue
+        if redact_next:
+            result.append(item if _CONFIG_REFERENCE.fullmatch(item) else _REDACTED)
+            redact_next = False
+            continue
+        flag, separator, flag_value = item.partition("=")
+        if _secret_cli_flag(flag):
+            if separator:
+                safe_value = flag_value if _CONFIG_REFERENCE.fullmatch(flag_value) else _REDACTED
+                result.append(f"{flag}={safe_value}")
+            else:
+                result.append(item)
+                redact_next = True
+            continue
+        result.append(item)
+    return result
+
+
+def _secret_cli_flag(value: str) -> bool:
+    if not value.startswith("-"):
+        return False
+    normalized = _normalized(value)
+    return any(marker in normalized for marker in _SECRET_MARKERS) or normalized in {
+        "key",
+        "pat",
+    }
+
+
+def _secret_key(key: str | None, parent: str | None) -> bool:
+    normalized = _normalized(key)
+    if any(marker in normalized for marker in _SECRET_MARKERS):
+        return True
+    if _normalized(parent) not in _SECRET_CONTAINER_NAMES:
+        return False
+    words = {word for word in re.split(r"[^a-z0-9]+", (key or "").lower()) if word}
+    return bool(words & _SECRET_CONTAINER_WORDS)
+
+
+def _normalized(value: str | None) -> str:
+    return re.sub(r"[^a-z0-9]", "", (value or "").lower())
 
 
 def _validate_relative(relative: Path) -> None:
