@@ -506,8 +506,19 @@ def test_mcp_enabled_updates_preserve_global_and_project_definitions(
             json={"scope": "project", "enabled": False},
         )
         assert project_override.status_code == 200
+        assert project_override.json()["inherited"] is False
         persisted_project = json.loads((root / "opencode.json").read_text())
         assert persisted_project["mcp"]["docs"] == {"enabled": False}
+
+        restored_inheritance = client.patch(
+            f"/api/v1/projects/{project_id}/mcp/docs/enabled",
+            headers=headers,
+            json={"scope": "project", "enabled": True},
+        )
+        assert restored_inheritance.status_code == 200
+        assert restored_inheritance.json()["inherited"] is True
+        persisted_project = json.loads((root / "opencode.json").read_text())
+        assert "docs" not in persisted_project["mcp"]
 
 
 def test_workspace_rejects_invalid_ids_and_symlink_targets(tmp_path: Path) -> None:

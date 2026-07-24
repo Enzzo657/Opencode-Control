@@ -624,6 +624,7 @@ describe("OpenCode Studio", () => {
     await screen.findByText("Центр управления");
     fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
     fireEvent.click((await screen.findByRole("heading", { name: "context7" })).closest("button")!);
+    fireEvent.change(screen.getByLabelText("Где действует настройка"), { target: { value: "project" } });
     fireEvent.click(screen.getByRole("button", { name: "Выключить для проекта" }));
 
     await waitFor(() => {
@@ -638,6 +639,8 @@ describe("OpenCode Studio", () => {
     await screen.findByText("Центр управления");
     fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
     fireEvent.click((await screen.findByRole("heading", { name: "context7" })).closest("button")!);
+    expect(screen.getAllByText("Сейчас в OpenCode").length).toBeGreaterThan(0);
+    expect(screen.queryByRole("button", { name: "Отключить сейчас" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Выключить для всех" }));
 
     await waitFor(() => {
@@ -653,7 +656,7 @@ describe("OpenCode Studio", () => {
     await screen.findByText("Центр управления");
     fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
     const runtimeOnly = (await screen.findByRole("heading", { name: "xlsx" })).closest("button")!;
-    expect(runtimeOnly).toHaveTextContent("Обнаружен в Runtime OpenCode");
+    expect(runtimeOnly).toHaveTextContent("Обнаружен только в запущенном OpenCode");
     expect(runtimeOnly).toHaveTextContent("Нет сохраненной настройки");
     expect(runtimeOnly).not.toHaveTextContent("Включен в настройках");
   });

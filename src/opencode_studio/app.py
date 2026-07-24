@@ -1635,19 +1635,47 @@ def create_app(config: StudioConfig | None = None) -> FastAPI:
         if not isinstance(mcp, dict):
             raise WorkspaceError("OpenCode config mcp section must be an object")
         current = mcp.get(item_id)
+        inherited = False
+        global_entry: dict[str, Any] | None = None
         if payload.scope == "project" and current is None:
             _, global_configs = _global_opencode_configs()
-            if item_id not in _merged_global_mcp(global_configs):
+            candidate = _merged_global_mcp(global_configs).get(item_id)
+            if not isinstance(candidate, dict):
                 raise HTTPException(status_code=404, detail="MCP server not found")
+            global_entry = candidate
             current = {}
         if not isinstance(current, dict):
             raise WorkspaceError("MCP server config must be an object")
-        mcp[item_id] = {**current, "enabled": payload.enabled}
+        if payload.scope == "project":
+            if global_entry is None:
+                _, global_configs = _global_opencode_configs()
+                candidate = _merged_global_mcp(global_configs).get(item_id)
+                global_entry = candidate if isinstance(candidate, dict) else None
+            global_enabled = global_entry.get("enabled") is not False if global_entry else None
+            if global_enabled is not None and payload.enabled == global_enabled:
+                next_config = dict(current)
+                next_config.pop("enabled", None)
+                if next_config:
+                    mcp[item_id] = next_config
+                else:
+                    mcp.pop(item_id, None)
+                    if not mcp:
+                        config_value.pop("mcp", None)
+                inherited = True
+            else:
+                mcp[item_id] = {**current, "enabled": payload.enabled}
+        else:
+            mcp[item_id] = {**current, "enabled": payload.enabled}
         if payload.scope == "global":
             write_json_config(root, relative, config_value)
         else:
             write_config(root, config_value)
-        return {"name": item_id, "scope": payload.scope, "enabled": payload.enabled}
+        return {
+            "name": item_id,
+            "scope": payload.scope,
+            "enabled": payload.enabled,
+            "inherited": inherited,
+        }
 
     @app.delete("/api/v1/projects/{project_id}/mcp/{name}", status_code=204)
     def remove_mcp(
