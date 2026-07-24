@@ -97,6 +97,38 @@ describe("OpenCode Studio", () => {
     });
   });
 
+  it("shows invalid JSON next to the configuration editor and saves after correction", async () => {
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const path = String(input);
+      if (path.endsWith("/api/v1/projects")) return response([project]);
+      if (path.includes("/snapshot")) return response({ state: "stopped", errors: [], sessions: [], statuses: {}, agents: [], mcp: {}, providers: { connected: [], available: [] }, server: project.server });
+      if (path.endsWith("/configuration") && (!init?.method || init.method === "GET")) return response({ project: {}, project_path: "/code/checkout/opencode.json", global: { provider: {} }, global_path: "/home/dev/.config/opencode/opencode.jsonc" });
+      if (path.endsWith("/configuration") && init?.method === "PATCH") return response({});
+      if (path.endsWith("/api/v1/session")) return response({ csrf_token: "csrf" });
+      return response([]);
+    }));
+
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Настройки проекта" }));
+    await screen.findAllByText("/home/dev/.config/opencode/opencode.jsonc");
+    const editor = screen.getByLabelText("Общая конфигурация OpenCode");
+    fireEvent.change(editor, { target: { value: '{\n  "provider": {\n    "ornith:35b": { "name:" "Ornith:35b-Local" }\n  }\n}' } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить общую" }));
+
+    expect(await screen.findByText(/Не удалось сохранить общую конфигурацию: Некорректный JSON/)).toBeInTheDocument();
+    expect(editor).toHaveAttribute("aria-invalid", "true");
+    expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/configuration") && init?.method === "PATCH")).toBe(false);
+
+    fireEvent.change(editor, { target: { value: '{"provider":{"ornith:35b":{"name":"Ornith:35b-Local"}}}' } });
+    expect(screen.queryByText(/Некорректный JSON/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить общую" }));
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/configuration") && init?.method === "PATCH");
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ values: { provider: { "ornith:35b": { name: "Ornith:35b-Local" } } }, scope: "global" });
+    });
+  });
+
   it("manages file-backed secrets without receiving their values", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);

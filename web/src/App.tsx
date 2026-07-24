@@ -726,15 +726,26 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: ()
   const [name, setName] = useState(project.name);
   const [endpoint, setEndpoint] = useState(project.endpoint ?? "");
   const [error, setError] = useState<string | null>(null);
+  const [editorErrors, setEditorErrors] = useState<{ project: string | null; global: string | null }>({ project: null, global: null });
   const [savedScope, setSavedScope] = useState<"project" | "global" | null>(null);
+  const [savingScope, setSavingScope] = useState<"project" | "global" | null>(null);
   const initialized = useRef(false);
   useEffect(() => { if (config.data && !initialized.current) { initialized.current = true; setRaw(JSON.stringify(config.data.project, null, 2)); setGlobalRaw(JSON.stringify(config.data.global, null, 2)); } }, [config.data]);
   async function save(scope: "project" | "global") {
+    const source = scope === "project" ? raw : globalRaw;
+    let values: Record<string, unknown>;
     try {
-      const values = JSON.parse(scope === "project" ? raw : globalRaw) as Record<string, unknown>;
+      values = JSON.parse(source) as Record<string, unknown>;
+    } catch (reason) {
+      setEditorErrors((current) => ({ ...current, [scope]: jsonEditorError(reason, source) }));
+      return;
+    }
+    setSavingScope(scope);
+    try {
       await api(`/api/v1/projects/${project.id}/configuration`, { method: "PATCH", ...jsonBody({ values, scope }) });
-      setError(null); setSavedScope(scope); window.setTimeout(() => setSavedScope(null), 1800); config.reload();
-    } catch (reason) { setError(message(reason)); }
+      setEditorErrors((current) => ({ ...current, [scope]: null })); setError(null); setSavedScope(scope); window.setTimeout(() => setSavedScope(null), 1800); config.reload();
+    } catch (reason) { setEditorErrors((current) => ({ ...current, [scope]: message(reason) })); }
+    finally { setSavingScope(null); }
   }
   async function saveIdentity() {
     try {
@@ -754,11 +765,11 @@ function ProjectSettings({ project, onChange }: { project: Project; onChange: ()
     if (!confirm(`Удалить проект «${project.name}» из Studio? Файлы проекта останутся на месте.`)) return;
     await api(`/api/v1/projects/${project.id}`, { method: "DELETE" }); onChange();
   }
-  return <Page title="Настройки проекта" description="Проектная и общая конфигурация OpenCode с понятным приоритетом." action={<button className="primary-button" onClick={() => void save("project")} disabled={!config.data}>{savedScope === "project" ? "Сохранено" : "Сохранить проектную"}</button>}>
+  return <Page title="Настройки проекта" description="Проектная и общая конфигурация OpenCode с понятным приоритетом." action={<button className="primary-button" onClick={() => void save("project")} disabled={!config.data || savingScope !== null}>{savingScope === "project" ? "Сохранение…" : savedScope === "project" ? "Сохранено" : "Сохранить проектную"}</button>}>
     {(error || config.error) && <Banner tone="danger">{error || config.error}</Banner>}
     <div className="context-summary settings-context-summary"><div><small>Общая конфигурация</small><strong>Для всех проектов</strong><span>{config.data?.global_path ?? "~/.config/opencode/opencode.json"}</span></div><div><small>Приоритет настроек</small><strong>Проектные поверх общих</strong><span>OpenCode объединяет оба уровня</span></div><div><small>После сохранения</small><strong>Runtime обновляется</strong><span>Studio перезапустит управляемые серверы</span></div></div>
     <div className="settings-identity"><Panel title="Данные проекта"><div className="form-stack"><div className="form-row"><Field label="Отображаемое название"><input value={name} onChange={(event) => setName(event.target.value)} /></Field><Field label="Адрес внешнего сервера" hint="Пусто: сервером управляет Studio."><input className="mono" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="http://127.0.0.1:4096" /></Field></div><Field label="Папка проекта"><input className="mono" value={project.root} readOnly /></Field><button className="secondary-button settings-identity-save" onClick={() => void saveIdentity()}>Сохранить данные проекта</button></div></Panel></div>
-    <div className="config-editor-stack"><Panel title="Проектная конфигурация"><div className="config-editor-heading"><span><strong>{config.data?.project_path ?? `${project.root}/opencode.json`}</strong><small>Действует только в этом проекте и перекрывает общие значения.</small></span><button className="secondary-button" onClick={() => void save("project")} disabled={!config.data}>{savedScope === "project" ? "Сохранено" : "Сохранить"}</button></div><textarea aria-label="Проектная конфигурация OpenCode" className="code-editor settings-editor" value={raw} onChange={(event) => setRaw(event.target.value)} spellCheck={false} /></Panel><Panel title="Общая конфигурация"><div className="config-editor-heading"><span><strong>{config.data?.global_path ?? "~/.config/opencode/opencode.json"}</strong><small>Используется на этой машине для всех проектов текущего пользователя.</small></span><button className="secondary-button" onClick={() => void save("global")} disabled={!config.data}>{savedScope === "global" ? "Сохранено" : "Сохранить общую"}</button></div><textarea aria-label="Общая конфигурация OpenCode" className="code-editor settings-editor" value={globalRaw} onChange={(event) => setGlobalRaw(event.target.value)} spellCheck={false} /></Panel></div>
+    <div className="config-editor-stack"><Panel title="Проектная конфигурация"><div className="config-editor-heading"><span><strong>{config.data?.project_path ?? `${project.root}/opencode.json`}</strong><small>Действует только в этом проекте и перекрывает общие значения.</small></span><button className="secondary-button" onClick={() => void save("project")} disabled={!config.data || savingScope !== null}>{savingScope === "project" ? "Сохранение…" : savedScope === "project" ? "Сохранено" : "Сохранить"}</button></div>{editorErrors.project && <Banner tone="danger">Не удалось сохранить проектную конфигурацию: {editorErrors.project}</Banner>}<textarea aria-label="Проектная конфигурация OpenCode" aria-invalid={Boolean(editorErrors.project)} className={`code-editor settings-editor${editorErrors.project ? " invalid" : ""}`} value={raw} onChange={(event) => { setRaw(event.target.value); setEditorErrors((current) => ({ ...current, project: null })); }} spellCheck={false} /></Panel><Panel title="Общая конфигурация"><div className="config-editor-heading"><span><strong>{config.data?.global_path ?? "~/.config/opencode/opencode.json"}</strong><small>Используется на этой машине для всех проектов текущего пользователя.</small></span><button className="secondary-button" onClick={() => void save("global")} disabled={!config.data || savingScope !== null}>{savingScope === "global" ? "Сохранение…" : savedScope === "global" ? "Сохранено" : "Сохранить общую"}</button></div>{editorErrors.global && <Banner tone="danger">Не удалось сохранить общую конфигурацию: {editorErrors.global}</Banner>}<textarea aria-label="Общая конфигурация OpenCode" aria-invalid={Boolean(editorErrors.global)} className={`code-editor settings-editor${editorErrors.global ? " invalid" : ""}`} value={globalRaw} onChange={(event) => { setGlobalRaw(event.target.value); setEditorErrors((current) => ({ ...current, global: null })); }} spellCheck={false} /></Panel></div>
     <Panel className="danger-zone"><div><div><strong>Удалить проект из Studio</strong><p>Studio остановит управляемый сервер и забудет проект. Файлы репозитория останутся на месте.</p></div><button className="danger-button" onClick={() => void remove()}><Trash2 size={15} /> Удалить проект</button></div></Panel>
   </Page>;
 }
@@ -1377,6 +1388,7 @@ function useResource<T>(url: string, dependency: unknown, interval?: number) {
 function viewFromPath(path: string): View { const candidate = path.split("/")[1] as View; return nav.flatMap((group) => group.items).some((item) => item.id === candidate) ? candidate : "overview"; }
 function labelFor(view: View) { return nav.flatMap((group) => group.items).find((item) => item.id === view)?.label ?? "Обзор"; }
 function message(reason: unknown) { return reason instanceof Error ? reason.message : "Непредвиденная ошибка"; }
+function jsonEditorError(reason: unknown, source: string) { const detail = message(reason); const position = /position\s+(\d+)/i.exec(detail); if (!position) return `Некорректный JSON: ${detail}`; const offset = Math.min(Number(position[1]), source.length); const before = source.slice(0, offset); const line = before.split("\n").length; const column = offset - before.lastIndexOf("\n"); return `Некорректный JSON, строка ${line}, столбец ${column}: ${detail}`; }
 function compact(value: number) { return new Intl.NumberFormat("ru-RU", { notation: value > 9999 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value); }
 function statusOf(snapshot: Snapshot | null | undefined, sessionId: string) { const status = snapshot?.statuses[sessionId]; return status?.type ?? status?.status ?? "idle"; }
 function sessionStatus(snapshot: Snapshot | null | undefined, session: Session) { const taskStatus = session.studio_task?.status; return taskStatus === "aborted" || taskStatus === "failed" ? taskStatus : statusOf(snapshot, session.id); }
