@@ -974,7 +974,31 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     def session_messages(project_id: str, session_id: str) -> Any:
         client = client_for_session(project_id, session_id)
         assert client is not None
-        return client.session_messages(session_id)
+        messages = client.session_messages(session_id)
+        task = state.store.task_for_session(project_id, session_id)
+        if (
+            task is not None
+            and task.get("status") == "failed"
+            and isinstance(task.get("error"), str)
+            and task["error"]
+            and not any(
+                isinstance(message, dict)
+                and isinstance(message.get("info"), dict)
+                and message["info"].get("error")
+                for message in messages
+            )
+        ):
+            messages.append(
+                {
+                    "info": {
+                        "id": f"control-error-{task['id']}",
+                        "role": "assistant",
+                        "error": task["error"],
+                    },
+                    "parts": [],
+                }
+            )
+        return messages
 
     @app.get("/api/v1/projects/{project_id}/git")
     def project_git(project_id: str) -> dict[str, Any]:

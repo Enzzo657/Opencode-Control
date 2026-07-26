@@ -257,6 +257,30 @@ def test_session_messages_keep_cli_events_without_provider_metadata(
     assert result["parts"][7]["state"]["input"] == '{\n  "filePath": "/tmp/project/app.py"\n}'
 
 
+def test_session_messages_keep_provider_errors_without_parts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
+    raw = [
+        {
+            "info": {
+                "id": "msg_error",
+                "role": "assistant",
+                "error": {"name": "APIError", "data": {"message": "Forbidden"}},
+            },
+            "parts": [],
+        }
+    ]
+    monkeypatch.setattr(client, "request", lambda method, path, **kwargs: raw)
+
+    assert client.session_messages("ses_failed") == [
+        {
+            "info": {"id": "msg_error", "role": "assistant", "error": "Forbidden"},
+            "parts": [],
+        }
+    ]
+
+
 def test_session_messages_preserve_full_shell_output_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -779,7 +779,7 @@ def _messages(raw: Any) -> list[dict[str, Any]]:
                     safe_parts.append({"type": "text", "text": text})
                 if remaining <= 0:
                     break
-        if safe_parts:
+        if safe_parts or safe_info.get("error"):
             result.append({"info": safe_info, "parts": safe_parts})
     return result
 

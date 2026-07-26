@@ -666,6 +666,14 @@ def test_task_launch_uses_dedicated_opencode_session(
         def session_permissions(self, session_id: str) -> list[dict[str, Any]]:
             return [{"id": "per_1", "permission": "bash", "patterns": ["pytest"]}]
 
+        def session_messages(self, session_id: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "info": {"id": "msg_user", "role": "user"},
+                    "parts": [{"type": "text", "text": "Run the task"}],
+                }
+            ]
+
         def reply_permission(self, session_id: str, permission_id: str, reply: str) -> None:
             calls.append(("permission", (session_id, permission_id, reply)))
 
@@ -719,6 +727,17 @@ def test_task_launch_uses_dedicated_opencode_session(
         failed = client.get(f"/api/v1/projects/{project_id}/tasks").json()[0]
         assert failed["status"] == "failed"
         assert failed["error"] == "token limit exhausted"
+        messages = client.get(
+            f"/api/v1/projects/{project_id}/sessions/ses_task/messages"
+        ).json()
+        assert messages[-1] == {
+            "info": {
+                "id": f"control-error-{response.json()['id']}",
+                "role": "assistant",
+                "error": "token limit exhausted",
+            },
+            "parts": [],
+        }
         runtime_statuses.clear()
 
         client.app.state.control.store.update_task(

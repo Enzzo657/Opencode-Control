@@ -1074,7 +1074,9 @@ function SessionGitPanel({ project, state, onReload, onClose }: { project: Proje
 }
 
 function SessionDrawer({ project, session, status, taskStatus, agents, providers, mcp, config, initialAgent = "", initialModel, onDelete, onClose }: { project: Project; session: Session; status: string; taskStatus?: string; agents: Agent[]; providers: ProviderSummary[]; mcp: Record<string, { status?: string; error?: string }>; config?: RuntimeConfig; initialAgent?: string; initialModel: string; onDelete?: () => void; onClose: () => void }) {
-  const messages = useResource<SessionMessage[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/messages`, session.id, 3000);
+  const messageResource = useResource<SessionMessage[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/messages`, session.id, 3000);
+  // The message article is also the container for provider errors, including errors without parts.
+  const messages = { ...messageResource, data: messageResource.data?.map((entry) => entry.info?.error && !entry.parts?.length ? { ...entry, parts: [{ type: "text", text: "" }] } : entry) ?? null };
   const todos = useResource<SessionTodo[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/todos`, session.id, 3000);
   const permissions = useResource<SessionPermission[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/permissions`, session.id, 1000);
   const git = useResource<GitState>(`/api/v1/projects/${project.id}/git`, session.id, 3000);
@@ -1093,7 +1095,8 @@ function SessionDrawer({ project, session, status, taskStatus, agents, providers
   const liveStatus = runtimeStatus(messages.data ?? [], now);
   const linkedTaskStatus = taskStatusOverride ?? taskStatus ?? session.control_task?.status;
   const stopped = aborted || linkedTaskStatus === "aborted";
-  const observedStatus = activeSessionStatus(status) ? status : liveStatus ?? status;
+  const failed = linkedTaskStatus === "failed" || status === "failed" || status === "error" || liveStatus === "failed";
+  const observedStatus = failed ? "failed" : activeSessionStatus(status) ? status : liveStatus ?? status;
   const effectiveStatus = stopped ? "aborted" : busy || pendingFrom ? "busy" : observedStatus;
   const responseActive = !stopped && (busy || aborting || pendingFrom !== null || activeSessionStatus(observedStatus));
   const gitVisible = git.data?.available === true && (gitVisibility === "shown" || (gitVisibility === "auto" && git.data.changes.length > 0));

@@ -463,12 +463,12 @@ describe("OpenCode Control", () => {
     expect(document.querySelector("script")).toBeNull();
   });
 
-  it("shows OpenCode reasoning and message errors", async () => {
+  it("shows provider errors without message parts", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path.endsWith("/api/v1/projects")) return response([project]);
-      if (path.includes("/snapshot")) return response({ state: "connected", errors: [], sessions: [{ id: "ses_1", title: "Fix checkout", agent: "build" }], statuses: {}, agents: [{ name: "build", mode: "primary" }], mcp: {}, providers: { connected: ["openai"], available: [{ id: "openai", model_count: 1, models: ["openai/gpt-test"] }] }, config: { model: "openai/gpt-test" }, server: project.server });
-      if (path.includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_reason", role: "assistant", agent: "build", providerID: "openai", modelID: "gpt-test", error: "provider failed" }, parts: [{ type: "reasoning", text: "Проверяю варианты", time: { start: 1000, end: 2500 } }] }]);
+      if (path.includes("/snapshot")) return response({ state: "connected", errors: [], sessions: [{ id: "ses_1", title: "Fix checkout", agent: "build" }], statuses: { ses_1: { type: "busy" } }, agents: [{ name: "build", mode: "primary" }], mcp: {}, providers: { connected: ["openai"], available: [{ id: "openai", model_count: 1, models: ["openai/gpt-test"] }] }, config: { model: "openai/gpt-test" }, server: project.server });
+      if (path.includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_error", role: "assistant", agent: "build", providerID: "openai", modelID: "gpt-test", error: "Forbidden" }, parts: [] }]);
       if (path.endsWith("/api/v1/session")) return response({ csrf_token: "csrf" });
       return response([]);
     }));
@@ -476,10 +476,7 @@ describe("OpenCode Control", () => {
     await screen.findByText("Центр управления");
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
-    const reasoning = (await screen.findByText("Рассуждение · 1500 мс")).closest("details");
-    expect(reasoning).not.toHaveAttribute("open");
-    expect(screen.getByText("Проверяю варианты")).not.toBeVisible();
-    expect(screen.getByText("provider failed")).toBeInTheDocument();
+    expect(await screen.findByText("Forbidden")).toBeInTheDocument();
     expect(screen.getByText("build · openai/gpt-test")).toBeInTheDocument();
     expect(screen.getByRole("dialog", { name: "Сессия Fix checkout" }).querySelector('.status[data-status="failed"]')).toHaveTextContent("Ошибка");
     expect(screen.getByRole("button", { name: "Отправить в эту сессию" })).toBeInTheDocument();
