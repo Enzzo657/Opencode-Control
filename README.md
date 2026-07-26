@@ -4,56 +4,117 @@ OpenCode Control is a local-first control plane for OpenCode. It keeps projects,
 sessions, tasks, agents, skills, MCP servers and workspace instructions in one
 clear interface while OpenCode remains the execution engine.
 
-## Development
+## Требования
+
+- macOS или Linux;
+- `uv` с доступным Python 3.12;
+- Node.js и npm для локальной сборки alpha-версии;
+- OpenCode CLI в `PATH` для запуска managed project servers.
+
+Control работает только на loopback. Проекты с external OpenCode endpoint можно
+настраивать и без локального OpenCode CLI.
+
+## Установка
+
+После клонирования репозитория выполните из его корня:
 
 ```bash
-uv sync --extra dev
-npm install --prefix web
-npm run build --prefix web
-uv run opencode-control
+./install.sh
 ```
 
-Open `http://127.0.0.1:8765`. The server never binds to a non-loopback address.
+Installer выполнит `npm ci`, соберёт frontend и wheel, установит его в отдельное
+окружение через `uv tool install` и запустит Control. Node.js нужен только во
+время локальной сборки; установленное приложение запускается без Node.js.
+Если каталог команд `uv` отсутствует в `PATH`, installer предложит добавить его
+через `uv tool update-shell`; изменение применяется в новом Terminal.
 
-## Запуск для обычного использования
+Если Control уже работает, installer спросит, перезапускать ли его. Отказ не
+прерывает активные managed OpenCode sessions: новая версия установится, а
+перезапуск можно выполнить позже.
 
-### Первый запуск
-
-Откройте Terminal и выполните команды по очереди:
+Если команда `opencode-control` не появилась в новом Terminal:
 
 ```bash
-cd /path/to/opencode-control
-uv sync --extra dev
-npm install --prefix web
-npm run build --prefix web
-uv run opencode-control --background --open
+uv tool update-shell
 ```
 
-Последняя команда запускает **OpenCode Control** в фоне на
-`http://127.0.0.1:8765` и открывает браузер. Terminal после этого можно закрыть.
-
-### Последующие запуски
+## Управление
 
 ```bash
-cd /path/to/opencode-control
-uv run opencode-control --background --open
+opencode-control start
+opencode-control status
+opencode-control restart
+opencode-control stop
+opencode-control logs
 ```
 
-Управление фоновым процессом:
+`start` и `restart` запускают Control в фоне на `http://127.0.0.1:8765` и
+открывают браузер. Чтобы не открывать браузер:
 
 ```bash
-uv run opencode-control --status
-uv run opencode-control --restart --open
-uv run opencode-control --stop
+opencode-control start --no-open
 ```
 
-### Миграция с OpenCode Studio
+Для другого loopback-порта:
+
+```bash
+opencode-control start --port 8876
+```
+
+Последние 100 строк основного лога:
+
+```bash
+opencode-control logs
+```
+
+Непрерывный просмотр до `Ctrl+C` и другой размер истории:
+
+```bash
+opencode-control logs --follow --lines 250
+```
+
+## Обновление alpha-версии
+
+Получите изменения репозитория и повторно запустите:
+
+```bash
+./install.sh
+```
+
+Проекты, задачи, сессии и конфигурация хранятся отдельно в
+`~/.opencode-control` и при переустановке wheel не удаляются.
+
+Интерактивное удаление отдельно спросит, нужно ли удалить локальные данные:
+
+```bash
+opencode-control uninstall
+```
+
+Для автоматизированного безопасного вызова без вопросов используйте
+`opencode-control uninstall --yes`: данные сохранятся. Явное полное удаление:
+
+```bash
+opencode-control uninstall --yes --purge-data
+```
+
+Purge удаляет только проверенное содержимое `~/.opencode-control`. Legacy-каталог
+`~/.opencode-studio` автоматически не удаляется.
+
+## Логи
+
+Основной лог находится в `~/.opencode-control/control.log`, project logs — в
+`~/.opencode-control/logs/`. Перед каждым запуском файл больше 10 MB ротируется;
+сохраняются три backup-файла `.1`, `.2`, `.3`. В активный лог попадает только
+новый запуск, поэтому старый большой лог не продолжает бесконечно расти. Строки
+основного runtime-лога содержат локальные дату и время.
+
+## Миграция с OpenCode Studio
 
 Первый запуск новой команды безопасно переносит локальное состояние из
 `~/.opencode-studio` в `~/.opencode-control`:
 
 ```bash
-uv run opencode-control --restart --open
+opencode-control restart
 ```
 
 Команда штатно останавливает старый runtime, создаёт согласованную копию SQLite
@@ -62,6 +123,15 @@ uv run opencode-control --restart --open
 остаётся резервной копией. PID и временные WAL/SHM-файлы не переносятся.
 
 Новый каталог можно переопределить переменной `OPENCODE_CONTROL_HOME`.
+
+## Development
+
+```bash
+uv sync --extra dev
+npm ci --prefix web
+npm run build --prefix web
+uv run uvicorn opencode_control.app:create_app --host 127.0.0.1 --port 8765
+```
 
 ### Что именно запускается
 

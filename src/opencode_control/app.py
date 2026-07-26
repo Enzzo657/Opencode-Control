@@ -32,7 +32,7 @@ from opencode_control.git_workspace import (
     git_state,
     git_unstage,
 )
-from opencode_control.opencode_client import OpenCodeClient, OpenCodeError
+from opencode_control.opencode_client import OpenCodeClient, OpenCodeError, OpenCodeHTTPError
 from opencode_control.processes import OpenCodeProcessManager, ProcessError
 from opencode_control.secret_store import list_secrets, remove_secret, save_secret
 from opencode_control.store import ControlStore
@@ -668,7 +668,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
 
     @app.exception_handler(OpenCodeError)
     async def opencode_error(request: Request, error: OpenCodeError) -> JSONResponse:
-        return JSONResponse({"detail": str(error)}, status_code=502)
+        status = error.status if isinstance(error, OpenCodeHTTPError) else 502
+        return JSONResponse({"detail": str(error)}, status_code=status)
 
     @app.exception_handler(ProcessError)
     async def process_error(request: Request, error: ProcessError) -> JSONResponse:

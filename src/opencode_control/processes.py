@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
 
+from opencode_control.log_rotation import LogRotationError, rotate_log
 from opencode_control.opencode_client import OpenCodeClient, OpenCodeError
 from opencode_control.workspace import WorkspaceRoot, open_root_descriptor
 
@@ -68,7 +69,14 @@ class OpenCodeProcessManager:
             port = _available_port()
             endpoint = f"http://127.0.0.1:{port}"
             password = secrets.token_urlsafe(32)
-            log_handle = (self.log_dir / f"{project_id}.log").open("ab", buffering=0)
+            log_path = self.log_dir / f"{project_id}.log"
+            try:
+                rotate_log(log_path)
+            except LogRotationError as error:
+                raise ProcessError(str(error)) from error
+            log_path.touch(mode=0o600, exist_ok=True)
+            os.chmod(log_path, 0o600)
+            log_handle = log_path.open("ab", buffering=0)
             try:
                 process = subprocess.Popen(
                     [

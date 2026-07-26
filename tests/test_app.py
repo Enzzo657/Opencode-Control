@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -15,6 +16,7 @@ from fastapi.testclient import TestClient
 import opencode_control.app as app_module
 from opencode_control.app import create_app
 from opencode_control.config import ControlConfig
+from opencode_control.opencode_client import OpenCodeError, OpenCodeHTTPError
 from opencode_control.store import ControlStore
 from opencode_control.workspace import WorkspaceError, read_text, root_identity, write_text
 
@@ -46,6 +48,16 @@ def test_control_branding_and_browser_session_cookie(tmp_path: Path) -> None:
         assert session.json()["product"] == "OpenCode Control"
         assert "control_session=" in session.headers["set-cookie"]
         assert "studio_session=" not in session.headers["set-cookie"]
+
+
+def test_upstream_not_found_stays_not_found(tmp_path: Path) -> None:
+    app = create_app(ControlConfig(data_dir=tmp_path / "data"))
+    handler = app.exception_handlers[OpenCodeError]
+
+    response = asyncio.run(handler(None, OpenCodeHTTPError(404)))  # type: ignore[arg-type]
+
+    assert response.status_code == 404
+    assert json.loads(response.body)["detail"] == "OpenCode request failed with status 404"
 
 
 def test_project_registry_requires_csrf_and_stays_local(tmp_path: Path) -> None:

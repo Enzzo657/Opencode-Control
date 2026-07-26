@@ -1,5 +1,12 @@
 let csrfToken: string | null = null;
 
+export class ApiError extends Error {
+  constructor(message: string, readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
 async function ensureSession(): Promise<string> {
   if (csrfToken) return csrfToken;
   const response = await fetch("/api/v1/session", { credentials: "same-origin" });
@@ -24,7 +31,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-    throw new Error(formatError(payload?.detail, response.status));
+    throw new ApiError(formatError(payload?.detail, response.status), response.status);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -35,9 +42,9 @@ function formatError(detail: unknown, status: number): string {
   if (Array.isArray(detail)) {
     const issues = detail.filter((item): item is { loc?: unknown[]; msg?: string; type?: string } => typeof item === "object" && item !== null);
     const staleScheduleFields = issues.some((item) => item.type === "extra_forbidden" && item.loc?.some((part) => part === "cron" || part === "timezone"));
-    if (staleScheduleFields) return "Backend OpenCode Control ещё не обновлён. Выполните uv run opencode-control --restart --open.";
+    if (staleScheduleFields) return "Backend OpenCode Control ещё не обновлён. Выполните opencode-control restart.";
     const staleMentions = issues.some((item) => item.type === "extra_forbidden" && item.loc?.includes("mentions"));
-    if (staleMentions) return "Backend OpenCode Control ещё не поддерживает @-подагентов. Перезапустите Control: uv run opencode-control --restart --open.";
+    if (staleMentions) return "Backend OpenCode Control ещё не поддерживает @-подагентов. Перезапустите Control: opencode-control restart.";
     const messages = issues.map((item) => { const field = item.loc?.filter((part) => part !== "body").join(" → "); return `${field ? `${field}: ` : ""}${item.msg ?? "Некорректное значение"}`; });
     if (messages.length) return messages.join(". ");
   }
