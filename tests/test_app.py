@@ -85,6 +85,89 @@ def test_project_registry_requires_csrf_and_stays_local(tmp_path: Path) -> None:
         assert hostile_host.status_code == 400
 
 
+def test_managed_server_start_and_stop_persist_restore_preference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class FakeProcessManager:
+        def __init__(self, *, binary: str, data_dir: Path) -> None:
+            self.running: set[str] = set()
+
+        def start(self, project_id: str, root: Any) -> dict[str, object]:
+            self.running.add(project_id)
+            return {
+                "state": "running",
+                "managed": True,
+                "endpoint": "http://127.0.0.1:4096",
+                "pid": 123,
+            }
+
+        def stop(self, project_id: str) -> dict[str, object]:
+            self.running.discard(project_id)
+            return {"state": "stopped", "managed": True, "endpoint": None}
+
+        def status(self, project_id: str) -> dict[str, object]:
+            return {
+                "state": "running" if project_id in self.running else "stopped",
+                "managed": project_id in self.running,
+                "endpoint": "http://127.0.0.1:4096" if project_id in self.running else None,
+            }
+
+        def connection(self, project_id: str) -> None:
+            return None
+
+        def shutdown(self) -> None:
+            self.running.clear()
+
+    monkeypatch.setattr(app_module, "OpenCodeProcessManager", FakeProcessManager)
+    root = tmp_path / "project"
+    root.mkdir()
+    app = create_app(ControlConfig(data_dir=tmp_path / "data"))
+
+    with TestClient(app) as client:
+        project_id = _project(client, root)["id"]
+        started = client.post(
+            f"/api/v1/projects/{project_id}/server/start", headers=_csrf(client)
+        )
+        assert started.status_code == 200
+        assert app.state.control.store.get_project(project_id)["managed_enabled"] == 1
+
+        stopped = client.post(
+            f"/api/v1/projects/{project_id}/server/stop", headers=_csrf(client)
+        )
+        assert stopped.status_code == 200
+        assert app.state.control.store.get_project(project_id)["managed_enabled"] == 0
+
+
+def test_enabled_managed_server_is_restored_on_control_start(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "data"
+    root = tmp_path / "project"
+    root.mkdir()
+    store = ControlStore(data_dir)
+    project = store.create_project(name="Restored", root=root, endpoint=None)
+    store.set_managed_enabled(str(project["id"]), True)
+    store.close()
+    restored = threading.Event()
+
+    class FakeProcessManager:
+        def __init__(self, *, binary: str, data_dir: Path) -> None:
+            return
+
+        def start(self, project_id: str, workspace: Any) -> dict[str, object]:
+            assert project_id == project["id"]
+            restored.set()
+            return {"state": "running", "managed": True, "endpoint": "http://local"}
+
+        def shutdown(self) -> None:
+            return
+
+    monkeypatch.setattr(app_module, "OpenCodeProcessManager", FakeProcessManager)
+
+    with TestClient(create_app(ControlConfig(data_dir=data_dir))):
+        assert restored.wait(timeout=1)
+
+
 def test_store_backfills_legacy_task_session_links(tmp_path: Path) -> None:
     root = tmp_path / "project"
     root.mkdir()

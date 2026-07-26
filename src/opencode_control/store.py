@@ -78,6 +78,10 @@ class ControlStore:
                 self._connection.execute("ALTER TABLE projects ADD COLUMN root_device INTEGER")
             if "root_inode" not in columns:
                 self._connection.execute("ALTER TABLE projects ADD COLUMN root_inode INTEGER")
+            if "managed_enabled" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE projects ADD COLUMN managed_enabled INTEGER NOT NULL DEFAULT 0"
+                )
             task_columns = {
                 str(row[1])
                 for row in self._connection.execute("PRAGMA table_info(tasks)").fetchall()
@@ -173,6 +177,13 @@ class ControlStore:
         with self._lock, self._connection:
             cursor = self._connection.execute("DELETE FROM projects WHERE id = ?", (project_id,))
         return cursor.rowcount > 0
+
+    def set_managed_enabled(self, project_id: str, enabled: bool) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE projects SET managed_enabled = ?, updated_at = ? WHERE id = ?",
+                (int(enabled), _now(), project_id),
+            )
 
     def create_task(
         self,

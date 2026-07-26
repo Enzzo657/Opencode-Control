@@ -55,6 +55,12 @@ opencode-control logs
 opencode-control start --no-open
 ```
 
+Control защищён от параллельного запуска file lock-ами и удаляет незавершённый
+дочерний процесс, если startup не завершился. Managed project servers запоминают
+состояние: Start включает автоматическое восстановление при следующем запуске
+Control, а Stop для конкретного проекта отключает его. Поэтому общий restart
+Control временно перезапускает ранее включённые project servers автоматически.
+
 Для другого loopback-порта:
 
 ```bash

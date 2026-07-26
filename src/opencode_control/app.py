@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import ipaddress
+import logging
 import re
 import secrets
 import sqlite3
@@ -374,10 +375,14 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        restore = asyncio.create_task(restore_managed_servers())
         scheduler = asyncio.create_task(scheduler_loop())
         try:
             yield
         finally:
+            restore.cancel()
+            with suppress(asyncio.CancelledError):
+                await restore
             scheduler.cancel()
             with suppress(asyncio.CancelledError):
                 await scheduler
@@ -467,7 +472,26 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             workspace = workspace_for(project)
             validate_root(workspace)
             state.processes.start(project_id, workspace)
+            state.store.set_managed_enabled(project_id, True)
         return client_for(project_id)
+
+    async def restore_managed_servers() -> None:
+        logger = logging.getLogger("uvicorn.error")
+        for project in state.store.list_projects():
+            if not project.get("managed_enabled") or project.get("endpoint"):
+                continue
+            project_id = str(project["id"])
+            try:
+                workspace = workspace_for(project)
+                validate_root(workspace)
+                await asyncio.to_thread(state.processes.start, project_id, workspace)
+                logger.info("Restored managed OpenCode server for %s", project["name"])
+            except (HTTPException, OSError, ProcessError, WorkspaceError) as error:
+                logger.error(
+                    "Could not restore managed OpenCode server for %s: %s",
+                    project["name"],
+                    error,
+                )
 
     def client_for_session(
         project_id: str, session_id: str, *, missing_ok: bool = False
@@ -756,6 +780,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             update_endpoint=payload.clear_endpoint or payload.endpoint is not None,
         )
         assert updated is not None
+        if endpoint:
+            state.store.set_managed_enabled(project_id, False)
+            state.processes.stop(project_id)
         return _project_view(updated, state.processes.status(project_id))
 
     @app.delete("/api/v1/projects/{project_id}", status_code=204)
@@ -779,13 +806,16 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         workspace = workspace_for(project)
         validate_root(workspace)
         try:
-            return state.processes.start(project_id, workspace)
+            status = state.processes.start(project_id, workspace)
+            state.store.set_managed_enabled(project_id, True)
+            return status
         except ProcessError as error:
             raise HTTPException(status_code=502, detail=str(error)) from error
 
     @app.post("/api/v1/projects/{project_id}/server/stop")
     def stop_server(project_id: str, guard: WriteGuard) -> dict[str, object]:
         project_or_404(project_id)
+        state.store.set_managed_enabled(project_id, False)
         return state.processes.stop(project_id)
 
     @app.post("/api/v1/projects/{project_id}/server/restart")
@@ -799,7 +829,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         workspace = workspace_for(project)
         validate_root(workspace)
         state.processes.stop(project_id)
-        return state.processes.start(project_id, workspace)
+        status = state.processes.start(project_id, workspace)
+        state.store.set_managed_enabled(project_id, True)
+        return status
 
     @app.post("/api/v1/servers/restart")
     def restart_running_servers(guard: WriteGuard) -> dict[str, dict[str, object]]:

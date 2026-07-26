@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import io
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -7,6 +9,8 @@ import pytest
 
 import opencode_control.cli as cli_module
 from opencode_control.cli import _build_parser, main
+from opencode_control.config import ControlConfig
+from opencode_control.store import ControlStore
 
 
 def test_public_cli_has_only_operational_commands() -> None:
@@ -154,3 +158,79 @@ def test_uvicorn_log_format_includes_timestamp() -> None:
     assert config["formatters"]["default"]["datefmt"] == "%Y-%m-%d %H:%M:%S"
     assert config["formatters"]["default"]["fmt"].startswith("%(asctime)s")
     assert config["formatters"]["access"]["fmt"].startswith("%(asctime)s")
+
+
+def test_runtime_lock_rejects_a_second_owner(tmp_path: Path) -> None:
+    lock = tmp_path / "control.lock"
+
+    with (
+        cli_module._exclusive_lock(lock),
+        pytest.raises(SystemExit, match="already running"),
+        cli_module._exclusive_lock(
+            lock, blocking=False, busy_message="OpenCode Control is already running"
+        ),
+    ):
+        pass
+
+
+def test_failed_start_terminates_child_and_removes_its_pid(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pid_path = tmp_path / "control.pid"
+    pid_path.write_text("54321")
+    signals: list[tuple[int, int]] = []
+
+    class Process:
+        pid = 54321
+        returncode: int | None = None
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float) -> int:
+            self.returncode = 0
+            return 0
+
+    monkeypatch.setattr(
+        cli_module.os, "killpg", lambda pid, sent_signal: signals.append((pid, sent_signal))
+    )
+
+    cli_module._cleanup_failed_start(Process(), pid_path)  # type: ignore[arg-type]
+
+    assert signals == [(54321, cli_module.signal.SIGTERM)]
+    assert not pid_path.exists()
+
+
+def test_atomic_pid_write_replaces_stale_value(tmp_path: Path) -> None:
+    pid_path = tmp_path / "control.pid"
+    pid_path.write_text("111")
+
+    cli_module._write_pid(pid_path, 222)
+
+    assert pid_path.read_text() == "222"
+    assert not (tmp_path / "control.pid.tmp").exists()
+
+
+def test_restart_remembers_servers_running_before_upgrade(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    data_dir = tmp_path / "data"
+    root = tmp_path / "project"
+    root.mkdir()
+    store = ControlStore(data_dir)
+    project = store.create_project(name="Running", root=root, endpoint=None)
+    store.close()
+    payload = json.dumps(
+        [{"id": project["id"], "server": {"state": "running", "managed": True}}]
+    ).encode()
+    monkeypatch.setattr(
+        cli_module.urllib.request, "urlopen", lambda *args, **kwargs: io.BytesIO(payload)
+    )
+
+    cli_module._remember_running_servers(ControlConfig(data_dir=data_dir), "127.0.0.1", 8765)
+
+    reopened = ControlStore(data_dir)
+    try:
+        assert reopened.get_project(str(project["id"]))["managed_enabled"] == 1
+    finally:
+        reopened.close()

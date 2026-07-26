@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
+import json
 import os
 import shutil
 import signal
@@ -10,7 +12,8 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from copy import deepcopy
 from pathlib import Path
 from typing import Any
@@ -21,6 +24,7 @@ from opencode_control.app import create_app
 from opencode_control.config import ControlConfig
 from opencode_control.log_rotation import LogRotationError, rotate_log
 from opencode_control.migration import MigrationError, prepare_control_data_dir
+from opencode_control.store import ControlStore
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -73,6 +77,7 @@ def main(argv: list[str] | None = None) -> None:
         print("OpenCode Control stopped" if stopped else "OpenCode Control is not running")
         return
     if arguments.action == "restart":
+        _remember_running_servers(config, arguments.host, arguments.port)
         _stop(pid_path, "OpenCode Control", "opencode_control.cli", quiet=True)
         if legacy_pid_path:
             _stop(
@@ -252,6 +257,9 @@ def _control_data_purge_plan(path: Path) -> tuple[list[Path], list[Path]]:
         "control.sqlite-shm",
         "control.sqlite-wal",
         "control.pid",
+        "control.pid.tmp",
+        "control.lock",
+        "control.start.lock",
         "migration.json",
         "control.log",
         "control.log.1",
@@ -310,6 +318,35 @@ def _purge_control_data(path: Path, files: list[Path], directories: list[Path]) 
 def _runtime_paths(config: ControlConfig) -> tuple[Path, Path]:
     data_dir = config.data_dir
     return data_dir / "control.pid", data_dir / "control.log"
+
+
+def _remember_running_servers(config: ControlConfig, host: str, port: int) -> None:
+    try:
+        with urllib.request.urlopen(
+            f"{_endpoint(host, port)}/api/v1/projects", timeout=1
+        ) as response:
+            projects = json.load(response)
+    except (OSError, ValueError, urllib.error.URLError):
+        return
+    if not isinstance(projects, list):
+        return
+    running = [
+        str(project["id"])
+        for project in projects
+        if isinstance(project, dict)
+        and isinstance(project.get("id"), str)
+        and isinstance(project.get("server"), dict)
+        and project["server"].get("state") == "running"
+        and project["server"].get("managed") is True
+    ]
+    if not running:
+        return
+    store = ControlStore(config.data_dir)
+    try:
+        for project_id in running:
+            store.set_managed_enabled(project_id, True)
+    finally:
+        store.close()
 
 
 def _prepare_data(config: ControlConfig) -> None:
@@ -390,75 +427,132 @@ def _start_background(
     pid_path: Path,
     log_path: Path,
 ) -> None:
-    current = _read_pid(pid_path)
-    if current and _is_running(current):
-        print(f"OpenCode Control is already running (PID {current})")
-        if open_browser:
-            _open_browser(host, port)
-        return
-    try:
-        rotate_log(log_path)
-    except LogRotationError as error:
-        raise SystemExit(str(error)) from error
-    log_path.touch(mode=0o600, exist_ok=True)
-    os.chmod(log_path, 0o600)
-    log_handle = log_path.open("ab", buffering=0)
-    try:
-        process = subprocess.Popen(
-            [
-                sys.executable,
-                "-m",
-                "opencode_control.cli",
-                "_serve",
-                "--host",
-                host,
-                "--port",
-                str(port),
-            ],
-            stdin=subprocess.DEVNULL,
-            stdout=log_handle,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-        )
-    finally:
-        log_handle.close()
-    pid_path.write_text(str(process.pid), encoding="utf-8")
-    os.chmod(pid_path, 0o600)
-    endpoint = _endpoint(host, port)
-    deadline = time.monotonic() + 10
-    while time.monotonic() < deadline:
-        if process.poll() is not None:
-            raise SystemExit(f"OpenCode Control failed to start; inspect {log_path}")
+    with _exclusive_lock(pid_path.with_name("control.start.lock")):
+        current = _read_pid(pid_path)
+        if current and _is_managed_process(current, "opencode_control.cli"):
+            print(f"OpenCode Control is already running (PID {current})")
+            if open_browser:
+                _open_browser(host, port)
+            return
+        with suppress(FileNotFoundError):
+            pid_path.unlink()
         try:
-            with urllib.request.urlopen(f"{endpoint}/api/v1/health", timeout=0.4) as response:
-                if response.status == 200:
-                    if open_browser:
-                        _open_browser(host, port)
-                    print(
-                        f"OpenCode Control running in background (PID {process.pid}) "
-                        f"at {endpoint}"
-                    )
-                    print(f"Log: {log_path}")
-                    return
-        except (OSError, urllib.error.URLError):
-            time.sleep(0.1)
-    raise SystemExit(f"OpenCode Control did not become ready; inspect {log_path}")
+            rotate_log(log_path)
+        except LogRotationError as error:
+            raise SystemExit(str(error)) from error
+        log_path.touch(mode=0o600, exist_ok=True)
+        os.chmod(log_path, 0o600)
+        log_handle = log_path.open("ab", buffering=0)
+        try:
+            process = subprocess.Popen(
+                [
+                    sys.executable,
+                    "-m",
+                    "opencode_control.cli",
+                    "_serve",
+                    "--host",
+                    host,
+                    "--port",
+                    str(port),
+                ],
+                stdin=subprocess.DEVNULL,
+                stdout=log_handle,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+            )
+        finally:
+            log_handle.close()
+        endpoint = _endpoint(host, port)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                _cleanup_failed_start(process, pid_path)
+                raise SystemExit(f"OpenCode Control failed to start; inspect {log_path}")
+            try:
+                with urllib.request.urlopen(
+                    f"{endpoint}/api/v1/health", timeout=0.4
+                ) as response:
+                    if response.status == 200:
+                        if open_browser:
+                            _open_browser(host, port)
+                        print(
+                            f"OpenCode Control running in background (PID {process.pid}) "
+                            f"at {endpoint}"
+                        )
+                        print(f"Log: {log_path}")
+                        return
+            except (OSError, urllib.error.URLError):
+                time.sleep(0.1)
+        _cleanup_failed_start(process, pid_path)
+        raise SystemExit(f"OpenCode Control did not become ready; inspect {log_path}")
 
 
 def _serve(host: str, port: int, pid_path: Path) -> None:
-    current = _read_pid(pid_path)
-    if current and current != os.getpid() and _is_running(current):
-        raise SystemExit(f"OpenCode Control is already running (PID {current})")
-    pid_path.write_text(str(os.getpid()), encoding="utf-8")
-    os.chmod(pid_path, 0o600)
+    with _exclusive_lock(
+        pid_path.with_name("control.lock"),
+        blocking=False,
+        busy_message="OpenCode Control is already running",
+    ):
+        _write_pid(pid_path, os.getpid())
+        try:
+            uvicorn.run(
+                create_app(),
+                host=host,
+                port=port,
+                log_level="info",
+                log_config=_uvicorn_log_config(),
+            )
+        finally:
+            if _read_pid(pid_path) == os.getpid():
+                with suppress(FileNotFoundError):
+                    pid_path.unlink()
+
+
+@contextmanager
+def _exclusive_lock(
+    path: Path,
+    *,
+    blocking: bool = True,
+    busy_message: str = "Control start is already in progress",
+) -> Iterator[None]:
+    flags = os.O_RDWR | os.O_CREAT | getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags, 0o600)
     try:
-        uvicorn.run(
-            create_app(), host=host, port=port, log_level="info", log_config=_uvicorn_log_config()
-        )
+        info = os.fstat(descriptor)
+        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+            raise SystemExit(f"Control lock path is unsafe: {path}")
+        os.fchmod(descriptor, 0o600)
+        operation = fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB)
+        try:
+            fcntl.flock(descriptor, operation)
+        except BlockingIOError as error:
+            raise SystemExit(busy_message) from error
+        yield
     finally:
-        if _read_pid(pid_path) == os.getpid():
-            with suppress(FileNotFoundError):
-                pid_path.unlink()
+        os.close(descriptor)
+
+
+def _write_pid(path: Path, pid: int) -> None:
+    temporary = path.with_name("control.pid.tmp")
+    temporary.write_text(str(pid), encoding="utf-8")
+    os.chmod(temporary, 0o600)
+    os.replace(temporary, path)
+
+
+def _cleanup_failed_start(process: subprocess.Popen[bytes], pid_path: Path) -> None:
+    if process.poll() is None:
+        with suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGTERM)
+        try:
+            process.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGKILL)
+            with suppress(subprocess.TimeoutExpired):
+                process.wait(timeout=2)
+    if _read_pid(pid_path) == process.pid:
+        with suppress(FileNotFoundError):
+            pid_path.unlink()
 
 
 def _uvicorn_log_config() -> dict[str, Any]:
