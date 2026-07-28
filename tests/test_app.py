@@ -6,6 +6,7 @@ import os
 import sqlite3
 import subprocess
 import threading
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -1189,7 +1190,11 @@ def test_scheduled_task_uses_a_fresh_session_by_default(
 
     with client:
         assert prompted.wait(timeout=2)
+        time.sleep(0.05)
         updated = store.get_task(str(project["id"]), str(task["id"]))
+        runs = client.get(
+            f"/api/v1/projects/{project['id']}/tasks/{task['id']}/runs"
+        ).json()
 
     assert updated is not None
     assert updated["session_id"] == "ses_fresh"
@@ -1198,6 +1203,10 @@ def test_scheduled_task_uses_a_fresh_session_by_default(
     assert calls[1][0] == "prompt"
     assert calls[1][1][0] == "ses_fresh"
     assert "Продолжи задачу в этой же сессии" not in calls[1][1][1]
+    assert "opencode-control-run:" in calls[1][1][1]
+    assert runs[0]["status"] == "running"
+    assert runs[0]["attempt_count"] == 1
+    assert updated["last_scheduled_run"]["id"] == runs[0]["id"]
 
 
 def test_git_status_diff_and_commit_are_scoped_to_project(tmp_path: Path) -> None:

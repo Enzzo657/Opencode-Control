@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import ipaddress
+import json
 import logging
 import re
 import secrets
@@ -11,7 +12,7 @@ import sqlite3
 import urllib.parse
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Annotated, Any, Literal, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -372,6 +373,7 @@ def _global_mcp_target(
 def create_app(config: ControlConfig | None = None) -> FastAPI:
     control_config = config or ControlConfig.from_environment()
     state = ControlState(control_config)
+    scheduler_stop = asyncio.Event()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -383,9 +385,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             restore.cancel()
             with suppress(asyncio.CancelledError):
                 await restore
-            scheduler.cancel()
-            with suppress(asyncio.CancelledError):
-                await scheduler
+            scheduler_stop.set()
+            await scheduler
             state.close()
 
     app = FastAPI(title="OpenCode Control", version="0.1.0", lifespan=lifespan)
@@ -627,7 +628,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         try:
             snapshot = task_client_for(project_id).snapshot()
         except (HTTPException, OpenCodeError, ProcessError):
-            return False
+            return True
         errors = snapshot.get("errors")
         if isinstance(errors, list) and any(
             error in {"sessions_unavailable", "statuses_unavailable"} for error in errors
@@ -638,8 +639,135 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         value = status.get("type") or status.get("status") if isinstance(status, dict) else None
         return value in {"busy", "dispatching", "in_progress", "pending", "queued", "running"}
 
-    def run_due_tasks() -> None:
+    def dispatch_scheduled_run(
+        run: dict[str, Any], task: dict[str, Any], lease_token: str
+    ) -> None:
+        project_id = str(run["project_id"])
+        run_id = str(run["id"])
+        session_id: str | None = None
+        attached = False
+        client: OpenCodeClient | None = None
+        try:
+            client = task_client_for(project_id)
+            existing = task.get("session_id")
+            if (
+                task.get("cron_session_mode") == "reuse"
+                and isinstance(existing, str)
+                and client.ensure_session_directory(existing, missing_ok=True)
+            ):
+                session_id = existing
+            else:
+                session = client.create_session(str(task["title"]))
+                session_id = str(session["id"])
+            attached = state.store.attach_scheduled_run_session(
+                run_id, lease_token, session_id
+            )
+            if not attached:
+                raise RuntimeError("scheduled run lease changed before session attachment")
+            marker = f"<!-- opencode-control-run:{run_id} -->"
+            if task.get("cron_session_mode") == "reuse" and session_id == existing:
+                prompt = (
+                    f"{marker}\nПродолжи задачу в этой же сессии: {task['title']}\n\n"  # noqa: RUF001
+                    f"Актуальное задание:\n{task['prompt']}\n\n"
+                    "Проверь текущее состояние файлов и выполни очередной запуск."
+                )
+            else:
+                prompt = (
+                    f"{marker}\nОжидаемый результат: {task['title']}\n\n"  # noqa: RUF001
+                    f"Подробное задание:\n{task['prompt']}"
+                )
+            client.prompt_async(
+                session_id,
+                prompt,
+                agent=task.get("agent"),
+                model=task.get("model"),
+            )
+            if not state.store.mark_scheduled_run_running(run_id, lease_token):
+                raise RuntimeError("scheduled run lease changed after prompt dispatch")
+        except Exception as error:
+            detail = str(error)
+            if attached:
+                state.store.mark_scheduled_run_ambiguous(run_id, lease_token, detail)
+            else:
+                state.store.finish_scheduled_run(run_id, "failed", detail)
+                if client is not None and session_id is not None:
+                    with suppress(Exception):
+                        client.delete_session(session_id, missing_ok=True)
+            raise
+
+    def reconcile_scheduled_runs() -> None:
+        logger = logging.getLogger("uvicorn.error")
+        active_states = {"busy", "dispatching", "in_progress", "pending", "queued", "running"}
         now = datetime.now(UTC)
+        for run in state.store.active_scheduled_runs():
+            project_id = str(run["project_id"])
+            session_id = run.get("session_id")
+            if not isinstance(session_id, str):
+                state.store.finish_scheduled_run(
+                    str(run["id"]), "failed", "scheduled run has no session"
+                )
+                continue
+            try:
+                client = task_client_for(project_id)
+                snapshot = client.snapshot()
+            except (HTTPException, OpenCodeError, ProcessError) as exception:
+                logger.warning("Could not reconcile scheduled run %s: %s", run["id"], exception)
+                continue
+            errors = snapshot.get("errors")
+            if isinstance(errors, list) and any(
+                error in {"sessions_unavailable", "statuses_unavailable"} for error in errors
+            ):
+                continue
+            statuses = snapshot.get("statuses")
+            status = statuses.get(session_id, {}) if isinstance(statuses, dict) else {}
+            value = status.get("type") or status.get("status") if isinstance(status, dict) else None
+            if value in active_states:
+                state.store.reconcile_scheduled_run_running(str(run["id"]))
+                continue
+            if value in {"error", "failed"}:
+                failure = status.get("error") if isinstance(status, dict) else None
+                state.store.finish_scheduled_run(
+                    str(run["id"]), "failed", str(failure or "OpenCode session failed")
+                )
+                continue
+            sessions = {
+                item.get("id")
+                for item in snapshot.get("sessions", [])
+                if isinstance(item, dict)
+            }
+            try:
+                age = (now - datetime.fromisoformat(str(run["updated_at"]))).total_seconds()
+            except ValueError:
+                age = 0
+            if age < 3:
+                continue
+            if session_id not in sessions:
+                state.store.finish_scheduled_run(
+                    str(run["id"]), "failed", "OpenCode session disappeared"
+                )
+                continue
+            if run["status"] == "running":
+                state.store.finish_scheduled_run(str(run["id"]), "completed")
+                continue
+            marker = f"opencode-control-run:{run['id']}"
+            try:
+                messages = client.session_messages(session_id)
+            except OpenCodeError as error:
+                logger.warning("Could not inspect scheduled run %s messages: %s", run["id"], error)
+                continue
+            if marker in json.dumps(messages, ensure_ascii=False):
+                state.store.finish_scheduled_run(str(run["id"]), "completed")
+            else:
+                state.store.finish_scheduled_run(
+                    str(run["id"]),
+                    "failed",
+                    "Control restarted before the scheduled prompt was accepted",
+                )
+
+    def run_scheduler_cycle() -> None:
+        logger = logging.getLogger("uvicorn.error")
+        now = datetime.now(UTC)
+        reconcile_scheduled_runs()
         for candidate in state.store.due_tasks(now.isoformat()):
             expression = candidate.get("cron")
             timezone = candidate.get("timezone")
@@ -651,40 +779,63 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             ):
                 continue
             next_run = _next_cron_run(expression, timezone, now)
-            claimed = state.store.claim_scheduled_run(
+            run = state.store.materialize_scheduled_run(
                 str(candidate["project_id"]),
                 str(candidate["id"]),
                 expected_run_at=expected,
                 next_run_at=next_run,
+                created_at=now.isoformat(),
+            )
+            if run is None:
+                continue
+        for pending in state.store.claimable_scheduled_runs(now.isoformat()):
+            lease_token = secrets.token_urlsafe(24)
+            run = state.store.claim_scheduled_run(
+                str(pending["id"]),
+                lease_token=lease_token,
+                lease_expires_at=(now + timedelta(minutes=2)).isoformat(),
                 claimed_at=now.isoformat(),
             )
-            if not claimed:
+            if run is None:
                 continue
-            current = state.store.get_task(str(candidate["project_id"]), str(candidate["id"]))
+            current = state.store.get_task(str(run["project_id"]), str(run["task_id"]))
             if current is None:
+                state.store.finish_scheduled_run(str(run["id"]), "cancelled")
+                continue
+            previous_run = state.store.active_scheduled_run_for_task(
+                str(run["project_id"]),
+                str(run["task_id"]),
+                exclude_run_id=str(run["id"]),
+            )
+            if previous_run is not None:
+                state.store.finish_scheduled_run(str(run["id"]), "skipped", "overlap")
                 continue
             if current["status"] in {"queued", "dispatching", "running"}:
-                if task_runtime_active(str(candidate["project_id"]), current):
+                if task_runtime_active(str(run["project_id"]), current):
+                    state.store.finish_scheduled_run(str(run["id"]), "skipped", "overlap")
                     continue
                 updated = state.store.update_task(
-                    str(candidate["project_id"]),
-                    str(candidate["id"]),
+                    str(run["project_id"]),
+                    str(run["task_id"]),
                     status="scheduled",
                 )
                 if updated is None:
                     continue
                 current = updated
-            with suppress(Exception):
-                if current.get("cron_session_mode") == "reuse":
-                    continue_task(str(candidate["project_id"]), current)
-                else:
-                    dispatch_task(str(candidate["project_id"]), current)
+            try:
+                dispatch_scheduled_run(run, current, lease_token)
+            except Exception:
+                logger.exception("Scheduled run %s failed during dispatch", run["id"])
 
     async def scheduler_loop() -> None:
-        while True:
-            with suppress(Exception):
-                await asyncio.to_thread(run_due_tasks)
-            await asyncio.sleep(15)
+        state.store.recover_interrupted_scheduled_runs()
+        while not scheduler_stop.is_set():
+            try:
+                await asyncio.to_thread(run_scheduler_cycle)
+            except Exception:
+                logging.getLogger("uvicorn.error").exception("Scheduled task cycle failed")
+            with suppress(TimeoutError):
+                await asyncio.wait_for(scheduler_stop.wait(), timeout=15)
 
     @app.exception_handler(WorkspaceError)
     async def workspace_error(request: Request, error: WorkspaceError) -> JSONResponse:
@@ -1183,7 +1334,13 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         client.request("POST", f"/session/{_segment(session_id)}/abort", body={})
         task = state.store.task_for_session(project_id, session_id)
         if task is not None and task["status"] in {"queued", "dispatching", "running"}:
-            state.store.update_task(project_id, str(task["id"]), status="aborted")
+            run = state.store.active_scheduled_run_for_task(
+                project_id, str(task["id"]), session_id=session_id
+            )
+            if run is not None:
+                state.store.finish_scheduled_run(str(run["id"]), "aborted")
+            else:
+                state.store.update_task(project_id, str(task["id"]), status="aborted")
         return {"aborted": True}
 
     @app.delete("/api/v1/projects/{project_id}/sessions/{session_id}", status_code=204)
@@ -1198,7 +1355,15 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     def tasks(project_id: str) -> list[dict[str, Any]]:
         project_or_404(project_id)
         result = state.store.list_tasks(project_id)
-        running = [item for item in result if item["status"] in {"dispatching", "running"}]
+        running = [
+            item
+            for item in result
+            if item["status"] in {"dispatching", "running"}
+            and (
+                not item.get("cron")
+                or not state.store.has_active_scheduled_run(project_id, str(item["id"]))
+            )
+        ]
         if not running:
             return result
         try:
@@ -1251,6 +1416,13 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     error=failure_error,
                 )
         return state.store.list_tasks(project_id)
+
+    @app.get("/api/v1/projects/{project_id}/tasks/{task_id}/runs")
+    def scheduled_task_runs(project_id: str, task_id: str) -> list[dict[str, Any]]:
+        task = state.store.get_task(project_id, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="task not found")
+        return state.store.list_scheduled_runs(project_id, task_id)
 
     @app.post("/api/v1/projects/{project_id}/tasks", status_code=202)
     def launch_task(project_id: str, payload: TaskCreate, guard: WriteGuard) -> dict[str, Any]:
@@ -1344,7 +1516,12 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             client = client_for_session(project_id, str(session_id))
             assert client is not None
             client.request("POST", f"/session/{_segment(str(session_id))}/abort", body={})
-        updated = state.store.update_task(project_id, task_id, status="aborted")
+        run = state.store.active_scheduled_run_for_task(project_id, task_id)
+        if run is not None:
+            state.store.finish_scheduled_run(str(run["id"]), "aborted")
+            updated = state.store.get_task(project_id, task_id)
+        else:
+            updated = state.store.update_task(project_id, task_id, status="aborted")
         assert updated is not None
         return updated
 

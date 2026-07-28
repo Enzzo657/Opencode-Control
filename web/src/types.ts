@@ -123,6 +123,16 @@ export type Task = {
   cron_session_mode?: "new" | "reuse";
   next_run_at?: string | null;
   last_run_at?: string | null;
+  last_scheduled_run?: {
+    id: string;
+    scheduled_for: string;
+    status: "pending" | "claimed" | "session_created" | "running" | "ambiguous" | "completed" | "failed" | "skipped" | "cancelled" | "aborted";
+    attempt_count: number;
+    session_id: string | null;
+    error: string | null;
+    started_at: string | null;
+    finished_at: string | null;
+  } | null;
 };
 
 export type GitChange = {

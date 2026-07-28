@@ -64,6 +64,30 @@ class ControlStore:
                 );
                 CREATE INDEX IF NOT EXISTS task_sessions_task_created
                     ON task_sessions(task_id, created_at, session_id);
+                CREATE TABLE IF NOT EXISTS scheduled_runs (
+                    id TEXT PRIMARY KEY,
+                    project_id TEXT NOT NULL,
+                    task_id TEXT NOT NULL,
+                    schedule_revision INTEGER NOT NULL,
+                    scheduled_for TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    lease_token TEXT,
+                    lease_expires_at TEXT,
+                    session_id TEXT,
+                    error TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    started_at TEXT,
+                    finished_at TEXT,
+                    UNIQUE (project_id, task_id, schedule_revision, scheduled_for),
+                    FOREIGN KEY (project_id, task_id)
+                        REFERENCES tasks(project_id, id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS scheduled_runs_claimable
+                    ON scheduled_runs(status, lease_expires_at, scheduled_for);
+                CREATE INDEX IF NOT EXISTS scheduled_runs_task_history
+                    ON scheduled_runs(project_id, task_id, scheduled_for DESC);
                 INSERT INTO task_sessions (project_id, task_id, session_id, created_at)
                 SELECT project_id, id, session_id, created_at FROM tasks
                 WHERE session_id IS NOT NULL
@@ -93,9 +117,16 @@ class ControlStore:
                 ("cron_session_mode", "TEXT NOT NULL DEFAULT 'new'"),
                 ("next_run_at", "TEXT"),
                 ("last_run_at", "TEXT"),
+                ("schedule_revision", "INTEGER NOT NULL DEFAULT 0"),
             ):
                 if name not in task_columns:
                     self._connection.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
+            self._connection.execute(
+                """
+                CREATE INDEX IF NOT EXISTS tasks_due_schedule
+                ON tasks(schedule_enabled, next_run_at)
+                """
+            )
             rows = self._connection.execute(
                 "SELECT id, root FROM projects WHERE root_device IS NULL OR root_inode IS NULL"
             ).fetchall()
@@ -309,6 +340,7 @@ class ControlStore:
                 """
                 INSERT INTO task_sessions (project_id, task_id, session_id, created_at)
                 VALUES (?, ?, ?, ?)
+                ON CONFLICT(project_id, session_id) DO NOTHING
                 """,
                 (project_id, task_id, session_id, _now()),
             )
@@ -401,6 +433,7 @@ class ControlStore:
             self._connection.execute(
                 """
                 UPDATE tasks SET schedule_enabled = ?, next_run_at = ?,
+                    schedule_revision = schedule_revision + 1,
                     status = CASE
                         WHEN status IN ('queued', 'dispatching', 'running') THEN status
                         WHEN ? THEN 'scheduled'
@@ -411,6 +444,7 @@ class ControlStore:
                 """,
                 (int(enabled), next_run_at, int(enabled), _now(), project_id, task_id),
             )
+            self._cancel_unstarted_runs(project_id, task_id)
         return self.get_task(project_id, task_id)
 
     def configure_task_schedule(
@@ -424,21 +458,24 @@ class ControlStore:
         cron_session_mode: str | None,
         next_run_at: str | None,
     ) -> dict[str, Any] | None:
-        task = self.get_task(project_id, task_id)
-        if task is None:
-            return None
-        status = str(task["status"])
-        if status not in {"queued", "dispatching", "running"}:
-            if cron is not None:
-                status = "scheduled" if enabled else "paused"
-            elif status in {"scheduled", "paused"}:
-                status = "completed"
         with self._lock, self._connection:
+            row = self._connection.execute(
+                "SELECT status FROM tasks WHERE project_id = ? AND id = ?",
+                (project_id, task_id),
+            ).fetchone()
+            if row is None:
+                return None
+            status = str(row["status"])
+            if status not in {"queued", "dispatching", "running"}:
+                if cron is not None:
+                    status = "scheduled" if enabled else "paused"
+                elif status in {"scheduled", "paused"}:
+                    status = "completed"
             self._connection.execute(
                 """
                 UPDATE tasks SET cron = ?, timezone = ?, schedule_enabled = ?,
                     cron_session_mode = COALESCE(?, cron_session_mode), next_run_at = ?,
-                    status = ?, updated_at = ?
+                    schedule_revision = schedule_revision + 1, status = ?, updated_at = ?
                 WHERE project_id = ? AND id = ?
                 """,
                 (
@@ -453,6 +490,7 @@ class ControlStore:
                     task_id,
                 ),
             )
+            self._cancel_unstarted_runs(project_id, task_id)
         return self.get_task(project_id, task_id)
 
     def due_tasks(self, now: str) -> list[dict[str, Any]]:
@@ -467,25 +505,359 @@ class ControlStore:
             ).fetchall()
         return [self._task_view(row) for row in rows]
 
-    def claim_scheduled_run(
+    def materialize_scheduled_run(
         self,
         project_id: str,
         task_id: str,
         *,
         expected_run_at: str,
         next_run_at: str,
-        claimed_at: str,
-    ) -> bool:
+        created_at: str,
+    ) -> dict[str, Any] | None:
+        run_id = f"run_{uuid.uuid4().hex}"
         with self._lock, self._connection:
             cursor = self._connection.execute(
                 """
-                UPDATE tasks SET next_run_at = ?, last_run_at = ?, updated_at = ?
+                UPDATE tasks SET next_run_at = ?, updated_at = ?
                 WHERE project_id = ? AND id = ? AND schedule_enabled = 1
                     AND next_run_at = ?
                 """,
-                (next_run_at, claimed_at, claimed_at, project_id, task_id, expected_run_at),
+                (next_run_at, created_at, project_id, task_id, expected_run_at),
             )
-        return cursor.rowcount == 1
+            if cursor.rowcount != 1:
+                return None
+            task = self._connection.execute(
+                "SELECT schedule_revision FROM tasks WHERE project_id = ? AND id = ?",
+                (project_id, task_id),
+            ).fetchone()
+            assert task is not None
+            self._connection.execute(
+                """
+                INSERT INTO scheduled_runs (
+                    id, project_id, task_id, schedule_revision, scheduled_for, status,
+                    created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, 'pending', ?, ?)
+                """,
+                (
+                    run_id,
+                    project_id,
+                    task_id,
+                    task["schedule_revision"],
+                    expected_run_at,
+                    created_at,
+                    created_at,
+                ),
+            )
+        return self.get_scheduled_run(run_id)
+
+    def recover_interrupted_scheduled_runs(self) -> int:
+        timestamp = _now()
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                UPDATE scheduled_runs SET status = 'cancelled', lease_token = NULL,
+                    lease_expires_at = NULL, finished_at = ?, updated_at = ?
+                WHERE status IN ('pending', 'claimed') AND session_id IS NULL
+                    AND NOT EXISTS (
+                        SELECT 1 FROM tasks
+                        WHERE tasks.project_id = scheduled_runs.project_id
+                            AND tasks.id = scheduled_runs.task_id
+                            AND tasks.schedule_enabled = 1
+                            AND tasks.schedule_revision = scheduled_runs.schedule_revision
+                    )
+                """,
+                (timestamp, timestamp),
+            )
+            cursor = self._connection.execute(
+                """
+                UPDATE scheduled_runs SET status = 'pending', lease_token = NULL,
+                    lease_expires_at = NULL, updated_at = ?
+                WHERE status = 'claimed' AND session_id IS NULL
+                """,
+                (timestamp,),
+            )
+        return cursor.rowcount
+
+    def claim_scheduled_run(
+        self, run_id: str, *, lease_token: str, lease_expires_at: str, claimed_at: str
+    ) -> dict[str, Any] | None:
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """
+                UPDATE scheduled_runs SET status = 'claimed', attempt_count = attempt_count + 1,
+                    lease_token = ?, lease_expires_at = ?, updated_at = ?
+                WHERE id = ? AND (
+                    status = 'pending'
+                    OR (status = 'claimed' AND session_id IS NULL AND lease_expires_at < ?)
+                ) AND EXISTS (
+                    SELECT 1 FROM tasks
+                    WHERE tasks.project_id = scheduled_runs.project_id
+                        AND tasks.id = scheduled_runs.task_id
+                        AND tasks.schedule_enabled = 1
+                        AND tasks.schedule_revision = scheduled_runs.schedule_revision
+                )
+                """,
+                (lease_token, lease_expires_at, claimed_at, run_id, claimed_at),
+            )
+        return self.get_scheduled_run(run_id) if cursor.rowcount == 1 else None
+
+    def claimable_scheduled_runs(self, now: str) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM scheduled_runs
+                WHERE status = 'pending'
+                    OR (status = 'claimed' AND session_id IS NULL AND lease_expires_at < ?)
+                ORDER BY scheduled_for, created_at
+                """,
+                (now,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def active_scheduled_runs(self) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM scheduled_runs
+                WHERE status IN ('session_created', 'running', 'ambiguous')
+                ORDER BY created_at
+                """
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def has_active_scheduled_run(self, project_id: str, task_id: str) -> bool:
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT 1 FROM scheduled_runs
+                WHERE project_id = ? AND task_id = ?
+                    AND status IN ('claimed', 'session_created', 'running', 'ambiguous')
+                LIMIT 1
+                """,
+                (project_id, task_id),
+            ).fetchone()
+        return row is not None
+
+    def active_scheduled_run_for_task(
+        self,
+        project_id: str,
+        task_id: str,
+        *,
+        session_id: str | None = None,
+        exclude_run_id: str | None = None,
+    ) -> dict[str, Any] | None:
+        query = """
+            SELECT * FROM scheduled_runs
+            WHERE project_id = ? AND task_id = ?
+                AND status IN ('claimed', 'session_created', 'running', 'ambiguous')
+        """
+        parameters: list[Any] = [project_id, task_id]
+        if session_id is not None:
+            query += " AND session_id = ?"
+            parameters.append(session_id)
+        if exclude_run_id is not None:
+            query += " AND id != ?"
+            parameters.append(exclude_run_id)
+        query += " ORDER BY created_at DESC LIMIT 1"
+        with self._lock:
+            row = self._connection.execute(query, parameters).fetchone()
+        return dict(row) if row else None
+
+    def get_scheduled_run(self, run_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self._connection.execute(
+                "SELECT * FROM scheduled_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_scheduled_runs(
+        self, project_id: str, task_id: str, *, limit: int = 50
+    ) -> list[dict[str, Any]]:
+        with self._lock:
+            rows = self._connection.execute(
+                """
+                SELECT * FROM scheduled_runs
+                WHERE project_id = ? AND task_id = ?
+                ORDER BY scheduled_for DESC LIMIT ?
+                """,
+                (project_id, task_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def attach_scheduled_run_session(
+        self, run_id: str, lease_token: str, session_id: str
+    ) -> bool:
+        timestamp = _now()
+        with self._lock, self._connection:
+            run = self._connection.execute(
+                """
+                SELECT * FROM scheduled_runs
+                WHERE id = ? AND status = 'claimed' AND lease_token = ?
+                """,
+                (run_id, lease_token),
+            ).fetchone()
+            if run is None:
+                return False
+            self._connection.execute(
+                """
+                INSERT INTO task_sessions (project_id, task_id, session_id, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(project_id, session_id) DO NOTHING
+                """,
+                (run["project_id"], run["task_id"], session_id, timestamp),
+            )
+            self._connection.execute(
+                """
+                UPDATE scheduled_runs SET status = 'session_created', session_id = ?,
+                    updated_at = ? WHERE id = ? AND lease_token = ?
+                """,
+                (session_id, timestamp, run_id, lease_token),
+            )
+            self._connection.execute(
+                """
+                UPDATE tasks SET status = 'dispatching', session_id = ?, error = NULL,
+                    updated_at = ? WHERE project_id = ? AND id = ?
+                """,
+                (session_id, timestamp, run["project_id"], run["task_id"]),
+            )
+        return True
+
+    def mark_scheduled_run_running(self, run_id: str, lease_token: str) -> bool:
+        timestamp = _now()
+        with self._lock, self._connection:
+            run = self._connection.execute(
+                "SELECT * FROM scheduled_runs WHERE id = ? AND lease_token = ?",
+                (run_id, lease_token),
+            ).fetchone()
+            if run is None or run["status"] not in {"session_created", "ambiguous"}:
+                return False
+            self._connection.execute(
+                """
+                UPDATE scheduled_runs SET status = 'running', lease_token = NULL,
+                    lease_expires_at = NULL, started_at = COALESCE(started_at, ?), updated_at = ?
+                WHERE id = ?
+                """,
+                (timestamp, timestamp, run_id),
+            )
+            self._connection.execute(
+                """
+                UPDATE tasks SET status = 'running', last_run_at = ?, error = NULL,
+                    updated_at = ? WHERE project_id = ? AND id = ?
+                """,
+                (timestamp, timestamp, run["project_id"], run["task_id"]),
+            )
+        return True
+
+    def reconcile_scheduled_run_running(self, run_id: str) -> bool:
+        timestamp = _now()
+        with self._lock, self._connection:
+            run = self._connection.execute(
+                """
+                SELECT * FROM scheduled_runs
+                WHERE id = ? AND status IN ('session_created', 'ambiguous')
+                """,
+                (run_id,),
+            ).fetchone()
+            if run is None:
+                return False
+            self._connection.execute(
+                """
+                UPDATE scheduled_runs SET status = 'running', error = NULL,
+                    lease_token = NULL, lease_expires_at = NULL,
+                    started_at = COALESCE(started_at, ?), updated_at = ? WHERE id = ?
+                """,
+                (timestamp, timestamp, run_id),
+            )
+            self._connection.execute(
+                """
+                UPDATE tasks SET status = 'running', last_run_at = ?, error = NULL,
+                    updated_at = ? WHERE project_id = ? AND id = ?
+                """,
+                (timestamp, timestamp, run["project_id"], run["task_id"]),
+            )
+        return True
+
+    def mark_scheduled_run_ambiguous(
+        self, run_id: str, lease_token: str, error: str
+    ) -> bool:
+        timestamp = _now()
+        with self._lock, self._connection:
+            run = self._connection.execute(
+                "SELECT * FROM scheduled_runs WHERE id = ? AND lease_token = ?",
+                (run_id, lease_token),
+            ).fetchone()
+            if run is None:
+                return False
+            self._connection.execute(
+                """
+                UPDATE scheduled_runs SET status = 'ambiguous', error = ?, lease_token = NULL,
+                    lease_expires_at = NULL, updated_at = ? WHERE id = ?
+                """,
+                (error, timestamp, run_id),
+            )
+            self._connection.execute(
+                """
+                UPDATE tasks SET status = 'dispatching', error = ?, updated_at = ?
+                WHERE project_id = ? AND id = ?
+                """,
+                (error, timestamp, run["project_id"], run["task_id"]),
+            )
+        return True
+
+    def finish_scheduled_run(self, run_id: str, status: str, error: str | None = None) -> bool:
+        if status not in {"completed", "failed", "skipped", "cancelled", "aborted"}:
+            raise ValueError(f"invalid scheduled run status: {status}")
+        timestamp = _now()
+        with self._lock, self._connection:
+            run = self._connection.execute(
+                "SELECT * FROM scheduled_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if run is None or run["status"] in {
+                "completed",
+                "failed",
+                "skipped",
+                "cancelled",
+                "aborted",
+            }:
+                return False
+            self._connection.execute(
+                """
+                UPDATE scheduled_runs SET status = ?, error = ?, lease_token = NULL,
+                    lease_expires_at = NULL, finished_at = ?, updated_at = ? WHERE id = ?
+                """,
+                (status, error, timestamp, timestamp, run_id),
+            )
+            other_active = self._connection.execute(
+                """
+                SELECT 1 FROM scheduled_runs
+                WHERE project_id = ? AND task_id = ? AND id != ?
+                    AND status IN ('claimed', 'session_created', 'running', 'ambiguous')
+                LIMIT 1
+                """,
+                (run["project_id"], run["task_id"], run_id),
+            ).fetchone()
+            if other_active is None and status != "skipped":
+                self._connection.execute(
+                    """
+                    UPDATE tasks SET status = CASE WHEN schedule_enabled = 1
+                        THEN 'scheduled' ELSE 'paused' END,
+                        error = ?, updated_at = ? WHERE project_id = ? AND id = ?
+                    """,
+                    (error, timestamp, run["project_id"], run["task_id"]),
+                )
+        return True
+
+    def _cancel_unstarted_runs(self, project_id: str, task_id: str) -> None:
+        timestamp = _now()
+        self._connection.execute(
+            """
+            UPDATE scheduled_runs SET status = 'cancelled', lease_token = NULL,
+                lease_expires_at = NULL, finished_at = ?, updated_at = ?
+            WHERE project_id = ? AND task_id = ?
+                AND status IN ('pending', 'claimed') AND session_id IS NULL
+            """,
+            (timestamp, timestamp, project_id, task_id),
+        )
 
     def delete_task(self, project_id: str, task_id: str) -> bool:
         with self._lock, self._connection:
@@ -500,6 +872,17 @@ class ControlStore:
         result["session_ids"] = self.task_session_ids(
             str(result["project_id"]), str(result["id"])
         )
+        with self._lock:
+            latest_run = self._connection.execute(
+                """
+                SELECT id, scheduled_for, status, attempt_count, session_id, error,
+                    started_at, finished_at
+                FROM scheduled_runs WHERE project_id = ? AND task_id = ?
+                ORDER BY scheduled_for DESC LIMIT 1
+                """,
+                (result["project_id"], result["id"]),
+            ).fetchone()
+        result["last_scheduled_run"] = dict(latest_run) if latest_run else None
         return result
 
     def export_state(self) -> str:
