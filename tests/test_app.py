@@ -251,6 +251,48 @@ def test_workspace_configuration_surfaces(tmp_path: Path) -> None:
         assert removed_skill.status_code == 204
         assert not (root / ".opencode/skills/release").exists()
 
+        pencil_command = (
+            "/Applications/Pen.app/Contents/Resources/app.asar.unpacked/out/"
+            "mcp-server-darwin-arm64"
+        )
+        pencil = client.put(
+            f"/api/v1/projects/{project_id}/mcp/pencil",
+            headers=headers,
+            json={
+                "config": {
+                    "name": "pencil",
+                    "transport": "stdio",
+                    "command": pencil_command,
+                    "args": ["--app", "desktop"],
+                    "env": {},
+                }
+            },
+        )
+        assert pencil.status_code == 200
+        assert pencil.json()["config"] == {
+            "type": "local",
+            "command": [
+                pencil_command,
+                "--app",
+                "desktop",
+            ],
+            "enabled": True,
+        }
+        before_invalid = (root / "opencode.json").read_text()
+        invalid_mcp = client.put(
+            f"/api/v1/projects/{project_id}/mcp/broken",
+            headers=headers,
+            json={
+                "config": {
+                    "transport": "websocket",
+                    "command": "broken",
+                    "args": [],
+                }
+            },
+        )
+        assert invalid_mcp.status_code == 422
+        assert (root / "opencode.json").read_text() == before_invalid
+
         mcp = client.put(
             f"/api/v1/projects/{project_id}/mcp/github",
             headers=headers,
@@ -259,27 +301,19 @@ def test_workspace_configuration_surfaces(tmp_path: Path) -> None:
                     "type": "remote",
                     "url": "https://example.test/mcp",
                     "headers": {"Authorization": "secret-value"},
-                    "env": {"GITHUB_PAT": "github_pat_abcdefghijklmnopqrstuvwxyz"},
-                    "command": ["tool", "--token", "command-secret-value"],
                 }
             },
         )
         assert mcp.status_code == 200
         assert mcp.json()["config"]["headers"]["Authorization"] == "[REDACTED]"
-        assert mcp.json()["config"]["env"]["GITHUB_PAT"] == "[REDACTED]"
-        assert mcp.json()["config"]["command"][-1] == "[REDACTED]"
         assert "secret-value" not in mcp.text
-        assert "github_pat_" not in mcp.text
         persisted = json.loads((root / "opencode.json").read_text())
         assert persisted["mcp"]["github"]["headers"]["Authorization"] == "secret-value"
-        assert persisted["mcp"]["github"]["command"][-1] == "command-secret-value"
 
         config_payload = client.get(f"/api/v1/projects/{project_id}/configuration").json()
         config = config_payload["project"]
         assert config_payload["project_path"] == str(root / "opencode.json")
         assert config["mcp"]["github"]["headers"]["Authorization"] == "[REDACTED]"
-        assert config["mcp"]["github"]["env"]["GITHUB_PAT"] == "[REDACTED]"
-        assert config["mcp"]["github"]["command"][-1] == "[REDACTED]"
         assert "secret-value" not in json.dumps(config_payload)
 
         ollama = client.put(
@@ -313,10 +347,6 @@ def test_workspace_configuration_surfaces(tmp_path: Path) -> None:
         assert round_trip.status_code == 200
         persisted = json.loads((root / "opencode.json").read_text())
         assert persisted["mcp"]["github"]["headers"]["Authorization"] == "secret-value"
-        assert persisted["mcp"]["github"]["env"]["GITHUB_PAT"] == (
-            "github_pat_abcdefghijklmnopqrstuvwxyz"
-        )
-        assert persisted["mcp"]["github"]["command"][-1] == "command-secret-value"
 
 
 def test_global_agents_and_skills_use_global_scope(

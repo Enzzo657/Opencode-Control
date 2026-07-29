@@ -742,6 +742,16 @@ describe("OpenCode Control", () => {
     });
   });
 
+  it("recognizes a copied stdio MCP descriptor", async () => {
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Добавить MCP" }));
+    fireEvent.change(screen.getByLabelText("Имя сервера"), { target: { value: "pencil" } });
+    fireEvent.change(screen.getByLabelText("JSON-конфигурация MCP-сервера"), { target: { value: JSON.stringify({ name: "pencil", transport: "stdio", command: "/Applications/Pen.app/mcp-server", args: ["--app", "desktop"], env: {} }) } });
+    expect(screen.getByText(/Обнаружен стандартный stdio-формат/)).toBeInTheDocument();
+  });
+
   it("does not show a Runtime-only MCP as configured", async () => {
     render(<App />);
     await screen.findByText("Центр управления");

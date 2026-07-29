@@ -426,6 +426,141 @@ def _global_mcp_target(
     return relative, config
 
 
+def _normalize_mcp_config(value: dict[str, Any]) -> dict[str, Any]:
+    if set(value) == {"enabled"} and isinstance(value["enabled"], bool):
+        return dict(value)
+
+    transport = value.get("transport")
+    generic_stdio = transport == "stdio" or (
+        transport is None and isinstance(value.get("command"), str) and "args" in value
+    )
+    if generic_stdio:
+        allowed = {
+            "name",
+            "transport",
+            "command",
+            "args",
+            "env",
+            "enabled",
+            "timeout",
+            "cwd",
+        }
+        unknown = set(value) - allowed
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unsupported MCP fields: {', '.join(sorted(unknown))}",
+            )
+        command = value.get("command")
+        args = value.get("args", [])
+        environment = value.get("env", {})
+        if not isinstance(command, str) or not command.strip():
+            raise HTTPException(status_code=422, detail="stdio MCP command is required")
+        if not isinstance(args, list) or any(not isinstance(item, str) for item in args):
+            raise HTTPException(status_code=422, detail="stdio MCP args must be strings")
+        if not isinstance(environment, dict) or any(
+            not isinstance(key, str) or not isinstance(item, str)
+            for key, item in environment.items()
+        ):
+            raise HTTPException(status_code=422, detail="stdio MCP env must contain strings")
+        result: dict[str, Any] = {
+            "type": "local",
+            "command": [command, *args],
+            "enabled": value.get("enabled", True),
+        }
+        if environment:
+            result["environment"] = environment
+        if "timeout" in value:
+            result["timeout"] = value["timeout"]
+        if "cwd" in value:
+            result["cwd"] = value["cwd"]
+        return _normalize_mcp_config(result)
+
+    kind = value.get("type")
+    if kind == "local":
+        allowed = {
+            "type",
+            "command",
+            "environment",
+            "env",
+            "enabled",
+            "timeout",
+            "cwd",
+        }
+        unknown = set(value) - allowed
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unsupported local MCP fields: {', '.join(sorted(unknown))}",
+            )
+        command = value.get("command")
+        environment = value.get("environment", value.get("env", {}))
+        if not isinstance(command, list) or not command or any(
+            not isinstance(item, str) or not item for item in command
+        ):
+            raise HTTPException(
+                status_code=422, detail="local MCP command must be a non-empty string array"
+            )
+        if not isinstance(environment, dict) or any(
+            not isinstance(key, str) or not isinstance(item, str)
+            for key, item in environment.items()
+        ):
+            raise HTTPException(
+                status_code=422, detail="local MCP environment must contain strings"
+            )
+        result = {
+            "type": "local",
+            "command": command,
+            "enabled": value.get("enabled", True),
+        }
+        if environment:
+            result["environment"] = environment
+        if "timeout" in value:
+            result["timeout"] = value["timeout"]
+        if "cwd" in value:
+            result["cwd"] = value["cwd"]
+    elif kind == "remote":
+        allowed = {"type", "url", "headers", "oauth", "enabled", "timeout"}
+        unknown = set(value) - allowed
+        if unknown:
+            raise HTTPException(
+                status_code=422,
+                detail=f"unsupported remote MCP fields: {', '.join(sorted(unknown))}",
+            )
+        if not isinstance(value.get("url"), str) or not value["url"]:
+            raise HTTPException(status_code=422, detail="remote MCP url is required")
+        headers = value.get("headers", {})
+        if not isinstance(headers, dict) or any(
+            not isinstance(key, str) or not isinstance(item, str)
+            for key, item in headers.items()
+        ):
+            raise HTTPException(
+                status_code=422, detail="remote MCP headers must contain strings"
+            )
+        result = {key: item for key, item in value.items() if key in allowed}
+        result["enabled"] = value.get("enabled", True)
+    else:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                'MCP config must use OpenCode type "local"/"remote" or a stdio '
+                "descriptor with command and args"
+            ),
+        )
+
+    if not isinstance(result.get("enabled"), bool):
+        raise HTTPException(status_code=422, detail="MCP enabled must be boolean")
+    timeout = result.get("timeout")
+    if timeout is not None and (
+        not isinstance(timeout, int) or isinstance(timeout, bool) or timeout <= 0
+    ):
+        raise HTTPException(status_code=422, detail="MCP timeout must be a positive integer")
+    cwd = result.get("cwd")
+    if cwd is not None and not isinstance(cwd, str):
+        raise HTTPException(status_code=422, detail="local MCP cwd must be a string")
+    return result
+
+
 def create_app(config: ControlConfig | None = None) -> FastAPI:
     control_config = config or ControlConfig.from_environment()
     state = ControlState(control_config)
@@ -2168,7 +2303,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         mcp = config_value.setdefault("mcp", {})
         if not isinstance(mcp, dict):
             raise WorkspaceError("OpenCode config mcp section must be an object")
-        mcp[item_id] = preserve_redacted(mcp.get(item_id), payload.config)
+        normalized = _normalize_mcp_config(payload.config)
+        mcp[item_id] = preserve_redacted(mcp.get(item_id), normalized)
         if payload.scope == "global":
             write_json_config(root, relative, config_value)
         else:
