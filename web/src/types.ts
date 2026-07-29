@@ -68,6 +68,42 @@ export type WorkspaceItem = {
   internal?: boolean;
 };
 
+export type SkillImportPreview = {
+  preview_id: string;
+  expires_at: string;
+  source_url: string;
+  final_url: string;
+  redirects: number;
+  content: string;
+  markdown: string;
+  sha256: string;
+  bytes: number;
+  file_count: number;
+  commit?: string | null;
+  files: Array<{
+    path: string;
+    bytes: number;
+    sha256: string;
+    executable: boolean;
+    kind: string;
+  }>;
+  name: string;
+  description: string;
+  scope: "project" | "global";
+  target_path: string;
+  conflict: {
+    target_exists: boolean;
+    has_conflict: boolean;
+    matches: Array<{
+      id: string;
+      name: string;
+      scope?: string;
+      source?: string;
+      editable?: boolean;
+    }>;
+  };
+};
+
 export type CommandItem = {
   id: string;
   description?: string | null;

@@ -61,6 +61,12 @@ class WorkspaceFileSnapshot:
     sha256: str
 
 
+@dataclass(frozen=True)
+class WorkspaceTreeFile:
+    content: bytes
+    mode: int = 0o600
+
+
 def validate_item_id(value: str) -> str:
     if not _ID.fullmatch(value):
         raise WorkspaceError(
@@ -285,6 +291,195 @@ def ensure_directory(root: WorkspaceRoot, relative: Path) -> None:
             os.fchmod(descriptor, 0o700)
     except OSError as error:
         raise WorkspaceError("workspace directory is unavailable or unsafe") from error
+
+
+def snapshot_directory(
+    root: WorkspaceRoot,
+    relative: Path,
+    *,
+    max_files: int = 500,
+    max_bytes: int = 20 * 1024 * 1024,
+) -> dict[Path, WorkspaceTreeFile] | None:
+    _validate_relative(relative)
+    try:
+        with _open_parent(root, relative.parent, create=False) as parent_fd:
+            directory_fd = os.open(
+                relative.name,
+                os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise WorkspaceError("workspace directory is unavailable or unsafe") from error
+    files: dict[Path, WorkspaceTreeFile] = {}
+    total = 0
+
+    def visit(directory: int, prefix: Path) -> None:
+        nonlocal total
+        for name in os.listdir(directory):
+            info = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            path = prefix / name
+            if stat.S_ISDIR(info.st_mode):
+                child = os.open(
+                    name,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=directory,
+                )
+                try:
+                    visit(child, path)
+                finally:
+                    os.close(child)
+                continue
+            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                raise WorkspaceError("workspace directory contains an unsafe file")
+            descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=directory)
+            try:
+                chunks: list[bytes] = []
+                size = 0
+                while True:
+                    chunk = os.read(descriptor, 65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+                    size += len(chunk)
+                    if total + size > max_bytes:
+                        raise WorkspaceError("workspace directory is too large")
+            finally:
+                os.close(descriptor)
+            files[path] = WorkspaceTreeFile(b"".join(chunks), stat.S_IMODE(info.st_mode))
+            total += size
+            if len(files) > max_files:
+                raise WorkspaceError("workspace directory contains too many files")
+
+    try:
+        visit(directory_fd, Path())
+        return files
+    except OSError as error:
+        raise WorkspaceError("workspace directory is unavailable or unsafe") from error
+    finally:
+        os.close(directory_fd)
+
+
+def replace_directory(
+    root: WorkspaceRoot,
+    relative: Path,
+    files: dict[Path, WorkspaceTreeFile],
+) -> None:
+    _validate_relative(relative)
+    if not files:
+        raise WorkspaceError("workspace directory cannot be empty")
+    for path in files:
+        _validate_relative(path)
+    snapshot_directory(root, relative)
+    stage = f".{relative.name}.stage.{secrets.token_hex(10)}"
+    backup = f".{relative.name}.backup.{secrets.token_hex(10)}"
+    with _open_parent(root, relative.parent, create=True) as parent_fd:
+        os.mkdir(stage, 0o700, dir_fd=parent_fd)
+        stage_fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=parent_fd)
+        try:
+            for path, item in files.items():
+                directory_fd = _open_tree_directory(stage_fd, path.parent)
+                try:
+                    descriptor = os.open(
+                        path.name,
+                        os.O_CREAT | os.O_EXCL | os.O_WRONLY | os.O_NOFOLLOW,
+                        0o700 if item.mode & 0o111 else 0o600,
+                        dir_fd=directory_fd,
+                    )
+                    try:
+                        with os.fdopen(descriptor, "wb", closefd=True) as handle:
+                            handle.write(item.content)
+                            handle.flush()
+                            os.fsync(handle.fileno())
+                    except Exception:
+                        with suppress(OSError):
+                            os.close(descriptor)
+                        raise
+                finally:
+                    os.close(directory_fd)
+            os.fsync(stage_fd)
+        except Exception:
+            os.close(stage_fd)
+            _remove_tree(parent_fd, stage)
+            raise
+        os.close(stage_fd)
+        moved_old = False
+        try:
+            os.rename(relative.name, backup, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            moved_old = True
+        except FileNotFoundError:
+            pass
+        try:
+            os.rename(stage, relative.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            os.fsync(parent_fd)
+        except Exception:
+            if moved_old:
+                os.rename(backup, relative.name, src_dir_fd=parent_fd, dst_dir_fd=parent_fd)
+            with suppress(FileNotFoundError):
+                _remove_tree(parent_fd, stage)
+            raise
+        if moved_old:
+            _remove_tree(parent_fd, backup)
+            os.fsync(parent_fd)
+
+
+def delete_directory(root: WorkspaceRoot, relative: Path) -> None:
+    _validate_relative(relative)
+    snapshot = snapshot_directory(root, relative)
+    if snapshot is None:
+        return
+    try:
+        with _open_parent(root, relative.parent, create=False) as parent_fd:
+            _remove_tree(parent_fd, relative.name)
+            os.fsync(parent_fd)
+    except OSError as error:
+        raise WorkspaceError("workspace directory could not be removed safely") from error
+
+
+def _open_tree_directory(base_fd: int, relative: Path) -> int:
+    descriptor = os.dup(base_fd)
+    try:
+        for part in relative.parts:
+            try:
+                next_fd = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=descriptor,
+                )
+            except FileNotFoundError:
+                os.mkdir(part, 0o700, dir_fd=descriptor)
+                next_fd = os.open(
+                    part,
+                    os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                    dir_fd=descriptor,
+                )
+            os.close(descriptor)
+            descriptor = next_fd
+        return descriptor
+    except Exception:
+        os.close(descriptor)
+        raise
+
+
+def _remove_tree(parent_fd: int, name: str) -> None:
+    directory_fd = os.open(
+        name,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+        dir_fd=parent_fd,
+    )
+    try:
+        for child in os.listdir(directory_fd):
+            info = os.stat(child, dir_fd=directory_fd, follow_symlinks=False)
+            if stat.S_ISDIR(info.st_mode):
+                _remove_tree(directory_fd, child)
+            elif stat.S_ISREG(info.st_mode) and info.st_nlink == 1:
+                os.unlink(child, dir_fd=directory_fd)
+            else:
+                raise WorkspaceError("workspace directory contains an unsafe file")
+    finally:
+        os.close(directory_fd)
+    os.rmdir(name, dir_fd=parent_fd)
 
 
 def list_regular_files(root: WorkspaceRoot, directory: Path) -> list[str]:

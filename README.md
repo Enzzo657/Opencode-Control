@@ -175,6 +175,58 @@ uv run uvicorn opencode_control.app:create_app --host 127.0.0.1 --port 8765
   сохраняются в `<project>/.opencode/skills/<name>/SKILL.md`; отдельный
   `skills.paths` для этого не требуется.
 
+## Как импортировать Skill по HTTPS
+
+Ручное создание Skills осталось доступно без изменений. На экране `Навыки` нажмите
+`Создать навык` и выберите одну из вкладок:
+
+- `Вручную` открывает обычный редактор `SKILL.md`.
+- `По HTTPS` скачивает готовый Skill только после безопасной проверки и сначала
+  показывает полный preview.
+
+Проще всего взять ссылку на GitHub. Если рядом с `SKILL.md` есть `scripts/`,
+`references/`, `data/`, `templates/` или другие файлы, скопируйте URL всего каталога:
+
+```text
+https://github.com/owner/repository/tree/main/path/to/skill
+```
+
+Control зафиксирует branch/tag на конкретный commit SHA и импортирует полный каталог.
+Обычная GitHub-ссылка на `blob/.../SKILL.md` также автоматически импортирует весь
+родительский каталог. Только прямой Raw URL используется как явный однофайловый импорт:
+
+```text
+https://github.com/owner/repository/blob/main/path/SKILL.md
+https://raw.githubusercontent.com/owner/repository/main/path/SKILL.md
+```
+
+Также подходит прямая HTTPS-ссылка с другого сайта, если она возвращает Markdown или
+plain text. До подтверждения Control ничего не записывает и не перезапускает. Он
+проверяет публичный DNS/IP, каждый redirect, TLS, MIME type, максимум 200 файлов,
+лимит 1 MiB на файл и 10 MiB на bundle, строгий UTF-8 для `SKILL.md` и обязательные
+`name`/`description` в frontmatter. Localhost, private networks, HTTP downgrade,
+symlinks, submodules, credentials в URL и compressed responses отклоняются.
+
+В preview видны исходный URL, конечный URL после redirects, путь назначения, SHA-256,
+rendered Markdown, полный исходный `SKILL.md` и manifest всех файлов bundle. При
+конфликте можно:
+
+- пропустить импорт;
+- явно перезаписать native Skill выбранного scope;
+- переименовать одновременно каталог и поле `name`, после чего проверить новый
+  итоговый preview.
+
+Project Skill сохраняется в `<project>/.opencode/skills/<name>/SKILL.md`, global Skill
+в `~/.config/opencode/skills/<name>/SKILL.md`. Skills из `.claude/skills` и
+`.agents/skills` не перезаписываются импортом. Загруженный Markdown не выполняется во
+время preview. Скрипты сохраняются с bundle рядом с `SKILL.md`, но Control их не
+запускает. После установки Skill становится инструкцией для агента, поэтому источник,
+manifest и содержимое нужно проверить перед подтверждением.
+
+Собственный native Skill можно переименовать или перенести между project/global scope
+через основные поля редактора. Control переносит весь каталог вместе с sidecar-файлами,
+а не только `SKILL.md`.
+
 ## Как работают MCP-настройки
 
 Control показывает три связанных, но разных состояния MCP:

@@ -1049,6 +1049,124 @@ describe("OpenCode Control", () => {
     expect(screen.getByText("каталог: parsers-news")).toBeInTheDocument();
   });
 
+  it("keeps manual Skill creation and imports a reviewed HTTPS preview", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const preview = {
+      preview_id: "preview_https_12345678901234567890123456789012",
+      expires_at: "2026-01-01T00:05:00Z",
+      source_url: "https://github.com/example/skills/blob/main/release/SKILL.md",
+      final_url: "https://raw.githubusercontent.com/example/skills/main/release/SKILL.md",
+      redirects: 0,
+      content: "---\nname: release-notes\ndescription: Prepare release notes\n---\n\n# Release notes\n\nSummarize changes.\n",
+      markdown: "# Release notes\n\nSummarize changes.\n",
+      sha256: "a".repeat(64),
+      bytes: 118,
+      file_count: 1,
+      files: [{ path: "SKILL.md", bytes: 118, sha256: "a".repeat(64), executable: false, kind: "root" }],
+      name: "release-notes",
+      description: "Prepare release notes",
+      scope: "project",
+      target_path: "/code/checkout/.opencode/skills/release-notes/SKILL.md",
+      conflict: { target_exists: false, has_conflict: false, matches: [] },
+    };
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.endsWith("/skill-imports/preview") && init?.method === "POST") return response(preview);
+      if (path.endsWith("/skill-imports/confirm") && init?.method === "POST") return response({ state: "imported", id: "release-notes" });
+      if (path.endsWith("/skills")) return response([]);
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Навыки" }));
+    expect(screen.getByText(/В обоих случаях Control загрузит весь родительский каталог/)).toBeInTheDocument();
+    expect(screen.getByText(/scripts\//)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole("button", { name: "Создать навык" }));
+    const manualMarkdown = screen.getByLabelText("Markdown навыка");
+    fireEvent.change(screen.getByPlaceholderText("release-notes"), { target: { value: "security-review" } });
+    expect((manualMarkdown as HTMLTextAreaElement).value).toContain("name: security-review");
+    expect(screen.getByText(/OpenCode видит этот навык под именем/)).toHaveTextContent("security-review");
+    fireEvent.click(screen.getByRole("tab", { name: /По HTTPS/ }));
+    const urlInput = screen.getByPlaceholderText(/github.com\/owner/);
+    expect(urlInput.closest(".skill-import-source")?.firstElementChild).toBe(urlInput.parentElement);
+    fireEvent.change(screen.getByPlaceholderText(/github.com\/owner/), { target: { value: preview.source_url } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить и показать" }));
+    expect(await screen.findByText("Prepare release notes")).toBeInTheDocument();
+    expect(screen.getByLabelText("Исходный импортируемый SKILL.md")).toHaveValue(preview.content);
+    fireEvent.click(screen.getByRole("button", { name: "Установить release-notes" }));
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/skill-imports/confirm") && init?.method === "POST");
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ preview_id: preview.preview_id, conflict_policy: "skip" });
+    });
+  });
+
+  it("requires a final preview when renaming a conflicting imported Skill", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const conflict = {
+      preview_id: "preview_conflict_1234567890123456789012345678",
+      expires_at: "2026-01-01T00:05:00Z",
+      source_url: "https://example.test/SKILL.md",
+      final_url: "https://example.test/SKILL.md",
+      redirects: 0,
+      content: "---\nname: release-notes\ndescription: Prepare releases\n---\n\n# Release\n",
+      markdown: "# Release\n",
+      sha256: "b".repeat(64), bytes: 90, name: "release-notes", description: "Prepare releases", scope: "project",
+      file_count: 1, files: [{ path: "SKILL.md", bytes: 90, sha256: "b".repeat(64), executable: false, kind: "root" }],
+      target_path: "/code/checkout/.opencode/skills/release-notes/SKILL.md",
+      conflict: { target_exists: true, has_conflict: true, matches: [{ id: "release-notes", name: "release-notes", scope: "project", source: "/code/checkout/.opencode/skills", editable: true }] },
+    };
+    const renamed = { ...conflict, preview_id: "preview_renamed_12345678901234567890123456789", name: "release-summary", content: conflict.content.replace("release-notes", "release-summary"), target_path: "/code/checkout/.opencode/skills/release-summary/SKILL.md", conflict: { target_exists: false, has_conflict: false, matches: [] } };
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.endsWith("/skill-imports/preview") && init?.method === "POST") return response(conflict);
+      if (path.includes("/skill-imports/") && path.endsWith("/rename") && init?.method === "POST") return response(renamed);
+      if (path.endsWith("/skill-imports/confirm") && init?.method === "POST") return response({ state: "imported", id: renamed.name });
+      if (path.endsWith("/skills")) return response([]);
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Навыки" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Создать навык" }));
+    fireEvent.click(screen.getByRole("tab", { name: /По HTTPS/ }));
+    fireEvent.change(screen.getByPlaceholderText(/github.com\/owner/), { target: { value: conflict.source_url } });
+    fireEvent.click(screen.getByRole("button", { name: "Проверить и показать" }));
+    await screen.findByText("Найден конфликт имени");
+    fireEvent.click(screen.getByLabelText(/Переименовать/));
+    fireEvent.change(screen.getByDisplayValue("release-notes"), { target: { value: "release-summary" } });
+    fireEvent.click(screen.getByRole("button", { name: "Показать итоговый preview" }));
+    expect(await screen.findByRole("button", { name: "Установить release-summary" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Установить release-summary" }));
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/skill-imports/confirm") && init?.method === "POST");
+      expect(JSON.parse(String(call?.[1]?.body)).preview_id).toBe(renamed.preview_id);
+    });
+  });
+
+  it("renames and moves an existing native Skill through its main fields", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.endsWith("/skills") && (!init?.method || init.method === "GET")) return response([{ id: "old-skill", effective_name: "old-skill", description: "Old", content: "---\nname: old-skill\ndescription: Old\n---\n\n# Old\n", scope: "project", editable: true }]);
+      if (path.endsWith("/skills/old-skill") && init?.method === "PATCH") return response({ id: "new-skill", scope: "global" });
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Навыки" }));
+    fireEvent.click(await screen.findByRole("heading", { name: "old-skill" }));
+    const name = screen.getByDisplayValue("old-skill");
+    expect(name).toBeEnabled();
+    fireEvent.change(name, { target: { value: "new-skill" } });
+    fireEvent.change(screen.getByDisplayValue("Для проекта"), { target: { value: "global" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/skills/old-skill") && init?.method === "PATCH");
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ name: "new-skill", source_scope: "project", target_scope: "global" });
+      expect(JSON.parse(String(call?.[1]?.body)).content).toContain("name: new-skill");
+    });
+  });
+
   it("creates another session linked to an existing task", async () => {
     render(<App />);
     await screen.findByText("Центр управления");

@@ -12,6 +12,7 @@ import {
   CircleStop,
   Copy,
   Cpu,
+  Download,
   File,
   FileCode2,
   FolderGit2,
@@ -43,7 +44,7 @@ import {
 import { Component, lazy, memo, Suspense, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type ErrorInfo, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { ApiError, api, jsonBody } from "./api";
-import type { Agent, Attachment, CommandItem, GitState, Project, ProviderAuthEntry, ProviderSummary, RuntimeConfig, SecretInfo, Session, Snapshot, Task, WorkspaceItem } from "./types";
+import type { Agent, Attachment, CommandItem, GitState, Project, ProviderAuthEntry, ProviderSummary, RuntimeConfig, SecretInfo, Session, SkillImportPreview, Snapshot, Task, WorkspaceItem } from "./types";
 
 const MarkdownRenderer = lazy(() => import("./MarkdownRenderer"));
 
@@ -486,8 +487,8 @@ function MarkdownCollection({ project, kind, refreshKey = 0 }: { project: Projec
   return (
     <Page title={kind === "agents" ? "Агенты" : "Навыки"} description={kind === "agents" ? "Агент определяет роль, инструменты и модель. AGENTS.md отдельно задает общие правила работы и язык ответов." : "Навык — дополнительная инструкция, которую агент загружает только для подходящей задачи."} action={<button className="primary-button" onClick={() => setEditing("new")}><Plus size={16} /> Создать {noun}</button>}>
       {resource.error && <Banner tone="danger">{resource.error}</Banner>}
-      {kind === "agents" ? <div className="context-summary resource-context-summary"><div><small>Основной агент</small><strong>Ведет диалог и задачу</strong><span>Доступен для прямого выбора</span></div><div><small>Подагент</small><strong>Выполняет отдельную часть</strong><span>Запускается основным агентом</span></div><div><small>Область действия</small><strong>Для проекта или для всех</strong><span>Проектная версия имеет приоритет</span></div>{hiddenCount > 0 && <label className="toggle-field"><input type="checkbox" checked={showInternal} onChange={(event) => setShowInternal(event.target.checked)} /> Показать служебных: {hiddenCount}</label>}</div> : <div className="context-summary resource-context-summary"><div><small>Навык проекта</small><strong>Только для {project.name}</strong><span>Имеет приоритет над одноименным общим</span></div><div><small>Общий навык</small><strong>Для всех проектов</strong><span>Хранится в конфигурации OpenCode</span></div><div><small>Как агент находит навык</small><strong>По полю <code>name</code></strong><span>Навыки с разными именами не конфликтуют</span></div></div>}
-      <details className="task-help creation-guide"><summary>{kind === "agents" ? "Как создать и использовать своего агента" : "Как создать и использовать навык"}</summary>{kind === "agents" ? <ol><li>Выберите область <strong>Для проекта</strong>, если роль нужна только в <code>{project.root}</code>, или <strong>Для всех проектов</strong>.</li><li>В поле <code>description</code> объясните, когда выбирать специалиста. В теле файла задайте обязанности, ограничения и проверки.</li><li><code>mode: primary</code> создает агента для прямого выбора, <code>mode: subagent</code> — специалиста для отдельной части работы, а <code>mode: all</code> включает оба варианта.</li><li>После сохранения OpenCode Control автоматически перезапустит сервер OpenCode под своим управлением.</li></ol> : <ol><li>Навык — не отдельный агент, а инструкция, загружаемая по необходимости.</li><li>В поле <code>description</code> точно укажите, какую задачу решает навык и когда его использовать.</li><li>Область <strong>Для проекта</strong> ограничивает навык выбранным проектом; <strong>Для всех проектов</strong> делает его общим.</li><li>Обращайтесь к навыку по значению <code>name:</code> в служебном заголовке файла. Оно может отличаться от имени каталога.</li></ol>}</details>
+      {kind === "agents" ? <div className="context-summary resource-context-summary"><div><small>Основной агент</small><strong>Ведет диалог и задачу</strong><span>Доступен для прямого выбора</span></div><div><small>Подагент</small><strong>Выполняет отдельную часть</strong><span>Запускается основным агентом</span></div><div><small>Область действия</small><strong>Для проекта или для всех</strong><span>Проектная версия имеет приоритет</span></div>{hiddenCount > 0 && <label className="toggle-field"><input type="checkbox" checked={showInternal} onChange={(event) => setShowInternal(event.target.checked)} /> Показать служебных: {hiddenCount}</label>}</div> : <div className="context-summary resource-context-summary"><div><small>Навык проекта</small><strong>Только для {project.name}</strong><span>Имеет приоритет над одноименным общим</span></div><div><small>Общий навык</small><strong>Для всех проектов</strong><span>Хранится в конфигурации OpenCode</span></div><div><small>Как агент находит навык</small><strong>По полю <code>name</code></strong><span>Имя совпадает с каталогом навыка</span></div></div>}
+      <details className="task-help creation-guide"><summary>{kind === "agents" ? "Как создать и использовать своего агента" : "Как создать, импортировать и использовать навык"}</summary>{kind === "agents" ? <ol><li>Выберите область <strong>Для проекта</strong>, если роль нужна только в <code>{project.root}</code>, или <strong>Для всех проектов</strong>.</li><li>В поле <code>description</code> объясните, когда выбирать специалиста. В теле файла задайте обязанности, ограничения и проверки.</li><li><code>mode: primary</code> создает агента для прямого выбора, <code>mode: subagent</code> — специалиста для отдельной части работы, а <code>mode: all</code> включает оба варианта.</li><li>После сохранения OpenCode Control автоматически перезапустит сервер OpenCode под своим управлением.</li></ol> : <ol><li>Нажмите <strong>Создать навык</strong>: его можно написать вручную или импортировать на вкладке <strong>По HTTPS</strong>.</li><li>Вставьте ссылку на каталог GitHub вида <code>github.com/…/tree/…/skill</code> либо на файл <code>github.com/…/blob/…/SKILL.md</code>. В обоих случаях Control загрузит весь родительский каталог навыка.</li><li>Вместе с <code>SKILL.md</code> будут установлены все составляющие: <code>scripts/</code>, <code>references/</code>, <code>data/</code>, <code>templates/</code> и assets. Перед установкой preview покажет commit, полный manifest и размеры файлов; скрипты при импорте не запускаются.</li><li><strong>Для проекта</strong> сохраняет bundle в <code>.opencode/skills/&lt;name&gt;/</code> выбранного проекта; <strong>Для всех проектов</strong> — в <code>~/.config/opencode/skills/&lt;name&gt;/</code>.</li><li>Поле <code>name:</code> должно совпадать с именем каталога, а в <code>description</code> нужно точно указать, какую задачу решает навык и когда агенту его загружать.</li></ol>}</details>
       <div className="resource-grid">
         {items.map((item) => (
           <button className={`resource-card ${item.editable === false ? "readonly" : ""}`} key={`${item.scope}-${item.id}`} onClick={() => { if (item.editable !== false) setEditing(item); else if (kind === "agents") setInspecting(item); }}>
@@ -1336,24 +1337,82 @@ function CommandEditor({ project, item, agents, providers, config, onClose, onSa
 
 function MarkdownEditor({ project, kind, item, onClose, onSaved }: { project: Project; kind: "agents" | "skills"; item: WorkspaceItem | "new"; onClose: () => void; onSaved: () => void }) {
   const [id, setId] = useState(item === "new" ? "" : item.id); const [scope, setScope] = useState<"project" | "global">(item === "new" || item.scope === "runtime" ? "project" : item.scope ?? "project"); const [content, setContent] = useState(item === "new" ? templateFor(kind) : item.content); const [error, setError] = useState<string | null>(null);
+  const [creationMode, setCreationMode] = useState<"manual" | "https">("manual");
   const effectiveName = kind === "skills" ? skillNameOf(content) || id : id;
   const agentMode = kind === "agents" ? agentModeOf(content) : "";
   const modeHint = agentMode === "primary" ? "Доступен для прямого выбора." : agentMode === "all" ? "Доступен напрямую и как подагент." : "Запускается основным агентом.";
-  async function save() { try { const next = kind === "skills" && item === "new" ? setSkillName(content, id) : content; await api(`/api/v1/projects/${project.id}/${kind}/${encodeURIComponent(id)}`, { method: "PUT", ...jsonBody({ content: next, scope }) }); onSaved(); } catch (reason) { setError(message(reason)); } }
-  async function remove() { if (item === "new" || !confirm(`Удалить ${id}?`)) return; try { await api(`/api/v1/projects/${project.id}/${kind}/${encodeURIComponent(id)}?scope=${scope}`, { method: "DELETE" }); onSaved(); } catch (reason) { setError(message(reason)); } }
-  const location = scope === "global" ? (kind === "agents" ? "~/.config/opencode/agents/<id>.md" : "~/.config/opencode/skills/<id>/SKILL.md") : (kind === "agents" ? `${project.root}/.opencode/agents/<id>.md` : `${project.root}/.opencode/skills/<id>/SKILL.md`);
-  return <Modal wide title={`${item === "new" ? "Создать" : "Редактировать"} ${kind === "agents" ? "агента" : "навык"}`} subtitle={`${scope === "global" ? "Для всех проектов" : "Только для проекта"} · ${location}`} onClose={onClose}>
+  function changeId(value: string) { setId(value); if (kind === "skills") setContent((current) => setSkillName(current, value)); }
+  async function save() { try { const next = kind === "skills" ? setSkillName(content, id) : content; if (kind === "skills" && item !== "new") await api(`/api/v1/projects/${project.id}/skills/${encodeURIComponent(item.id)}`, { method: "PATCH", ...jsonBody({ name: id, content: next, source_scope: item.scope ?? "project", target_scope: scope }) }); else await api(`/api/v1/projects/${project.id}/${kind}/${encodeURIComponent(id)}`, { method: "PUT", ...jsonBody({ content: next, scope }) }); onSaved(); } catch (reason) { setError(message(reason)); } }
+  async function remove() { if (item === "new" || !confirm(`Удалить ${id}?`)) return; try { const savedScope = item.scope === "global" ? "global" : "project"; await api(`/api/v1/projects/${project.id}/${kind}/${encodeURIComponent(item.id)}?scope=${savedScope}`, { method: "DELETE" }); onSaved(); } catch (reason) { setError(message(reason)); } }
+  const location = scope === "global" ? (kind === "agents" ? `~/.config/opencode/agents/${id || "<id>"}.md` : `~/.config/opencode/skills/${id || "<name>"}/SKILL.md`) : (kind === "agents" ? `${project.root}/.opencode/agents/${id || "<id>"}.md` : `${project.root}/.opencode/skills/${id || "<name>"}/SKILL.md`);
+  const skillCreation = kind === "skills" && item === "new";
+  return <Modal wide title={skillCreation ? "Добавить навык" : `${item === "new" ? "Создать" : "Редактировать"} ${kind === "agents" ? "агента" : "навык"}`} subtitle={skillCreation ? "Создайте SKILL.md вручную или безопасно импортируйте готовый файл по HTTPS." : `${scope === "global" ? "Для всех проектов" : "Только для проекта"} · ${location}`} onClose={onClose}>
+    {skillCreation && <div className="skill-create-tabs" role="tablist" aria-label="Способ добавления навыка"><button type="button" role="tab" aria-selected={creationMode === "manual"} className={creationMode === "manual" ? "active" : ""} onClick={() => setCreationMode("manual")}><FileCode2 size={15} /> Вручную</button><button type="button" role="tab" aria-selected={creationMode === "https"} className={creationMode === "https" ? "active" : ""} onClick={() => setCreationMode("https")}><Download size={15} /> По HTTPS</button></div>}
+    {skillCreation && creationMode === "https" ? <SkillImportForm project={project} onClose={onClose} onSaved={onSaved} /> : <>
     {error && <Banner tone="danger">{error}</Banner>}
     <div className={`form-row ${kind === "agents" ? "agent-editor-fields" : ""}`}>
-      <Field label={kind === "skills" ? "Идентификатор каталога" : "Идентификатор латиницей"}><input className="mono" value={id} onChange={(event) => setId(event.target.value)} disabled={item !== "new"} placeholder={kind === "agents" ? "security-reviewer" : "release-notes"} /></Field>
+      <Field label={kind === "skills" ? "Имя навыка" : "Идентификатор латиницей"}><input className="mono" value={id} onChange={(event) => changeId(event.target.value)} disabled={item !== "new" && kind !== "skills"} placeholder={kind === "agents" ? "security-reviewer" : "release-notes"} /></Field>
       {kind === "agents" && <Field label="Режим агента" hint={modeHint}><select value={agentMode} onChange={(event) => setContent(setAgentMode(content, event.target.value as AgentMode))}><option value="primary">Основной (primary)</option><option value="subagent">Подагент (subagent)</option><option value="all">Оба режима (all)</option></select></Field>}
-      <Field label="Область действия" hint={scope === "global" ? "Будет доступен во всех проектах пользователя." : "Будет доступен только в выбранном проекте."}><select value={scope} onChange={(event) => setScope(event.target.value as "project" | "global")} disabled={item !== "new"}><option value="project">Для проекта</option><option value="global">Для всех проектов</option></select></Field>
+      <Field label="Область действия" hint={scope === "global" ? "Будет доступен во всех проектах пользователя." : "Будет доступен только в выбранном проекте."}><select value={scope} onChange={(event) => setScope(event.target.value as "project" | "global")} disabled={item !== "new" && kind !== "skills"}><option value="project">Для проекта</option><option value="global">Для всех проектов</option></select></Field>
     </div>
     {kind === "skills" && <Banner tone={effectiveName !== id && item !== "new" ? "danger" : "notice"}>OpenCode видит этот навык под именем <code>{effectiveName || "name не указан"}</code>{effectiveName !== id && item !== "new" ? `, а каталог называется ${id}. Обращайтесь к навыку по значению name.` : "."}</Banner>}
     <textarea aria-label={kind === "agents" ? "Markdown агента" : "Markdown навыка"} className="code-editor modal-editor" value={content} onChange={(event) => setContent(event.target.value)} spellCheck={false} />
     <Banner tone="notice">После сохранения Control применит изменение и автоматически обновит работающий сервер OpenCode проекта.</Banner>
     <div className="modal-actions">{item !== "new" && <button className="danger-button" onClick={() => void remove()}><Trash2 size={15} /> Удалить</button>}<span /><button className="secondary-button" onClick={onClose}>Отмена</button><button className="primary-button" onClick={() => void save()} disabled={!id}>Сохранить</button></div>
+    </>}
   </Modal>;
+}
+
+function SkillImportForm({ project, onClose, onSaved }: { project: Project; onClose: () => void; onSaved: () => void }) {
+  const [url, setUrl] = useState("");
+  const [scope, setScope] = useState<"project" | "global">("project");
+  const [preview, setPreview] = useState<SkillImportPreview | null>(null);
+  const [conflictAction, setConflictAction] = useState<"skip" | "overwrite" | "rename">("skip");
+  const [renameTo, setRenameTo] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  function changeUrl(value: string) { setUrl(value); setPreview(null); setError(null); }
+  function changeScope(value: "project" | "global") { setScope(value); setPreview(null); setError(null); }
+  async function loadPreview() {
+    setBusy(true); setError(null);
+    try {
+      const value = await api<SkillImportPreview>(`/api/v1/projects/${project.id}/skill-imports/preview`, { method: "POST", ...jsonBody({ url, scope }) });
+      setPreview(value); setRenameTo(value.name); setConflictAction("skip");
+    } catch (reason) { setError(message(reason)); }
+    finally { setBusy(false); }
+  }
+  async function previewRename() {
+    if (!preview) return;
+    setBusy(true); setError(null);
+    try {
+      const value = await api<SkillImportPreview>(`/api/v1/projects/${project.id}/skill-imports/${encodeURIComponent(preview.preview_id)}/rename`, { method: "POST", ...jsonBody({ name: renameTo }) });
+      setPreview(value); setRenameTo(value.name); setConflictAction("skip");
+    } catch (reason) { setError(message(reason)); }
+    finally { setBusy(false); }
+  }
+  async function install() {
+    if (!preview || conflictAction === "rename") return;
+    setBusy(true); setError(null);
+    try {
+      await api(`/api/v1/projects/${project.id}/skill-imports/confirm`, { method: "POST", ...jsonBody({ preview_id: preview.preview_id, conflict_policy: conflictAction === "overwrite" ? "overwrite" : "skip" }) });
+      onSaved();
+    } catch (reason) { setError(message(reason)); }
+    finally { setBusy(false); }
+  }
+  return <div className="skill-import-flow">
+    {error && <Banner tone="danger">{error}</Banner>}
+    <div className="skill-import-source"><Field label="Ссылка на Skill" hint="Поддерживаются GitHub-каталоги /tree/…, файлы /blob/…/SKILL.md и прямые HTTPS-ссылки."><input type="url" value={url} onChange={(event) => changeUrl(event.target.value)} placeholder="https://github.com/owner/repository/tree/main/path/to/skill" /></Field><Field label="Область действия"><select value={scope} onChange={(event) => changeScope(event.target.value as "project" | "global")}><option value="project">Только проект {project.name}</option><option value="global">Все проекты</option></select></Field><button className="primary-button skill-preview-button" onClick={() => void loadPreview()} disabled={busy || !url.trim()}>{busy && !preview ? "Загрузка…" : "Проверить и показать"}</button></div>
+    {!preview && <div className="skill-import-empty"><Download size={24} /><strong>Сначала получите безопасный preview</strong><p>Control проверит HTTPS, redirects, публичный адрес, размеры и структуру Skill. Для GitHub-каталога будут загружены все scripts, references, data, templates и assets, но ничего не будет выполнено.</p><code>Можно вставить URL самого каталога Skill из адресной строки GitHub</code></div>}
+    {preview && <>
+      <div className="skill-import-facts"><div><small>Навык</small><strong>{preview.name}</strong><span>{preview.description}</span></div><div><small>Куда будет сохранён</small><strong>{preview.scope === "global" ? "Для всех проектов" : `Проект ${project.name}`}</strong><span title={preview.target_path}>{preview.target_path}</span></div><div><small>Bundle</small><strong>{preview.file_count} файлов · {(preview.bytes / 1024).toFixed(1)} KiB</strong><span className="mono" title={preview.commit ?? preview.sha256}>{preview.commit ? `commit ${preview.commit.slice(0, 12)}` : `SHA-256 ${preview.sha256.slice(0, 12)}`}</span></div></div>
+      <div className="skill-import-origin"><span><small>Исходная ссылка</small><code>{preview.source_url}</code></span>{preview.final_url !== preview.source_url && <span><small>После {preview.redirects} redirect</small><code>{preview.final_url}</code></span>}</div>
+      <Banner tone="danger">Проверьте содержимое внимательно. После установки этот Skill становится инструкцией для агента и может предлагать использование файлов, сети или инструментов.</Banner>
+      {preview.file_count > 1 && <section className="skill-bundle-manifest"><header><strong>Файлы Skill</strong><span>Скрипты сохранятся рядом с SKILL.md, но не выполняются при установке.</span></header><div>{preview.files.map((file) => <span key={file.path}><code>{file.path}</code><small>{file.executable ? "исполняемый · " : ""}{(file.bytes / 1024).toFixed(1)} KiB</small></span>)}</div></section>}
+      {preview.conflict.has_conflict && <section className="skill-conflict"><header><strong>Найден конфликт имени</strong><span>{preview.conflict.target_exists ? "Целевой файл уже существует." : "OpenCode уже видит навык с таким именем из другого источника."}</span></header>{preview.conflict.matches.map((item) => <code key={`${item.scope}-${item.source}-${item.id}`}>{item.scope === "global" ? "global" : "project"} · {item.name} · {item.source}</code>)}<div className="skill-conflict-actions"><label><input type="radio" checked={conflictAction === "skip"} onChange={() => setConflictAction("skip")} /> <span><strong>Пропустить</strong><small>Ничего не менять</small></span></label><label><input type="radio" checked={conflictAction === "overwrite"} onChange={() => setConflictAction("overwrite")} /> <span><strong>{preview.conflict.target_exists ? "Перезаписать" : "Установить с приоритетом"}</strong><small>Только в native-путь OpenCode Control</small></span></label><label><input type="radio" checked={conflictAction === "rename"} onChange={() => setConflictAction("rename")} /> <span><strong>Переименовать</strong><small>Изменить каталог и name</small></span></label></div>{conflictAction === "rename" && <div className="skill-rename"><input className="mono" value={renameTo} onChange={(event) => setRenameTo(event.target.value)} placeholder="новое-имя" /><button className="secondary-button" onClick={() => void previewRename()} disabled={busy || !renameTo.trim() || renameTo === preview.name}>Показать итоговый preview</button></div>}</section>}
+      <div className="skill-preview-grid"><section><header><strong>Отображение Markdown</strong><span>HTML и изображения заблокированы</span></header><div className="skill-rendered-preview"><MessageMarkdown content={preview.markdown} /></div></section><section><header><strong>Исходный SKILL.md</strong><span>Полный текст, который будет сохранён</span></header><textarea aria-label="Исходный импортируемый SKILL.md" className="code-editor" value={preview.content} readOnly spellCheck={false} /></section></div>
+      <div className="modal-actions"><span /><button className="secondary-button" onClick={onClose}>Отмена</button><button className="primary-button" onClick={() => void install()} disabled={busy || conflictAction === "rename"}>{busy ? "Применение…" : preview.conflict.has_conflict && conflictAction === "skip" ? "Пропустить импорт" : `Установить ${preview.name}`}</button></div>
+    </>}
+  </div>;
 }
 
 function AgentInfo({ item, onClose }: { item: WorkspaceItem; onClose: () => void }) {

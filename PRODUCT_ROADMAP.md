@@ -42,6 +42,11 @@
 - Structured process diagnostics, per-project lifecycle locks и проверка совместимости
   OpenCode.
 - Lazy Markdown chunk; production bundle остаётся ниже warning threshold Vite.
+- Безопасный импорт Skills по HTTPS: pinned public IP, redirect revalidation, bounded
+  UTF-8 Markdown и полные GitHub directory bundles, commit pinning, manifest preview,
+  project/global scope и конфликты `skip`/`overwrite`/`rename`.
+- Native Skills можно переименовывать и переносить между project/global scope вместе
+  со всеми scripts, references, data, templates и другими sidecar-файлами.
 
 ## Текущие ограничения
 
@@ -53,19 +58,7 @@
 - Frontend остаётся крупным монолитным `App.tsx`; это приемлемо до локализации и
   расширения количества независимых экранов.
 
-## 1. Импорт Skills по HTTPS
-
-- [ ] Принимать только HTTPS URL.
-- [ ] Запрещать localhost, private networks и небезопасные redirects.
-- [ ] Ограничивать размер ответа и количество redirects.
-- [ ] Проверять UTF-8, Markdown и обязательный frontmatter.
-- [ ] Показывать source URL и полный preview до сохранения.
-- [ ] Выбирать project/global scope.
-- [ ] Обрабатывать конфликт имени через `skip`, `overwrite` или `rename`.
-- [ ] Сохранять через существующий безопасный workspace layer.
-- [ ] Не выполнять загруженный контент во время импорта.
-
-## 2. Usage Dashboard
+## 1. Usage Dashboard
 
 Начинать только после проверки стабильности usage metadata текущего OpenCode API.
 Ошибочный подсчёт стоимости хуже отсутствия аналитики.
@@ -79,7 +72,7 @@
 - [ ] Показать самые дорогие Sessions и Tasks.
 - [ ] Сначала проверить таблицы и totals, затем добавлять графики.
 
-## 3. Локализация и декомпозиция UI
+## 2. Локализация и декомпозиция UI
 
 - [ ] Добавить небольшой typed translation layer без тяжёлого i18n framework.
 - [ ] Вынести русские строки в словарь.
@@ -127,7 +120,6 @@ signals, file locks, workspace security для reparse points и native Windows 
 
 ## Рекомендуемый порядок
 
-1. Импорт Skills по HTTPS.
-2. Usage Dashboard после исследования OpenCode usage API.
-3. Локализация вместе с постепенным разбиением frontend.
-4. Возврат к CI/releases, Plugins и Windows только после отдельного решения.
+1. Usage Dashboard после исследования OpenCode usage API.
+2. Локализация вместе с постепенным разбиением frontend.
+3. Возврат к CI/releases, Plugins и Windows только после отдельного решения.

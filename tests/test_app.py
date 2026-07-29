@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -25,6 +25,7 @@ from opencode_control.config import ControlConfig
 from opencode_control.config_lifecycle import PreflightResult
 from opencode_control.opencode_client import OpenCodeError, OpenCodeHTTPError
 from opencode_control.processes import ProcessError
+from opencode_control.skill_import import DownloadedSkill, SkillFile, validate_skill_document
 from opencode_control.store import ControlStore
 from opencode_control.workspace import WorkspaceError, read_text, root_identity, write_text
 
@@ -57,6 +58,19 @@ def _project(client: TestClient, root: Path, *, endpoint: str | None = None) -> 
     )
     assert response.status_code == 201, response.text
     return response.json()
+
+
+def _downloaded_skill(name: str = "https-import-test") -> DownloadedSkill:
+    content = (
+        f"---\nname: {name}\ndescription: Imported test skill\n---\n\n"
+        "# Imported\n\nFollow the imported workflow.\n"
+    )
+    return DownloadedSkill(
+        document=validate_skill_document(content),
+        source_url="https://example.test/SKILL.md",
+        final_url="https://cdn.example.test/SKILL.md",
+        redirects=1,
+    )
 
 
 def test_control_branding_and_browser_session_cookie(tmp_path: Path) -> None:
@@ -359,6 +373,258 @@ def test_workspace_configuration_surfaces(tmp_path: Path) -> None:
         assert round_trip.status_code == 200
         persisted = json.loads((root / "opencode.json").read_text())
         assert persisted["mcp"]["github"]["headers"]["Authorization"] == "secret-value"
+
+
+def test_https_skill_import_previews_then_saves_exact_content(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    downloaded = _downloaded_skill()
+    calls: list[str] = []
+
+    def fetch(url: str) -> DownloadedSkill:
+        calls.append(url)
+        return downloaded
+
+    monkeypatch.setattr(app_module, "fetch_skill", fetch)
+    with _client(tmp_path) as client:
+        project_id = _project(client, root)["id"]
+        headers = _csrf(client)
+        preview = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/preview",
+            headers=headers,
+            json={"url": "https://example.test/SKILL.md", "scope": "project"},
+        )
+
+        assert preview.status_code == 200, preview.text
+        payload = preview.json()
+        assert payload["name"] == "https-import-test"
+        assert payload["description"] == "Imported test skill"
+        assert payload["conflict"]["has_conflict"] is False
+        assert payload["content"] == downloaded.document.content
+        assert not (root / ".opencode/skills/https-import-test/SKILL.md").exists()
+
+        confirmed = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/confirm",
+            headers=headers,
+            json={"preview_id": payload["preview_id"], "conflict_policy": "skip"},
+        )
+        repeated = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/confirm",
+            headers=headers,
+            json={"preview_id": payload["preview_id"], "conflict_policy": "skip"},
+        )
+
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["state"] == "imported"
+        assert repeated.json() == confirmed.json()
+        assert calls == ["https://example.test/SKILL.md"]
+        assert (
+            root / ".opencode/skills/https-import-test/SKILL.md"
+        ).read_text() == downloaded.document.content
+
+
+def test_https_skill_import_supports_skip_overwrite_and_previewed_rename(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    target = root / ".opencode/skills/https-import-test/SKILL.md"
+    target.parent.mkdir(parents=True)
+    target.write_text("existing\n")
+    monkeypatch.setattr(app_module, "fetch_skill", lambda url: _downloaded_skill())
+    with _client(tmp_path) as client:
+        project_id = _project(client, root)["id"]
+        headers = _csrf(client)
+
+        def preview() -> dict[str, Any]:
+            response = client.post(
+                f"/api/v1/projects/{project_id}/skill-imports/preview",
+                headers=headers,
+                json={"url": "https://example.test/SKILL.md", "scope": "project"},
+            )
+            assert response.status_code == 200, response.text
+            return cast(dict[str, Any], response.json())
+
+        skipped_preview = preview()
+        assert skipped_preview["conflict"]["has_conflict"] is True
+        skipped = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/confirm",
+            headers=headers,
+            json={"preview_id": skipped_preview["preview_id"], "conflict_policy": "skip"},
+        )
+        assert skipped.json()["state"] == "skipped"
+        assert target.read_text() == "existing\n"
+
+        overwrite_preview = preview()
+        overwritten = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/confirm",
+            headers=headers,
+            json={
+                "preview_id": overwrite_preview["preview_id"],
+                "conflict_policy": "overwrite",
+            },
+        )
+        assert overwritten.json()["state"] == "imported"
+        assert target.read_text() == _downloaded_skill().document.content
+
+        rename_preview = preview()
+        renamed = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/{rename_preview['preview_id']}/rename",
+            headers=headers,
+            json={"name": "https-import-renamed"},
+        )
+        assert renamed.status_code == 200, renamed.text
+        renamed_payload = renamed.json()
+        assert renamed_payload["name"] == "https-import-renamed"
+        assert "name: https-import-renamed" in renamed_payload["content"]
+        assert renamed_payload["conflict"]["has_conflict"] is False
+        confirmed = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/confirm",
+            headers=headers,
+            json={"preview_id": renamed_payload["preview_id"], "conflict_policy": "skip"},
+        )
+        assert confirmed.json()["state"] == "imported"
+        assert (root / ".opencode/skills/https-import-renamed/SKILL.md").is_file()
+
+
+def test_https_skill_import_does_not_overwrite_a_target_changed_after_preview(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.setattr(app_module, "fetch_skill", lambda url: _downloaded_skill())
+    with _client(tmp_path) as client:
+        project_id = _project(client, root)["id"]
+        headers = _csrf(client)
+        preview = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/preview",
+            headers=headers,
+            json={"url": "https://example.test/SKILL.md", "scope": "project"},
+        ).json()
+        target = root / ".opencode/skills/https-import-test/SKILL.md"
+        target.parent.mkdir(parents=True)
+        target.write_text("changed outside Control\n")
+
+        confirmed = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/confirm",
+            headers=headers,
+            json={"preview_id": preview["preview_id"], "conflict_policy": "overwrite"},
+        )
+
+        assert confirmed.status_code == 409
+        assert target.read_text() == "changed outside Control\n"
+
+
+def test_https_skill_import_can_save_to_global_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    home.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(app_module, "fetch_skill", lambda url: _downloaded_skill())
+    root = tmp_path / "project"
+    root.mkdir()
+    with _client(tmp_path) as client:
+        project_id = _project(client, root)["id"]
+        headers = _csrf(client)
+        preview = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/preview",
+            headers=headers,
+            json={"url": "https://example.test/SKILL.md", "scope": "global"},
+        )
+        assert preview.status_code == 200, preview.text
+        confirmed = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/confirm",
+            headers=headers,
+            json={"preview_id": preview.json()["preview_id"], "conflict_policy": "skip"},
+        )
+
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["scope"] == "global"
+        assert (
+            home / ".config/opencode/skills/https-import-test/SKILL.md"
+        ).read_text() == _downloaded_skill().document.content
+
+
+def test_https_skill_bundle_import_saves_all_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    base = _downloaded_skill("bundle-test")
+    downloaded = DownloadedSkill(
+        document=base.document,
+        source_url="https://github.com/example/repo/tree/main/skill",
+        final_url="https://github.com/example/repo/tree/" + "a" * 40 + "/skill",
+        redirects=0,
+        files=(
+            SkillFile("SKILL.md", base.document.content.encode(), 0o644, base.document.sha256),
+            SkillFile("scripts/run.py", b"print('bundle')\n", 0o755, "b" * 64),
+            SkillFile("references/guide.md", b"# Guide\n", 0o644, "c" * 64),
+        ),
+        commit="a" * 40,
+    )
+    monkeypatch.setattr(app_module, "fetch_skill", lambda url: downloaded)
+    with _client(tmp_path) as client:
+        project_id = _project(client, root)["id"]
+        headers = _csrf(client)
+        preview = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/preview",
+            headers=headers,
+            json={"url": downloaded.source_url, "scope": "project"},
+        )
+        assert preview.status_code == 200, preview.text
+        assert preview.json()["file_count"] == 3
+        assert preview.json()["commit"] == "a" * 40
+        confirmed = client.post(
+            f"/api/v1/projects/{project_id}/skill-imports/confirm",
+            headers=headers,
+            json={"preview_id": preview.json()["preview_id"], "conflict_policy": "skip"},
+        )
+
+        assert confirmed.status_code == 200, confirmed.text
+        assert confirmed.json()["file_count"] == 3
+        assert (
+            root / ".opencode/skills/bundle-test/scripts/run.py"
+        ).read_text() == "print('bundle')\n"
+        assert (root / ".opencode/skills/bundle-test/references/guide.md").is_file()
+
+
+def test_native_skill_can_be_renamed_and_moved_with_sidecar_files(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    (home / ".config/opencode").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    root = tmp_path / "project"
+    source = root / ".opencode/skills/original"
+    (source / "scripts").mkdir(parents=True)
+    (source / "SKILL.md").write_text(
+        "---\nname: original\ndescription: Original skill\n---\n\n# Original\n"
+    )
+    (source / "scripts/run.py").write_text("print('preserved')\n")
+    with _client(tmp_path) as client:
+        project_id = _project(client, root)["id"]
+        updated_content = (
+            "---\nname: renamed-skill\ndescription: Original skill\n---\n\n# Original\n"
+        )
+        updated = client.patch(
+            f"/api/v1/projects/{project_id}/skills/original",
+            headers=_csrf(client),
+            json={
+                "name": "renamed-skill",
+                "content": updated_content,
+                "source_scope": "project",
+                "target_scope": "global",
+            },
+        )
+
+        assert updated.status_code == 200, updated.text
+        target = home / ".config/opencode/skills/renamed-skill"
+        assert not source.exists()
+        assert (target / "SKILL.md").read_text() == updated_content
+        assert (target / "scripts/run.py").read_text() == "print('preserved')\n"
 
 
 def test_global_agents_and_skills_use_global_scope(

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import hashlib
 import ipaddress
 import json
 import logging
@@ -50,12 +51,20 @@ from opencode_control.git_workspace import (
 from opencode_control.opencode_client import OpenCodeClient, OpenCodeError, OpenCodeHTTPError
 from opencode_control.processes import OpenCodeProcessManager, ProcessError
 from opencode_control.secret_store import list_secrets, remove_secret, save_secret
+from opencode_control.skill_import import (
+    DownloadedSkill,
+    SkillDocument,
+    SkillImportError,
+    fetch_skill,
+    rename_downloaded_skill,
+)
 from opencode_control.store import ControlStore
 from opencode_control.workspace import (
     WorkspaceError,
     WorkspaceRoot,
+    WorkspaceTreeFile,
     config_target,
-    delete_empty_directory,
+    delete_directory,
     delete_file,
     external_file_exists,
     file_exists,
@@ -68,8 +77,10 @@ from opencode_control.workspace import (
     read_jsonc_config,
     read_text,
     redact_for_browser,
+    replace_directory,
     resolve_project_root,
     root_identity,
+    snapshot_directory,
     validate_item_id,
     validate_root,
     write_text,
@@ -221,6 +232,27 @@ class ScopedTextWrite(TextWrite):
     scope: Literal["project", "global"] = "project"
 
 
+class SkillImportPreviewCreate(StrictModel):
+    url: str = Field(min_length=1, max_length=4096)
+    scope: Literal["project", "global"] = "project"
+
+
+class SkillImportRename(StrictModel):
+    name: str = Field(min_length=1, max_length=64)
+
+
+class SkillImportConfirm(StrictModel):
+    preview_id: str = Field(min_length=32, max_length=128)
+    conflict_policy: Literal["skip", "overwrite"] = "skip"
+
+
+class SkillUpdate(StrictModel):
+    name: str = Field(min_length=1, max_length=64)
+    content: str = Field(max_length=2 * 1024 * 1024)
+    source_scope: Literal["project", "global"]
+    target_scope: Literal["project", "global"]
+
+
 class CommandRun(StrictModel):
     arguments: str = Field(default="", max_length=20_000)
     variant: str | None = Field(default=None, max_length=128)
@@ -339,6 +371,9 @@ class ControlState:
         )
         self.config_lock = threading.RLock()
         self.browser_sessions: dict[str, str] = {}
+        self.skill_import_previews: dict[str, dict[str, Any]] = {}
+        self.skill_import_lock = threading.RLock()
+        self.skill_import_slots = threading.BoundedSemaphore(4)
         self._command_slots = threading.BoundedSemaphore(8)
         self._closing = threading.Event()
 
@@ -778,6 +813,190 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 detail = error.detail if isinstance(error, HTTPException) else str(error)
                 restarted[project_id] = {"state": "error", "detail": detail}
         return restarted
+
+    def browser_session_id(request: Request) -> str:
+        session_id = request.cookies.get("control_session")
+        if session_id is None or session_id not in state.browser_sessions:
+            raise HTTPException(status_code=403, detail="invalid browser session")
+        return session_id
+
+    def skill_target(
+        project: dict[str, Any], scope: Literal["project", "global"], name: str
+    ) -> tuple[WorkspaceRoot, Path, str]:
+        if scope == "global":
+            directory = Path.home() / ".config/opencode"
+            directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+            root = root_identity(directory)
+            relative = Path(f"skills/{name}/SKILL.md")
+            display = f"~/.config/opencode/{relative}"
+        else:
+            root = workspace_for(project)
+            relative = Path(f".opencode/skills/{name}/SKILL.md")
+            display = str(Path(str(project["root"])) / relative)
+        return root, relative, display
+
+    def skill_directory(
+        project: dict[str, Any], scope: Literal["project", "global"], name: str
+    ) -> tuple[WorkspaceRoot, Path]:
+        root, skill_file, _ = skill_target(project, scope, name)
+        return root, skill_file.parent
+
+    def skill_directory_hash(
+        project: dict[str, Any], scope: Literal["project", "global"], name: str
+    ) -> tuple[str, bool]:
+        root, directory = skill_directory(project, scope, name)
+        files = snapshot_directory(root, directory)
+        digest = hashlib.sha256()
+        if files is None:
+            digest.update(b"0\0")
+            return digest.hexdigest(), False
+        digest.update(b"1\0")
+        for path, item in sorted(files.items(), key=lambda pair: str(pair[0])):
+            digest.update(path.as_posix().encode())
+            digest.update(b"\0")
+            digest.update(item.mode.to_bytes(4, "big"))
+            digest.update(item.content)
+        return digest.hexdigest(), True
+
+    def skill_entries(project: dict[str, Any]) -> list[dict[str, Any]]:
+        root = workspace_for(project)
+        items: dict[str, dict[str, Any]] = {}
+        for directory in (
+            Path.home() / ".config/opencode/skills",
+            Path.home() / ".claude/skills",
+            Path.home() / ".agents/skills",
+        ):
+            for item in list_external_markdown(directory, filename="SKILL.md"):
+                items[str(item["id"])] = {
+                    **item,
+                    "scope": "global",
+                    "source": str(directory),
+                    "editable": directory == Path.home() / ".config/opencode/skills",
+                }
+        for directory in (
+            Path(".claude/skills"),
+            Path(".agents/skills"),
+            Path(".opencode/skills"),
+        ):
+            for item in list_markdown(root, directory, filename="SKILL.md"):
+                items[str(item["id"])] = {
+                    **item,
+                    "scope": "project",
+                    "source": str(Path(str(project["root"])) / directory),
+                    "editable": directory == Path(".opencode/skills"),
+                }
+        return sorted(items.values(), key=lambda item: str(item["id"]))
+
+    def remove_expired_skill_previews() -> None:
+        now = datetime.now(UTC)
+        expired = [
+            preview_id
+            for preview_id, preview in state.skill_import_previews.items()
+            if cast(datetime, preview["expires_at"]) <= now
+        ]
+        for preview_id in expired:
+            state.skill_import_previews.pop(preview_id, None)
+
+    def skill_conflicts(
+        project: dict[str, Any], scope: Literal["project", "global"], document: SkillDocument
+    ) -> tuple[dict[str, Any], str]:
+        target_sha256, target_exists = skill_directory_hash(
+            project, scope, document.name
+        )
+        matches = []
+        for item in skill_entries(project):
+            effective_name = str(item.get("effective_name") or item["id"])
+            if str(item["id"]) != document.name and effective_name != document.name:
+                continue
+            matches.append(
+                {
+                    "id": item["id"],
+                    "name": effective_name,
+                    "scope": item.get("scope"),
+                    "source": item.get("source"),
+                    "editable": item.get("editable", False),
+                }
+            )
+        return {
+            "target_exists": target_exists,
+            "matches": matches,
+            "has_conflict": target_exists or bool(matches),
+        }, target_sha256
+
+    def skill_preview_response(preview_id: str, preview: dict[str, Any]) -> dict[str, Any]:
+        project = project_or_404(str(preview["project_id"]))
+        downloaded = cast(DownloadedSkill, preview["downloaded"])
+        document = downloaded.document
+        _, _, target_path = skill_target(project, cast(Any, preview["scope"]), document.name)
+        files = [
+            {
+                "path": file.path,
+                "bytes": len(file.content),
+                "sha256": file.sha256,
+                "executable": bool(file.mode & 0o111),
+                "kind": Path(file.path).parts[0] if len(Path(file.path).parts) > 1 else "root",
+            }
+            for file in downloaded.files
+        ]
+        return {
+            "preview_id": preview_id,
+            "expires_at": cast(datetime, preview["expires_at"]).isoformat(),
+            "source_url": preview["source_url"],
+            "final_url": preview["final_url"],
+            "redirects": preview["redirects"],
+            "content": document.content,
+            "markdown": document.body,
+            "sha256": document.sha256,
+            "bytes": sum(item["bytes"] for item in files),
+            "file_count": len(files),
+            "files": files,
+            "commit": downloaded.commit,
+            "name": document.name,
+            "description": document.description,
+            "scope": preview["scope"],
+            "target_path": target_path,
+            "conflict": preview["conflict"],
+        }
+
+    def store_skill_preview(
+        project: dict[str, Any],
+        session_id: str,
+        scope: Literal["project", "global"],
+        downloaded: DownloadedSkill,
+    ) -> dict[str, Any]:
+        conflict, target_sha256 = skill_conflicts(project, scope, downloaded.document)
+        preview_id = secrets.token_urlsafe(32)
+        preview: dict[str, Any] = {
+            "project_id": str(project["id"]),
+            "session_id": session_id,
+            "scope": scope,
+            "downloaded": downloaded,
+            "source_url": downloaded.source_url,
+            "final_url": downloaded.final_url,
+            "redirects": downloaded.redirects,
+            "target_sha256": target_sha256,
+            "conflict": conflict,
+            "expires_at": datetime.now(UTC) + timedelta(minutes=5),
+            "result": None,
+        }
+        with state.skill_import_lock:
+            remove_expired_skill_previews()
+            while len(state.skill_import_previews) >= 64:
+                state.skill_import_previews.pop(next(iter(state.skill_import_previews)))
+            state.skill_import_previews[preview_id] = preview
+        return skill_preview_response(preview_id, preview)
+
+    def get_skill_preview(
+        preview_id: str, project_id: str, session_id: str
+    ) -> dict[str, Any]:
+        with state.skill_import_lock:
+            remove_expired_skill_previews()
+            preview = state.skill_import_previews.get(preview_id)
+            if preview is None:
+                raise HTTPException(status_code=410, detail="Skill preview expired")
+            if preview["project_id"] != project_id or preview["session_id"] != session_id:
+                raise HTTPException(status_code=404, detail="Skill preview not found")
+            return preview
 
     def raw_config_files(
         root: WorkspaceRoot, candidates: dict[str, str]
@@ -2367,33 +2586,134 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     @app.get("/api/v1/projects/{project_id}/skills")
     def skills(project_id: str) -> list[dict[str, Any]]:
         project = project_or_404(project_id)
-        root = workspace_for(project)
-        items: dict[str, dict[str, Any]] = {}
-        for directory in (
-            Path.home() / ".config/opencode/skills",
-            Path.home() / ".claude/skills",
-            Path.home() / ".agents/skills",
-        ):
-            for item in list_external_markdown(directory, filename="SKILL.md"):
-                items[str(item["id"])] = {
-                    **item,
-                    "scope": "global",
-                    "source": str(directory),
-                    "editable": directory == Path.home() / ".config/opencode/skills",
+        return skill_entries(project)
+
+    @app.post("/api/v1/projects/{project_id}/skill-imports/preview")
+    def preview_skill_import(
+        project_id: str,
+        payload: SkillImportPreviewCreate,
+        request: Request,
+        guard: WriteGuard,
+    ) -> dict[str, Any]:
+        project = project_or_404(project_id)
+        session_id = browser_session_id(request)
+        if not state.skill_import_slots.acquire(blocking=False):
+            raise HTTPException(status_code=429, detail="Too many Skill downloads are active")
+        try:
+            downloaded = fetch_skill(payload.url)
+        except SkillImportError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+        finally:
+            state.skill_import_slots.release()
+        return store_skill_preview(project, session_id, payload.scope, downloaded)
+
+    @app.post("/api/v1/projects/{project_id}/skill-imports/{preview_id}/rename")
+    def rename_skill_import(
+        project_id: str,
+        preview_id: str,
+        payload: SkillImportRename,
+        request: Request,
+        guard: WriteGuard,
+    ) -> dict[str, Any]:
+        project = project_or_404(project_id)
+        session_id = browser_session_id(request)
+        preview = get_skill_preview(preview_id, project_id, session_id)
+        if preview.get("result") is not None:
+            raise HTTPException(status_code=409, detail="Skill preview was already used")
+        try:
+            downloaded = rename_downloaded_skill(
+                cast(DownloadedSkill, preview["downloaded"]), payload.name
+            )
+        except SkillImportError as error:
+            raise HTTPException(status_code=error.status_code, detail=error.detail) from error
+        return store_skill_preview(
+            project,
+            session_id,
+            cast(Literal["project", "global"], preview["scope"]),
+            downloaded,
+        )
+
+    @app.post("/api/v1/projects/{project_id}/skill-imports/confirm")
+    def confirm_skill_import(
+        project_id: str,
+        payload: SkillImportConfirm,
+        request: Request,
+        guard: WriteGuard,
+    ) -> dict[str, Any]:
+        project = project_or_404(project_id)
+        session_id = browser_session_id(request)
+        preview = get_skill_preview(payload.preview_id, project_id, session_id)
+        with state.skill_import_lock:
+            existing_result = preview.get("result")
+            if isinstance(existing_result, dict):
+                return existing_result
+            if preview.get("processing"):
+                raise HTTPException(status_code=409, detail="Skill import is already processing")
+            preview["processing"] = True
+        try:
+            downloaded = cast(DownloadedSkill, preview["downloaded"])
+            document = downloaded.document
+            scope = cast(Literal["project", "global"], preview["scope"])
+            conflict = cast(dict[str, Any], preview["conflict"])
+            if conflict["has_conflict"] and payload.conflict_policy == "skip":
+                result: dict[str, Any] = {
+                    "state": "skipped",
+                    "id": document.name,
+                    "scope": scope,
+                    "restarted": {},
                 }
-        for directory in (
-            Path(".claude/skills"),
-            Path(".agents/skills"),
-            Path(".opencode/skills"),
-        ):
-            for item in list_markdown(root, directory, filename="SKILL.md"):
-                items[str(item["id"])] = {
-                    **item,
-                    "scope": "project",
-                    "source": str(Path(str(project["root"])) / directory),
-                    "editable": directory == Path(".opencode/skills"),
-                }
-        return sorted(items.values(), key=lambda item: str(item["id"]))
+            else:
+                root, relative, target_path = skill_target(project, scope, document.name)
+                with state.config_lock:
+                    current_conflict, current_sha256 = skill_conflicts(
+                        project, scope, document
+                    )
+                    if current_sha256 != preview["target_sha256"]:
+                        raise HTTPException(
+                            status_code=409,
+                            detail="Skill target changed after preview; review it again",
+                        )
+                    if current_conflict["has_conflict"] and payload.conflict_policy == "skip":
+                        result = {
+                            "state": "skipped",
+                            "id": document.name,
+                            "scope": scope,
+                            "restarted": {},
+                        }
+                    else:
+                        if len(downloaded.files) == 1:
+                            write_text(root, relative, document.content)
+                        else:
+                            replace_directory(
+                                root,
+                                relative.parent,
+                                {
+                                    Path(file.path): WorkspaceTreeFile(
+                                        file.content, file.mode
+                                    )
+                                    for file in downloaded.files
+                                },
+                            )
+                        result = {
+                            "state": "imported",
+                            "id": document.name,
+                            "scope": scope,
+                            "path": target_path,
+                            "sha256": document.sha256,
+                            "source_url": preview["source_url"],
+                            "file_count": len(downloaded.files),
+                            "restarted": {},
+                        }
+                if result["state"] == "imported":
+                    result["restarted"] = restart_changed_resources(project, scope)
+            with state.skill_import_lock:
+                preview["processing"] = False
+                preview["result"] = result
+            return result
+        except Exception:
+            with state.skill_import_lock:
+                preview["processing"] = False
+            raise
 
     @app.put("/api/v1/projects/{project_id}/skills/{skill_id}")
     def save_skill(
@@ -2423,6 +2743,66 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             "restarted": restart_changed_resources(project, payload.scope),
         }
 
+    @app.patch("/api/v1/projects/{project_id}/skills/{skill_id}")
+    def update_skill(
+        project_id: str,
+        skill_id: str,
+        payload: SkillUpdate,
+        guard: WriteGuard,
+    ) -> dict[str, Any]:
+        project = project_or_404(project_id)
+        source_id = validate_item_id(skill_id)
+        target_id = validate_item_id(payload.name)
+        if parse_frontmatter(payload.content).get("name") != target_id:
+            raise HTTPException(
+                status_code=422,
+                detail="Skill frontmatter name must match the target directory",
+            )
+        source_root, source_directory = skill_directory(
+            project, payload.source_scope, source_id
+        )
+        target_root, target_directory = skill_directory(
+            project, payload.target_scope, target_id
+        )
+        source_files = snapshot_directory(source_root, source_directory)
+        if source_files is None:
+            raise HTTPException(status_code=404, detail="Skill directory not found")
+        source_files[Path("SKILL.md")] = WorkspaceTreeFile(
+            payload.content.encode("utf-8"), 0o600
+        )
+        same_target = (
+            source_root.path == target_root.path and source_directory == target_directory
+        )
+        with state.config_lock:
+            if same_target:
+                write_text(
+                    source_root, source_directory / "SKILL.md", payload.content
+                )
+            else:
+                if snapshot_directory(target_root, target_directory) is not None:
+                    raise HTTPException(
+                        status_code=409, detail="A Skill with the target name already exists"
+                    )
+                replace_directory(target_root, target_directory, source_files)
+                try:
+                    delete_directory(source_root, source_directory)
+                except Exception:
+                    with suppress(Exception):
+                        delete_directory(target_root, target_directory)
+                    raise
+        restart_scope: Literal["project", "global"] = (
+            "global"
+            if "global" in {payload.source_scope, payload.target_scope}
+            else "project"
+        )
+        return {
+            "id": target_id,
+            "scope": payload.target_scope,
+            "content": payload.content,
+            "file_count": len(source_files),
+            "restarted": restart_changed_resources(project, restart_scope),
+        }
+
     @app.delete("/api/v1/projects/{project_id}/skills/{skill_id}", status_code=204)
     def remove_skill(
         project_id: str,
@@ -2434,12 +2814,10 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         item_id = validate_item_id(skill_id)
         if scope == "global":
             global_root = root_identity(Path.home() / ".config/opencode")
-            delete_file(global_root, Path(f"skills/{item_id}/SKILL.md"))
-            delete_empty_directory(global_root, Path(f"skills/{item_id}"))
+            delete_directory(global_root, Path(f"skills/{item_id}"))
         else:
             project_root = workspace_for(project)
-            delete_file(project_root, Path(f".opencode/skills/{item_id}/SKILL.md"))
-            delete_empty_directory(project_root, Path(f".opencode/skills/{item_id}"))
+            delete_directory(project_root, Path(f".opencode/skills/{item_id}"))
         restart_changed_resources(project, scope)
         return Response(status_code=204)
 
