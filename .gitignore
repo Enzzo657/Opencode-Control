@@ -15,6 +15,7 @@ web/vite.config.js
 web/vite.config.d.ts
 src/opencode_control/static/*
 !src/opencode_control/static/.gitkeep
+.opencode
 .opencode-control/
 .opencode-studio/
 AGENTS.md

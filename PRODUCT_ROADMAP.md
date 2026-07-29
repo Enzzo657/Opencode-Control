@@ -34,6 +34,8 @@
 - Durable scheduled runs: отдельные записи запусков, atomic materialization,
   lease fencing, recovery после restart, schedule revision, overlap history и
   явное состояние неопределённого dispatch.
+- Slash Commands Manager: project/global Markdown, starter pack, structured editor,
+  runtime discovery и нативный запуск `/command arguments` в Session.
 
 ## Текущие ограничения
 
@@ -46,56 +48,7 @@
 - Frontend остаётся крупным монолитным `App.tsx`; это приемлемо до локализации и
   расширения количества независимых экранов.
 
-## 1. Backup и restore
-
-Следующий рекомендуемый крупный этап. Он нужен до массового импорта Skills,
-Commands и любых исполняемых Plugins.
-
-### Export
-
-- [ ] Создавать согласованную копию Control SQLite через Backup API.
-- [ ] Экспортировать выбранные Tasks, Agents, Skills, MCP и `AGENTS.md`.
-- [ ] Исключать API keys, tokens и secret files по умолчанию.
-- [ ] Добавить versioned `manifest.json` и SHA-256 checksums.
-- [ ] Ограничить общий размер архива и размер отдельных файлов.
-- [ ] Запрещать symlinks, hard links и выход за разрешённые roots.
-
-### Restore
-
-- [ ] Валидировать версию manifest и checksums до любых изменений.
-- [ ] Показывать preview: новые, изменённые и конфликтующие сущности.
-- [ ] Поддержать `skip`, `overwrite` и `rename`.
-- [ ] Создавать backup текущего состояния перед применением.
-- [ ] Выполнять restore через staging и atomic replace.
-- [ ] Откатывать изменения при ошибке.
-- [ ] Добавить CLI export/restore для восстановления без UI.
-
-### Критерий готовности
-
-Пользователь может перенести конфигурацию и задачи на чистую установку, не
-раскрывая secrets и не рискуя частично перезаписать рабочее состояние.
-
-## 2. Slash Commands Manager
-
-Commands являются сохранёнными prompt templates OpenCode и не добавляют новый
-исполняемый runtime в Control.
-
-- [ ] Просматривать project/global commands.
-- [ ] Создавать и редактировать Markdown и frontmatter.
-- [ ] Настраивать description, agent, model, variant и subtask.
-- [ ] Проверять безопасное имя и конфликт scope.
-- [ ] Дублировать, переименовывать и удалять command.
-- [ ] Создавать command из локальных templates.
-- [ ] Показывать пример вызова и preview prompt.
-- [ ] Не выполнять shell interpolation во время preview.
-- [ ] Запускать command в выбранной или новой Session через OpenCode.
-
-### Критерий готовности
-
-Пользователь создаёт `/review`, видит итоговый prompt без выполнения shell-кода и
-запускает command в нужном проекте.
-
-## 3. Импорт Skills по HTTPS
+## 1. Импорт Skills по HTTPS
 
 - [ ] Принимать только HTTPS URL.
 - [ ] Запрещать localhost, private networks и небезопасные redirects.
@@ -107,7 +60,7 @@ Commands являются сохранёнными prompt templates OpenCode и 
 - [ ] Сохранять через существующий безопасный workspace layer.
 - [ ] Не выполнять загруженный контент во время импорта.
 
-## 4. Usage Dashboard
+## 2. Usage Dashboard
 
 Начинать только после проверки стабильности usage metadata текущего OpenCode API.
 Ошибочный подсчёт стоимости хуже отсутствия аналитики.
@@ -121,7 +74,7 @@ Commands являются сохранёнными prompt templates OpenCode и 
 - [ ] Показать самые дорогие Sessions и Tasks.
 - [ ] Сначала проверить таблицы и totals, затем добавлять графики.
 
-## 5. Локализация и декомпозиция UI
+## 3. Локализация и декомпозиция UI
 
 - [ ] Добавить небольшой typed translation layer без тяжёлого i18n framework.
 - [ ] Вынести русские строки в словарь.
@@ -142,7 +95,7 @@ Commands являются сохранёнными prompt templates OpenCode и 
 - [ ] Расширить redaction для cookies, нестандартных credential keys и вложенных
   provider options.
 - [ ] Добавить runtime access token для read/write API перед публичным release.
-- [ ] Добавить явный журнал scheduler recovery и агрегированную историю runs в UI.
+- [ ] Расширить карточку последнего scheduled run до полной истории запусков в UI.
 - [ ] Исследовать предупреждение frontend bundle больше 500 kB перед ростом UI.
 
 ## Отложено
@@ -160,7 +113,7 @@ Commands являются сохранёнными prompt templates OpenCode и 
 
 ### Plugins Manager
 
-Отложен до Backup/restore и отдельного security design. Plugin является исполняемым
+Отложен до отдельного security design. Plugin является исполняемым
 JS/TS-кодом с правами пользователя и может читать credentials, выполнять shell и
 отправлять данные в сеть. URL/npm installation не должна появляться раньше preview,
 pinned versions, source verification, backup и явного подтверждения.
@@ -172,9 +125,7 @@ signals, file locks, workspace security для reparse points и native Windows 
 
 ## Рекомендуемый порядок
 
-1. Backup/restore без secrets.
-2. Slash Commands Manager.
-3. Импорт Skills по HTTPS.
-4. Usage Dashboard после исследования OpenCode usage API.
-5. Локализация вместе с постепенным разбиением frontend.
-6. Возврат к CI/releases, Plugins и Windows только после отдельного решения.
+1. Импорт Skills по HTTPS.
+2. Usage Dashboard после исследования OpenCode usage API.
+3. Локализация вместе с постепенным разбиением frontend.
+4. Возврат к CI/releases, Plugins и Windows только после отдельного решения.

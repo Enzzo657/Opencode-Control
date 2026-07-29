@@ -16,6 +16,11 @@ from fastapi.testclient import TestClient
 
 import opencode_control.app as app_module
 from opencode_control.app import create_app
+from opencode_control.command_catalog import (
+    LEGACY_REVIEW_COMMAND_CONTENT,
+    STARTER_COMMANDS,
+    STARTER_COMMANDS_VERSION,
+)
 from opencode_control.config import ControlConfig
 from opencode_control.opencode_client import OpenCodeError, OpenCodeHTTPError
 from opencode_control.store import ControlStore
@@ -694,7 +699,7 @@ def test_task_launch_uses_dedicated_opencode_session(
     root = tmp_path / "project"
     root.mkdir()
     calls: list[tuple[str, Any]] = []
-    created_sessions = iter(("ses_task", "ses_extra", "ses_extra_2"))
+    created_sessions = iter(("ses_task", "ses_extra", "ses_extra_2", "ses_command"))
     runtime_statuses: dict[str, dict[str, str]] = {}
 
     class FakeOpenCodeClient:
@@ -749,12 +754,23 @@ def test_task_launch_uses_dedicated_opencode_session(
             *,
             agent: str | None = None,
             model: str | None = None,
+            variant: str | None = None,
             attachments: list[dict[str, str]] | None = None,
             mentions: list[str] | None = None,
         ) -> None:
             calls.append(("prompt", (session_id, prompt, agent, model, attachments)))
             if mentions:
                 calls.append(("mentions", mentions))
+
+        def run_command(
+            self,
+            session_id: str,
+            command: str,
+            arguments: str,
+            *,
+            variant: str | None = None,
+        ) -> None:
+            calls.append(("command", (session_id, command, arguments, variant)))
 
         def session_todos(self, session_id: str) -> list[dict[str, str]]:
             return [{"content": "Run tests", "status": "in_progress", "priority": "high"}]
@@ -781,9 +797,10 @@ def test_task_launch_uses_dedicated_opencode_session(
             headers=_csrf(client),
             json={
                 "title": "Review auth",
-                "prompt": "Find authorization gaps and add tests.",
+                "prompt": "@general Find authorization gaps and add tests.",
                 "agent": "reviewer",
                 "model": "openai/gpt-test",
+                "mentions": ["general"],
                 "attachments": [
                     {
                         "filename": "screen.png",
@@ -797,13 +814,14 @@ def test_task_launch_uses_dedicated_opencode_session(
         assert response.json()["session_id"] == "ses_task"
         assert response.json()["session_ids"] == ["ses_task"]
         assert response.json()["status"] == "running"
+        assert response.json()["mentions"] == ["general"]
         assert ("session", "Review auth") in calls
         assert (
             "prompt",
             (
                 "ses_task",
                 "Ожидаемый результат: Review auth\n\n"
-                "Подробное задание:\nFind authorization gaps and add tests.",
+                "Подробное задание:\n@general Find authorization gaps and add tests.",
                 "reviewer",
                 "openai/gpt-test",
                 [
@@ -815,6 +833,7 @@ def test_task_launch_uses_dedicated_opencode_session(
                 ],
             ),
         ) in calls
+        assert ("mentions", ["general"]) in calls
 
         runtime_statuses["ses_task"] = {
             "type": "failed",
@@ -846,9 +865,9 @@ def test_task_launch_uses_dedicated_opencode_session(
         )
         assert rerun.status_code == 202
         assert rerun.json()["session_id"] == "ses_task"
-        assert calls[-1][0] == "prompt"
-        assert calls[-1][1][0] == "ses_task"
-        assert "Продолжи задачу в этой же сессии" in calls[-1][1][1]
+        rerun_prompt = [call for call in calls if call[0] == "prompt"][-1]
+        assert rerun_prompt[1][0] == "ses_task"
+        assert "Продолжи задачу в этой же сессии" in rerun_prompt[1][1]
         assert len([call for call in calls if call[0] == "session"]) == 1
 
         todos = client.get(f"/api/v1/projects/{project_id}/sessions/ses_task/todos")
@@ -903,7 +922,9 @@ def test_task_launch_uses_dedicated_opencode_session(
             json={},
         )
         assert rerun_updated.status_code == 202
-        assert "Актуальное задание:\n@explore Run the tests again" in calls[-1][1][1]
+        updated_prompt = [call for call in calls if call[0] == "prompt"][-1]
+        assert "Актуальное задание:\n@explore Run the tests again" in updated_prompt[1][1]
+        assert calls[-1] == ("mentions", ["explore"])
 
         file_only = client.post(
             f"/api/v1/projects/{project_id}/sessions/ses_task/prompt",
@@ -980,6 +1001,18 @@ def test_task_launch_uses_dedicated_opencode_session(
         assert ("delete_session", ("ses_extra_2", True)) in calls
         assert client.get(f"/api/v1/projects/{project_id}/tasks").json() == []
 
+        command_task = client.post(
+            f"/api/v1/projects/{project_id}/tasks",
+            headers=_csrf(client),
+            json={"title": "Fix auth", "prompt": "/fix authorization", "variant": "high"},
+        )
+        assert command_task.status_code == 202
+        for _ in range(100):
+            if ("command", ("ses_command", "fix", "authorization", "high")) in calls:
+                break
+            time.sleep(0.01)
+        assert ("command", ("ses_command", "fix", "authorization", "high")) in calls
+
 
 def test_provider_auth_uses_managed_opencode_without_echoing_key(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1052,6 +1085,14 @@ def test_scheduled_task_can_be_paused_and_resumed(
         def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
             return {"worktree": str(root)}
 
+        def ensure_session_directory(
+            self, session_id: str, *, missing_ok: bool = False
+        ) -> bool:
+            return True
+
+        def prompt_async(self, session_id: str, prompt: str, **kwargs: Any) -> None:
+            return
+
     monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
     with _client(tmp_path) as client:
         project_id = _project(client, root, endpoint="http://127.0.0.1:4096")["id"]
@@ -1113,14 +1154,40 @@ def test_scheduled_task_can_be_paused_and_resumed(
                 "timezone": "Europe/Paris",
                 "cron_session_mode": "reuse",
                 "enabled": True,
+                "prompt": "@general Prepare a revised report",
+                "mentions": ["general"],
             },
         )
         assert scheduled_again.status_code == 200
         assert scheduled_again.json()["cron"] == "30 8 * * *"
         assert scheduled_again.json()["timezone"] == "Europe/Paris"
         assert scheduled_again.json()["cron_session_mode"] == "reuse"
+        assert scheduled_again.json()["prompt"] == "@general Prepare a revised report"
+        assert scheduled_again.json()["mentions"] == ["general"]
         assert scheduled_again.json()["status"] == "scheduled"
         assert scheduled_again.json()["next_run_at"]
+
+        client.app.state.control.store.add_task_session(
+            project_id, task["id"], "ses_scheduled"
+        )
+        follow_up = client.post(
+            f"/api/v1/projects/{project_id}/sessions/ses_scheduled/prompt",
+            headers=headers,
+            json={
+                "prompt": "Only inspect this completed run",
+                "agent": "plan",
+                "model": "openai/gpt-next",
+                "variant": "max",
+            },
+        )
+        assert follow_up.status_code == 202
+        persisted = client.app.state.control.store.get_task(project_id, task["id"])
+        assert persisted is not None
+        assert persisted["prompt"] == "@general Prepare a revised report"
+        assert persisted["mentions"] == ["general"]
+        assert persisted["agent"] is None
+        assert persisted["model"] is None
+        assert persisted["variant"] is None
 
         bad_timezone = client.patch(
             f"/api/v1/projects/{project_id}/tasks/{task['id']}/schedule",
@@ -1219,15 +1286,15 @@ def test_git_status_diff_and_commit_are_scoped_to_project(tmp_path: Path) -> Non
     git("init", "-q")
     git("config", "user.name", "Studio Test")
     git("config", "user.email", "studio@example.test")
-    tracked = root / "tracked.txt"
-    tracked.write_text("before\n")
-    git("add", "tracked.txt")
-    git("commit", "-q", "-m", "Initial")
-    tracked.write_text("after\n")
-    (root / "new.txt").write_text("new\n")
 
     with _client(tmp_path) as client:
         project_id = _project(client, root)["id"]
+        tracked = root / "tracked.txt"
+        tracked.write_text("before\n")
+        git("add", ".")
+        git("commit", "-q", "-m", "Initial")
+        tracked.write_text("after\n")
+        (root / "new.txt").write_text("new\n")
         state = client.get(f"/api/v1/projects/{project_id}/git")
         assert state.status_code == 200
         assert state.json()["available"] is True
@@ -1355,3 +1422,186 @@ def test_skill_save_restarts_running_managed_server(
         )
         assert skill["id"] == "parser"
         assert skill["effective_name"] == "hacker-news-parser"
+
+
+def test_default_commands_and_project_crud(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    skill = root / ".opencode/skills/native-tool/SKILL.md"
+    skill.parent.mkdir(parents=True)
+    skill.write_text("---\nname: native-tool\ndescription: Native tool skill\n---\n")
+
+    class FakeOpenCodeClient:
+        def __init__(self, endpoint: str, directory: str, **kwargs: Any) -> None:
+            return
+
+        def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            return {"worktree": str(root)}
+
+        def commands(self) -> list[dict[str, Any]]:
+            return [
+                {"id": "native-tool", "description": "Native tool", "content": "Tool"}
+            ]
+
+    monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
+    with _client(tmp_path) as client:
+        project_id = _project(client, root, endpoint="http://127.0.0.1:4096")["id"]
+        headers = _csrf(client)
+        custom_review = root / ".opencode/commands/review.md"
+        custom_review.parent.mkdir(parents=True, exist_ok=True)
+        custom_review.write_text("---\ndescription: Custom review\n---\n\nKeep me\n")
+
+        for command_id, definition in STARTER_COMMANDS.items():
+            assert (root / f".opencode/commands/{command_id}.md").read_text() == definition[
+                "content"
+            ]
+        assert (
+            client.app.state.control.store.get_project(project_id)[
+                "starter_commands_version"
+            ]
+            == STARTER_COMMANDS_VERSION
+        )
+        assert custom_review.read_text().endswith("Keep me\n")
+
+        saved = client.put(
+            f"/api/v1/projects/{project_id}/commands/audit",
+            headers=headers,
+            json={
+                "scope": "project",
+                "content": (
+                    "---\ndescription: Audit code\nagent: plan\nsubtask: false\n"
+                    "---\n\nAudit $ARGUMENTS\n"
+                ),
+            },
+        )
+        commands = client.get(f"/api/v1/projects/{project_id}/commands")
+
+        assert saved.status_code == 200
+        audit = next(item for item in commands.json() if item["id"] == "audit")
+        assert audit["agent"] == "plan"
+        assert audit["has_arguments"] is True
+        assert audit["editable"] is True
+        native_tool = next(item for item in commands.json() if item["id"] == "native-tool")
+        assert native_tool["editable"] is False
+        assert native_tool["content"] == ""
+        assert native_tool["kind"] == "skill"
+
+        removed = client.delete(
+            f"/api/v1/projects/{project_id}/commands/audit?scope=project", headers=headers
+        )
+        assert removed.status_code == 204
+        assert not (root / ".opencode/commands/audit.md").exists()
+
+
+def test_deleted_default_command_is_not_recreated(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    with _client(tmp_path) as client:
+        project_id = _project(client, root)["id"]
+        removed = client.delete(
+            f"/api/v1/projects/{project_id}/commands/fix?scope=project",
+            headers=_csrf(client),
+        )
+        assert removed.status_code == 204
+        assert not (root / ".opencode/commands/fix.md").exists()
+
+    with _client(tmp_path):
+        assert not (root / ".opencode/commands/fix.md").exists()
+
+
+def test_legacy_review_migration_preserves_edited_files(tmp_path: Path) -> None:
+    exact_root = tmp_path / "exact"
+    edited_root = tmp_path / "edited"
+    exact_root.mkdir()
+    edited_root.mkdir()
+    for root, content in (
+        (exact_root, LEGACY_REVIEW_COMMAND_CONTENT),
+        (edited_root, LEGACY_REVIEW_COMMAND_CONTENT + "\nUser change\n"),
+    ):
+        target = root / ".opencode/commands/review.md"
+        target.parent.mkdir(parents=True)
+        target.write_text(content)
+
+    store = ControlStore(tmp_path / "data")
+    exact = store.create_project(name="Exact", root=exact_root, endpoint=None)
+    edited = store.create_project(name="Edited", root=edited_root, endpoint=None)
+    store.close()
+
+    with _client(tmp_path) as client:
+        assert not (exact_root / ".opencode/commands/review.md").exists()
+        assert (edited_root / ".opencode/commands/review.md").read_text().endswith(
+            "User change\n"
+        )
+        assert client.app.state.control.store.get_project(str(exact["id"]))[
+            "starter_commands_version"
+        ] == STARTER_COMMANDS_VERSION
+        assert client.app.state.control.store.get_project(str(edited["id"]))[
+            "starter_commands_version"
+        ] == STARTER_COMMANDS_VERSION
+
+
+def test_command_runs_natively_and_rejects_busy_session(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    calls: list[tuple[str, str, str]] = []
+    status = {"value": "idle"}
+    started = threading.Event()
+    release = threading.Event()
+
+    class FakeOpenCodeClient:
+        def __init__(self, endpoint: str, directory: str, **kwargs: Any) -> None:
+            return
+
+        def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            return {"worktree": str(root)}
+
+        def ensure_session_directory(
+            self, session_id: str, *, missing_ok: bool = False
+        ) -> bool:
+            return True
+
+        def commands(self) -> list[dict[str, Any]]:
+            return [
+                {"id": "review", "description": "Review", "content": "Review $ARGUMENTS"}
+            ]
+
+        def snapshot(self) -> dict[str, Any]:
+            return {"statuses": {"ses_command": {"type": status["value"]}}}
+
+        def run_command(
+            self,
+            session_id: str,
+            command: str,
+            arguments: str,
+            *,
+            variant: str | None = None,
+        ) -> None:
+            started.set()
+            release.wait(timeout=2)
+            calls.append((session_id, command, arguments))
+
+    monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
+    with _client(tmp_path) as client:
+        project_id = _project(client, root, endpoint="http://127.0.0.1:4096")["id"]
+        headers = _csrf(client)
+        endpoint = f"/api/v1/projects/{project_id}/sessions/ses_command/commands/review"
+
+        executed = client.post(endpoint, headers=headers, json={"arguments": "auth"})
+        assert started.wait(timeout=1)
+        status["value"] = "busy"
+        busy = client.post(endpoint, headers=headers, json={"arguments": "again"})
+
+        assert executed.status_code == 202
+        assert executed.json() == {"accepted": True}
+        assert calls == []
+        release.set()
+        for _ in range(100):
+            if calls:
+                break
+            time.sleep(0.01)
+        assert calls == [("ses_command", "review", "auth")]
+        assert busy.status_code == 409

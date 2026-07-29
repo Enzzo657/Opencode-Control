@@ -181,7 +181,9 @@ class OpenCodeProcessManager:
                 or managed.process.poll() is not None
             ):
                 raise ProcessError("managed OpenCode server changed before request")
-            yield
+        # Network calls can last for the full agent run. Holding the process lock here
+        # would block status checks, page loads, and abort requests until it finishes.
+        yield
 
     def shutdown(self) -> None:
         with self._lock:

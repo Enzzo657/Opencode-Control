@@ -72,4 +72,24 @@ def test_concurrent_start_owns_only_one_process(
     assert len(spawned) == 1
     assert len(results) == 2
     assert all(result["pid"] == spawned[0].pid for result in results)
+
+    connection = manager.connection("prj")
+    assert connection is not None
+    lease_entered = threading.Event()
+    release_lease = threading.Event()
+
+    def hold_request_lease() -> None:
+        with manager.lease("prj", connection):
+            lease_entered.set()
+            release_lease.wait(timeout=2)
+
+    lease_thread = threading.Thread(target=hold_request_lease)
+    lease_thread.start()
+    assert lease_entered.wait(timeout=1)
+    status_thread = threading.Thread(target=lambda: manager.status("prj"))
+    status_thread.start()
+    status_thread.join(timeout=0.2)
+    release_lease.set()
+    lease_thread.join(timeout=1)
+    assert not status_thread.is_alive()
     manager.shutdown()

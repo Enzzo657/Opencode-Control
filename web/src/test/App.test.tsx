@@ -51,7 +51,7 @@ describe("OpenCode Control", () => {
           statuses: { ses_1: { type: "idle" } },
           agents: [{ name: "build", mode: "primary" }, { name: "plan", mode: "primary" }, { name: "explore", mode: "subagent" }, { name: "general", mode: "subagent" }],
           mcp: { context7: { status: "connected" }, xlsx: { status: "disabled" } },
-          providers: { connected: ["openai"], available: [{ id: "openai", model_count: 2, models: ["openai/gpt-test", "openai/gpt-other"] }] },
+          providers: { connected: ["openai"], available: [{ id: "openai", model_count: 2, models: ["openai/gpt-test", "openai/gpt-other"], model_variants: { "openai/gpt-test": ["low", "high"] } }] },
           config: { model: "openai/gpt-test", default_agent: "build" },
           server: project.server,
         });
@@ -222,6 +222,14 @@ describe("OpenCode Control", () => {
     expect(screen.queryByText("Раздел не удалось открыть")).not.toBeInTheDocument();
   });
 
+  it("shows the reasoning level on every task card", async () => {
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
+    const card = (await screen.findByText("Fix checkout task")).closest(".task-card");
+    expect(card?.querySelector(".task-meta")?.textContent).toContain("Рассуждениепо умолчанию");
+  });
+
   it("keeps agent and connected-model pickers open until selection", async () => {
     render(<App />);
     await screen.findByText("Центр управления");
@@ -235,19 +243,73 @@ describe("OpenCode Control", () => {
     expect(screen.getByRole("option", { name: /openai\/gpt-test/ })).toBeInTheDocument();
   });
 
-  it("keeps the explicitly selected agent for the next task", async () => {
+  it("keeps the selected agent, model, and reasoning level for the next task", async () => {
     render(<App />);
     await screen.findByText("Центр управления");
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Запустить задачу" }));
     fireEvent.click(screen.getByRole("button", { name: "Агент: по умолчанию" }));
     fireEvent.click(screen.getByRole("option", { name: /build/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Рассуждение: по умолчанию" }));
+    fireEvent.click(screen.getByRole("option", { name: /^high/ }));
     fireEvent.change(screen.getByPlaceholderText("Что нужно сделать?"), { target: { value: "Первая задача" } });
     fireEvent.change(screen.getByPlaceholderText(/Опишите задачу/), { target: { value: "Проверить выбор агента" } });
     fireEvent.click(screen.getByRole("button", { name: "Запустить агента" }));
     await waitFor(() => expect(screen.queryByRole("dialog", { name: "Запустить задачу" })).not.toBeInTheDocument());
     fireEvent.click(screen.getByRole("button", { name: "Запустить задачу" }));
     expect(screen.getByRole("button", { name: "Агент: build" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Модель: openai/gpt-test" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Рассуждение: high" })).toBeInTheDocument();
+  });
+
+  it("offers Slash Commands and subagent mentions when creating a task", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.endsWith("/commands")) return response([{ id: "fix", description: "Исправить проблему", content: "Fix $ARGUMENTS", kind: "command" }]);
+      if (path.endsWith("/tasks") && init?.method === "POST") return response({ id: "task_new" });
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Запустить задачу" }));
+    const prompt = screen.getByPlaceholderText(/Опишите задачу/);
+    fireEvent.change(prompt, { target: { value: "/f" } });
+    fireEvent.click(await screen.findByRole("option", { name: /\/fix/ }));
+    fireEvent.change(prompt, { target: { value: "@g", selectionStart: 2 } });
+    expect(await screen.findByRole("option", { name: /@general/ })).toBeInTheDocument();
+    fireEvent.change(prompt, { target: { value: "/fix авторизацию" } });
+    fireEvent.change(screen.getByPlaceholderText("Что нужно сделать?"), { target: { value: "Исправить авторизацию" } });
+    fireEvent.click(screen.getByRole("button", { name: "Запустить агента" }));
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/tasks") && init?.method === "POST");
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ title: "Исправить авторизацию", prompt: "/fix авторизацию" });
+    });
+  });
+
+  it("runs a Slash Command as the first message of a new session", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.endsWith("/commands")) return response([{ id: "fix", description: "Исправить проблему", content: "Fix $ARGUMENTS", kind: "command" }]);
+      if (path.endsWith("/sessions") && init?.method === "POST") return response({ id: "ses_new" });
+      if (path.includes("/sessions/ses_new/commands/fix") && init?.method === "POST") return response({});
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(screen.getByRole("button", { name: "Новая сессия" }));
+    const prompt = screen.getByPlaceholderText("Первое сообщение…");
+    fireEvent.change(prompt, { target: { value: "/f" } });
+    fireEvent.click(await screen.findByRole("option", { name: /\/fix/ }));
+    fireEvent.change(prompt, { target: { value: "/fix авторизацию" } });
+    fireEvent.click(screen.getByRole("button", { name: "Создать сессию" }));
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes("/sessions/ses_new/commands/fix") && init?.method === "POST");
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ arguments: "авторизацию" });
+    });
   });
 
   it("connects a provider with an API key from Control", async () => {
@@ -357,7 +419,7 @@ describe("OpenCode Control", () => {
     const textarea = screen.getByPlaceholderText("Продолжите диалог в этой же сессии…");
     fireEvent.change(textarea, { target: { value: "Проверь ещё раз" } });
     fireEvent.click(screen.getByRole("button", { name: "Отправить в эту сессию" }));
-    await waitFor(() => expect(window.localStorage.getItem(`control-session-selection:${project.id}:ses_1`)).toBe(JSON.stringify({ agent: "plan", model: "openai/gpt-other" })));
+    await waitFor(() => expect(window.localStorage.getItem(`control-session-selection:${project.id}:ses_1`)).toBe(JSON.stringify({ agent: "plan", model: "openai/gpt-other", variant: "" })));
     fireEvent.click(screen.getByRole("button", { name: "Закрыть сессию" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     expect(await screen.findByRole("button", { name: "Агент: plan" })).toBeInTheDocument();
@@ -417,16 +479,16 @@ describe("OpenCode Control", () => {
   });
 
   it("offers a manual jump to the latest message", async () => {
+    const scrollTo = vi.fn();
     render(<App />);
     await screen.findByText("Центр управления");
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const stream = (await screen.findByRole("dialog", { name: "Сессия Fix checkout" })).querySelector<HTMLElement>(".message-stream")!;
     Object.defineProperties(stream, { scrollHeight: { configurable: true, value: 1000 }, clientHeight: { configurable: true, value: 200 }, scrollTop: { configurable: true, writable: true, value: 100 } });
-    const scrollTo = vi.fn();
-    stream.scrollTo = scrollTo;
+    Object.defineProperty(stream, "scrollTo", { configurable: true, value: scrollTo });
     fireEvent.scroll(stream);
-    fireEvent.click(await screen.findByRole("button", { name: "Перейти к последнему сообщению" }));
+    fireEvent.click(screen.getByRole("button", { name: "Перейти к последнему сообщению" }));
     await waitFor(() => expect(scrollTo).toHaveBeenCalledWith({ top: 1000, behavior: "smooth" }));
   });
 
@@ -723,17 +785,170 @@ describe("OpenCode Control", () => {
     });
   });
 
+  it("shows default Commands directly in the current configuration", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.endsWith("/commands")) return response([
+        { id: "fix", description: "Исправить проблему", content: "Fix $ARGUMENTS", scope: "project", editable: true, kind: "command" },
+        { id: "test", description: "Запустить проверки", content: "Test $ARGUMENTS", scope: "project", editable: true, kind: "command" },
+      ]);
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Команды" }));
+
+    expect(await screen.findByText("/fix")).toBeInTheDocument();
+    expect(screen.getByText("/test")).toBeInTheDocument();
+    expect(screen.queryByText("Активировать стандартные Commands?")).not.toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("starter-pack"))).toBe(false);
+  });
+
+  it("allows a Command to target a subagent and enables a child session", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes("/commands/research") && init?.method === "PUT") return response({});
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Команды" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Создать команду" }));
+    fireEvent.change(screen.getByPlaceholderText("review"), { target: { value: "research" } });
+    fireEvent.click(screen.getByRole("button", { name: "Агент: build" }));
+    fireEvent.click(screen.getByRole("option", { name: /explore/ }));
+    expect(screen.getByRole("checkbox")).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Агент: explore" }));
+    fireEvent.click(screen.getByRole("option", { name: /build/ }));
+    expect(screen.getByRole("checkbox")).not.toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "Агент: build" }));
+    fireEvent.click(screen.getByRole("option", { name: /explore/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить /research" }));
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes("/commands/research") && init?.method === "PUT");
+      expect(JSON.parse(String(call?.[1]?.body)).content).toContain('agent: "explore"');
+      expect(JSON.parse(String(call?.[1]?.body)).content).toContain("subtask: true");
+    });
+  });
+
+  it("offers only variants supported by the effective command model", async () => {
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Команды" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Создать команду" }));
+    fireEvent.change(screen.getByRole("textbox", { name: /Имя команды/ }), { target: { value: "reason" } });
+
+    const variants = screen.getByRole("combobox", { name: /Режим рассуждений/ });
+    expect(screen.getByRole("option", { name: "low" })).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "high" })).toBeInTheDocument();
+    fireEvent.change(variants, { target: { value: "high" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить /reason" }));
+
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/commands/reason") && init?.method === "PUT");
+      expect(JSON.parse(String(call?.[1]?.body)).content).toContain('variant: "high"');
+    });
+  });
+
+  it("runs a selected Slash Command in the current session", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.endsWith("/commands")) return response([{ id: "review", description: "Проверить изменения", content: "Review $ARGUMENTS", scope: "project", has_arguments: true }]);
+      if (path.includes("/commands/review") && init?.method === "POST") return response({});
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(await screen.findByText("Fix checkout"));
+    fireEvent.click(screen.getByRole("button", { name: "Рассуждение: по умолчанию" }));
+    fireEvent.click(screen.getByRole("option", { name: /^high/ }));
+    const textarea = screen.getByPlaceholderText("Продолжите диалог в этой же сессии…");
+    fireEvent.change(textarea, { target: { value: "/" } });
+    fireEvent.click(await screen.findByRole("option", { name: /\/review/ }));
+    fireEvent.change(textarea, { target: { value: "/review авторизация" } });
+    fireEvent.click(screen.getByRole("button", { name: "Отправить в эту сессию" }));
+
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes("/sessions/ses_1/commands/review") && init?.method === "POST");
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ arguments: "авторизация", variant: "high" });
+    });
+  });
+
+  it("offers and runs a Runtime Skill from the Slash Command palette", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.endsWith("/commands")) return response([{ id: "hacker-news-summary", description: "Формирует дайджест Hacker News", content: "", scope: "runtime", kind: "skill" }]);
+      if (path.includes("/commands/hacker-news-summary") && init?.method === "POST") return response({});
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(await screen.findByText("Fix checkout"));
+    const textarea = screen.getByPlaceholderText("Продолжите диалог в этой же сессии…");
+    fireEvent.change(textarea, { target: { value: "/h" } });
+    fireEvent.click(await screen.findByRole("option", { name: /\/hacker-news-summary/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Отправить в эту сессию" }));
+
+    await waitFor(() => {
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes("/sessions/ses_1/commands/hacker-news-summary") && init?.method === "POST");
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ arguments: "" });
+    });
+  });
+
+  it("keeps the keyboard-selected Slash Command visible", async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, "scrollIntoView", { configurable: true, value: scrollIntoView });
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/commands")) return response(Array.from({ length: 8 }, (_, index) => ({ id: `command-${index + 1}`, description: `Команда ${index + 1}`, content: "Run", kind: "command" })));
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(await screen.findByText("Fix checkout"));
+    const textarea = screen.getByPlaceholderText("Продолжите диалог в этой же сессии…");
+    fireEvent.change(textarea, { target: { value: "/" } });
+    await screen.findByRole("option", { name: /\/command-1/ });
+    for (let index = 0; index < 7; index += 1) fireEvent.keyDown(textarea, { key: "ArrowDown" });
+
+    await waitFor(() => {
+      expect(screen.getByRole("option", { name: /\/command-8/ })).toHaveAttribute("aria-selected", "true");
+      expect(scrollIntoView).toHaveBeenCalled();
+    });
+  });
+
   it("switches an existing manual task to cron", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/commands")) return response([{ id: "hacker-news-summary", description: "Дайджест Hacker News", content: "", scope: "runtime", kind: "skill" }]);
+      return fallback(input, init);
+    });
     render(<App />);
     await screen.findByText("Центр управления");
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Настроить запуск" }));
+    const prompt = screen.getByLabelText("Задание для каждого запуска");
+    fireEvent.change(prompt, { target: { value: "/h" } });
+    fireEvent.click(await screen.findByRole("option", { name: /\/hacker-news-summary/ }));
+    fireEvent.change(prompt, { target: { value: "@g", selectionStart: 2 } });
+    fireEvent.click(await screen.findByRole("option", { name: /@general/ }));
+    fireEvent.change(prompt, { target: { value: "@general Сформировать новый отчёт" } });
     fireEvent.change(screen.getByLabelText("Режим"), { target: { value: "cron" } });
     fireEvent.change(screen.getByLabelText("Время запуска"), { target: { value: "07:45" } });
     fireEvent.click(screen.getByRole("button", { name: "Сохранить" }));
     await waitFor(() => {
       const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/tasks/task_1/schedule") && init?.method === "PATCH");
-      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ mode: "cron", cron: "45 7 * * *", enabled: true, cron_session_mode: "new" });
+      expect(JSON.parse(String(call?.[1]?.body))).toMatchObject({ mode: "cron", prompt: "@general Сформировать новый отчёт", mentions: ["general"], cron: "45 7 * * *", enabled: true, cron_session_mode: "new" });
     });
   });
 

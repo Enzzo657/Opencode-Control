@@ -35,6 +35,7 @@ class ControlStore:
                     endpoint TEXT,
                     root_device INTEGER,
                     root_inode INTEGER,
+                    starter_commands_version INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
                 );
@@ -45,6 +46,8 @@ class ControlStore:
                     prompt TEXT NOT NULL,
                     agent TEXT,
                     model TEXT,
+                    variant TEXT,
+                    mentions TEXT NOT NULL DEFAULT '[]',
                     status TEXT NOT NULL,
                     session_id TEXT,
                     error TEXT,
@@ -106,6 +109,11 @@ class ControlStore:
                 self._connection.execute(
                     "ALTER TABLE projects ADD COLUMN managed_enabled INTEGER NOT NULL DEFAULT 0"
                 )
+            if "starter_commands_version" not in columns:
+                self._connection.execute(
+                    "ALTER TABLE projects ADD COLUMN "
+                    "starter_commands_version INTEGER NOT NULL DEFAULT 0"
+                )
             task_columns = {
                 str(row[1])
                 for row in self._connection.execute("PRAGMA table_info(tasks)").fetchall()
@@ -118,6 +126,8 @@ class ControlStore:
                 ("next_run_at", "TEXT"),
                 ("last_run_at", "TEXT"),
                 ("schedule_revision", "INTEGER NOT NULL DEFAULT 0"),
+                ("variant", "TEXT"),
+                ("mentions", "TEXT NOT NULL DEFAULT '[]'"),
             ):
                 if name not in task_columns:
                     self._connection.execute(f"ALTER TABLE tasks ADD COLUMN {name} {definition}")
@@ -216,6 +226,13 @@ class ControlStore:
                 (int(enabled), _now(), project_id),
             )
 
+    def set_starter_commands_version(self, project_id: str, version: int) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                "UPDATE projects SET starter_commands_version = ?, updated_at = ? WHERE id = ?",
+                (version, _now(), project_id),
+            )
+
     def create_task(
         self,
         project_id: str,
@@ -224,6 +241,8 @@ class ControlStore:
         prompt: str,
         agent: str | None,
         model: str | None,
+        variant: str | None = None,
+        mentions: list[str] | None = None,
         cron: str | None = None,
         timezone: str | None = None,
         cron_session_mode: str = "new",
@@ -235,10 +254,10 @@ class ControlStore:
             self._connection.execute(
                 """
                 INSERT INTO tasks
-                    (id, project_id, title, prompt, agent, model, status, session_id, error,
-                     created_at, updated_at, cron, timezone, schedule_enabled, cron_session_mode,
-                     next_run_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, project_id, title, prompt, agent, model, variant, mentions, status,
+                     session_id, error, created_at, updated_at, cron, timezone,
+                     schedule_enabled, cron_session_mode, next_run_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -247,6 +266,8 @@ class ControlStore:
                     prompt,
                     agent,
                     model,
+                    variant,
+                    json.dumps(mentions or [], ensure_ascii=False),
                     "scheduled" if cron else "queued",
                     None,
                     None,
@@ -291,8 +312,11 @@ class ControlStore:
         prompt: str | None,
         agent: str | None,
         model: str | None,
+        variant: str | None,
+        mentions: list[str],
         update_agent: bool,
         update_model: bool,
+        update_variant: bool,
     ) -> dict[str, Any] | None:
         with self._lock, self._connection:
             self._connection.execute(
@@ -301,6 +325,8 @@ class ControlStore:
                     prompt = COALESCE(?, prompt),
                     agent = CASE WHEN ? THEN ? ELSE agent END,
                     model = CASE WHEN ? THEN ? ELSE model END,
+                    variant = CASE WHEN ? THEN ? ELSE variant END,
+                    mentions = CASE WHEN ? THEN ? ELSE mentions END,
                     error = NULL, updated_at = ?
                 WHERE project_id = ? AND id = ?
                 """,
@@ -311,6 +337,10 @@ class ControlStore:
                     agent,
                     update_model,
                     model,
+                    update_variant,
+                    variant,
+                    prompt is not None,
+                    json.dumps(mentions, ensure_ascii=False),
                     _now(),
                     project_id,
                     task_id,
@@ -457,6 +487,8 @@ class ControlStore:
         enabled: bool,
         cron_session_mode: str | None,
         next_run_at: str | None,
+        prompt: str | None = None,
+        mentions: list[str] | None = None,
     ) -> dict[str, Any] | None:
         with self._lock, self._connection:
             row = self._connection.execute(
@@ -475,6 +507,7 @@ class ControlStore:
                 """
                 UPDATE tasks SET cron = ?, timezone = ?, schedule_enabled = ?,
                     cron_session_mode = COALESCE(?, cron_session_mode), next_run_at = ?,
+                    prompt = COALESCE(?, prompt), mentions = COALESCE(?, mentions),
                     schedule_revision = schedule_revision + 1, status = ?, updated_at = ?
                 WHERE project_id = ? AND id = ?
                 """,
@@ -484,6 +517,8 @@ class ControlStore:
                     int(enabled and cron is not None),
                     cron_session_mode,
                     next_run_at,
+                    prompt,
+                    json.dumps(mentions, ensure_ascii=False) if mentions is not None else None,
                     status,
                     _now(),
                     project_id,
@@ -869,6 +904,11 @@ class ControlStore:
 
     def _task_view(self, row: sqlite3.Row) -> dict[str, Any]:
         result = dict(row)
+        try:
+            mentions = json.loads(str(result.get("mentions") or "[]"))
+        except json.JSONDecodeError:
+            mentions = []
+        result["mentions"] = [item for item in mentions if isinstance(item, str)]
         result["session_ids"] = self.task_session_ids(
             str(result["project_id"]), str(result["id"])
         )

@@ -21,6 +21,19 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Location", "https://example.com")
             self.end_headers()
             return
+        if self.path.startswith("/command?"):
+            self._respond(
+                [
+                    {
+                        "name": "review",
+                        "description": "Review changes",
+                        "agent": "plan",
+                        "template": "Review $ARGUMENTS",
+                        "subtask": False,
+                    }
+                ]
+            )
+            return
         self._respond({"healthy": True, "path": self.path})
 
     def do_POST(self) -> None:
@@ -107,6 +120,22 @@ def test_client_routes_directory_and_rejects_redirects() -> None:
             "PUT",
             "/auth/openai%2Fcustom",
             {"type": "api", "key": "secret"},
+        )
+        assert client.commands() == [
+            {
+                "id": "review",
+                "description": "Review changes",
+                "agent": "plan",
+                "model": None,
+                "subtask": False,
+                "content": "Review $ARGUMENTS",
+            }
+        ]
+        client.run_command("ses_new", "review", "auth")
+        assert Handler.requests[-1] == (
+            "POST",
+            "/session/ses_new/command?directory=%2Ftmp%2Fmy+project",
+            {"command": "review", "arguments": "auth"},
         )
 
 
@@ -656,7 +685,15 @@ def test_snapshot_projects_only_safe_runtime_metadata(monkeypatch: pytest.Monkey
                     "id": "openai",
                     "name": "OpenAI",
                     "options": {"apiKey": "drop"},
-                    "models": {"gpt": {"headers": {"Authorization": "drop"}}},
+                    "models": {
+                        "gpt": {
+                            "headers": {"Authorization": "drop"},
+                            "variants": {
+                                "low": {"reasoningEffort": "low"},
+                                "high": {"reasoningEffort": "high"},
+                            },
+                        }
+                    },
                 },
                 {"id": "unused", "name": "Unused", "models": {"other": {}}},
             ],
@@ -699,6 +736,7 @@ def test_snapshot_projects_only_safe_runtime_metadata(monkeypatch: pytest.Monkey
                 "name": "OpenAI",
                 "model_count": 1,
                 "models": ["openai/gpt"],
+                "model_variants": {"openai/gpt": ["low", "high"]},
                 "default_model": "openai/gpt",
             }
         ],

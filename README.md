@@ -106,6 +106,25 @@ opencode-control uninstall --yes --purge-data
 Purge удаляет только проверенное содержимое `~/.opencode-control`. Legacy-каталог
 `~/.opencode-studio` автоматически не удаляется.
 
+## Ручная копия данных
+
+Project-файлы, Agents, Skills, Commands и `AGENTS.md` уже находятся в директории
+проекта и переносятся через Git или обычное копирование. Отдельный export Control
+для них не нужен. Внутреннее состояние Tasks и расписаний хранится в SQLite.
+
+Перед копированием SQLite остановите Control, чтобы последние WAL-изменения были
+записаны в основной файл:
+
+```bash
+opencode-control stop
+cp ~/.opencode-control/control.sqlite ~/control-backup.sqlite
+opencode-control start --no-open
+```
+
+Для восстановления остановите Control, верните файл на место, установите права
+`0600` и снова запустите его. История сообщений OpenCode хранится отдельно в
+`~/.local/share/opencode/`, а global config — в `~/.config/opencode/`.
+
 ## Логи
 
 Основной лог находится в `~/.opencode-control/control.log`, project logs — в
@@ -232,6 +251,37 @@ Control показывает три связанных, но разных сос
 Файлы можно выбрать кнопкой или перетащить в форму или чат. Cron-задачи не принимают
 вложения, потому что Control не сохраняет base64-вложения в SQLite для будущих
 запусков.
+
+## Slash Commands
+
+Slash Command — нативный prompt-шаблон OpenCode. Project Commands хранятся в
+`<project>/.opencode/commands/<name>.md`, global Commands — в
+`~/.config/opencode/commands/<name>.md`. Они доступны одновременно в Control и
+OpenCode TUI.
+
+При добавлении проекта Control один раз создаёт в нём стартовые `/fix`, `/test`,
+`/plan`, `/explain` и `/commit-check`. Это обычные project-файлы: их можно менять
+или удалять, и после удаления Control не создаёт их повторно. Существующие файлы с
+такими именами не перезаписываются. `/review` предоставляет сам OpenCode как runtime
+Command; при необходимости её можно переопределить собственным project- или global-файлом.
+
+В текущей Session введите команду и аргументы:
+
+```text
+/review авторизация и хранение токенов
+```
+
+Control вызывает нативный endpoint OpenCode `/session/{id}/command`; OpenCode сам
+применяет `agent`, `model`, `variant`, `subtask`, `$ARGUMENTS` и `$1`, `$2`.
+Неизвестная команда не отправляется как обычный prompt. Конструкция
+`` !`shell command` `` выполняется самим OpenCode без дополнительного подтверждения;
+в editor она помечается как Shell, а сохранение Command её не запускает.
+
+Системная `/init` изучает репозиторий и создаёт или обновляет project `AGENTS.md`;
+обычно она нужна один раз при первичной настройке проекта. Некоторые версии
+OpenCode также публикуют Skills (`/customize-opencode`, `/context7-mcp` и project
+Skills) через command API. Control показывает их отдельным сворачиваемым списком,
+но скрывает из обычного `/` palette: Skills обычно выбираются агентом автоматически.
 
 Список моделей в Control намеренно ограничен провайдерами, которые OpenCode
 считает подключёнными или настроенными. Полный встроенный каталог `models.dev`

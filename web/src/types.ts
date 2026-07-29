@@ -20,7 +20,7 @@ export type Session = {
   title?: string;
   parentID?: string;
   agent?: string;
-  model?: { providerID?: string; modelID?: string; id?: string };
+  model?: { providerID?: string; modelID?: string; id?: string; variant?: string };
   cost?: number;
   tokens?: {
     input?: number;
@@ -54,6 +54,23 @@ export type WorkspaceItem = {
   internal?: boolean;
 };
 
+export type CommandItem = {
+  id: string;
+  description?: string | null;
+  agent?: string | null;
+  model?: string | null;
+  variant?: string | null;
+  subtask?: boolean;
+  content: string;
+  scope?: "project" | "global" | "runtime";
+  source?: string;
+  editable?: boolean;
+  runtime?: boolean;
+  has_shell?: boolean;
+  has_arguments?: boolean;
+  kind?: "command" | "skill";
+};
+
 export type RuntimeConfig = {
   model?: string;
   small_model?: string;
@@ -67,6 +84,7 @@ export type ProviderSummary = {
   name?: string;
   model_count: number;
   models: string[];
+  model_variants?: Record<string, string[]>;
   default_model?: string | null;
 };
 
@@ -111,6 +129,7 @@ export type Task = {
   prompt: string;
   agent: string | null;
   model: string | null;
+  variant?: string | null;
   status: string;
   session_id: string | null;
   session_ids?: string[];

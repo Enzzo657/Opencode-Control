@@ -9,8 +9,9 @@ import logging
 import re
 import secrets
 import sqlite3
+import threading
 import urllib.parse
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -23,6 +24,11 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from opencode_control.command_catalog import (
+    LEGACY_REVIEW_COMMAND_CONTENT,
+    STARTER_COMMANDS,
+    STARTER_COMMANDS_VERSION,
+)
 from opencode_control.config import ControlConfig
 from opencode_control.git_workspace import (
     GitError,
@@ -48,6 +54,7 @@ from opencode_control.workspace import (
     file_exists,
     list_external_markdown,
     list_markdown,
+    parse_frontmatter,
     preserve_redacted,
     read_config,
     read_external_text,
@@ -116,6 +123,7 @@ class PromptCreate(StrictModel):
     prompt: str = Field(default="", max_length=200_000)
     agent: str | None = Field(default=None, max_length=128)
     model: str | None = Field(default=None, max_length=256)
+    variant: str | None = Field(default=None, max_length=128)
     attachments: list[Attachment] = Field(default_factory=list, max_length=4)
     mentions: list[Annotated[str, Field(min_length=1, max_length=128)]] = Field(
         default_factory=list, max_length=20
@@ -156,12 +164,20 @@ class TaskCreate(PromptCreate):
 class TaskScheduleUpdate(StrictModel):
     mode: Literal["manual", "cron"] | None = None
     enabled: bool | None = None
+    prompt: str | None = Field(default=None, min_length=1, max_length=200_000)
+    mentions: list[str] | None = Field(default=None, max_length=50)
     cron: str | None = Field(default=None, min_length=9, max_length=100)
     timezone: str | None = Field(default=None, min_length=1, max_length=100)
     cron_session_mode: Literal["new", "reuse"] | None = None
 
     @model_validator(mode="after")
     def validate_schedule(self) -> TaskScheduleUpdate:
+        if self.prompt is not None and not self.prompt.strip():
+            raise ValueError("task prompt is required")
+        if self.mentions is not None and any(
+            not item or len(item) > 128 for item in self.mentions
+        ):
+            raise ValueError("invalid mentioned agent")
         if self.mode is None:
             if (
                 self.enabled is None
@@ -198,6 +214,11 @@ class TextWrite(StrictModel):
 
 class ScopedTextWrite(TextWrite):
     scope: Literal["project", "global"] = "project"
+
+
+class CommandRun(StrictModel):
+    arguments: str = Field(default="", max_length=20_000)
+    variant: str | None = Field(default=None, max_length=128)
 
 
 class ConfigPatch(StrictModel):
@@ -308,8 +329,43 @@ class ControlState:
             data_dir=config.data_dir,
         )
         self.browser_sessions: dict[str, str] = {}
+        self._command_slots = threading.BoundedSemaphore(8)
+        self._closing = threading.Event()
+
+    def submit_command(
+        self,
+        operation: Callable[[], None],
+        *,
+        before_start: Callable[[], object] | None = None,
+        on_error: Callable[[Exception], object] | None = None,
+    ) -> bool:
+        if self._closing.is_set() or not self._command_slots.acquire(blocking=False):
+            return False
+        try:
+            if before_start is not None:
+                before_start()
+        except Exception:
+            self._command_slots.release()
+            raise
+
+        def run() -> None:
+            try:
+                operation()
+            except Exception as error:
+                logging.getLogger("uvicorn.error").error(
+                    "Background OpenCode command failed: %s", error
+                )
+                if on_error is not None:
+                    with suppress(Exception):
+                        on_error(error)
+            finally:
+                self._command_slots.release()
+
+        threading.Thread(target=run, name="control-command", daemon=True).start()
+        return True
 
     def close(self) -> None:
+        self._closing.set()
         self.processes.shutdown()
         self.store.close()
 
@@ -377,6 +433,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        await initialize_project_commands()
         restore = asyncio.create_task(restore_managed_servers())
         scheduler = asyncio.create_task(scheduler_loop())
         try:
@@ -434,6 +491,34 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         if not isinstance(device, int) or not isinstance(inode, int):
             raise HTTPException(status_code=409, detail="project root identity is unavailable")
         return WorkspaceRoot(Path(str(project["root"])), device, inode)
+
+    def ensure_project_commands(project: dict[str, Any]) -> None:
+        version = project.get("starter_commands_version")
+        if isinstance(version, int) and version >= STARTER_COMMANDS_VERSION:
+            return
+        workspace = workspace_for(project)
+        validate_root(workspace)
+        prefix = Path(".opencode/commands")
+        for command_id, definition in STARTER_COMMANDS.items():
+            target = prefix / f"{command_id}.md"
+            if not file_exists(workspace, target):
+                write_text(workspace, target, definition["content"])
+        legacy_review = prefix / "review.md"
+        if read_text(workspace, legacy_review, missing="\0") == LEGACY_REVIEW_COMMAND_CONTENT:
+            delete_file(workspace, legacy_review)
+        state.store.set_starter_commands_version(
+            str(project["id"]), STARTER_COMMANDS_VERSION
+        )
+
+    async def initialize_project_commands() -> None:
+        logger = logging.getLogger("uvicorn.error")
+        for project in state.store.list_projects():
+            try:
+                await asyncio.to_thread(ensure_project_commands, project)
+            except (HTTPException, OSError, WorkspaceError) as error:
+                logger.error(
+                    "Could not initialize Commands for %s: %s", project["name"], error
+                )
 
     def client_for(project_id: str) -> OpenCodeClient:
         project = project_or_404(project_id)
@@ -523,6 +608,46 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 restarted[project_id] = {"state": "error", "detail": detail}
         return restarted
 
+    def send_task_input(
+        client: OpenCodeClient,
+        session_id: str,
+        task: dict[str, Any],
+        prompt: str,
+        *,
+        attachments: list[dict[str, str]] | None = None,
+        marker: str | None = None,
+        before_command: Callable[[], object] | None = None,
+        on_command_error: Callable[[Exception], object] | None = None,
+    ) -> bool:
+        invocation = _slash_command(str(task["prompt"]))
+        if invocation is not None:
+            command, arguments = invocation
+            if marker:
+                arguments = f"<!-- {marker} -->\n{arguments}".rstrip()
+            accepted = state.submit_command(
+                lambda: client.run_command(
+                    session_id,
+                    command,
+                    arguments,
+                    variant=task.get("variant"),
+                ),
+                before_start=before_command,
+                on_error=on_command_error,
+            )
+            if not accepted:
+                raise RuntimeError("too many OpenCode commands are already running")
+            return True
+        client.prompt_async(
+            session_id,
+            prompt,
+            agent=task.get("agent"),
+            model=task.get("model"),
+            variant=task.get("variant"),
+            attachments=attachments or [],
+            mentions=task.get("mentions"),
+        )
+        return False
+
     def dispatch_task(
         project_id: str,
         task: dict[str, Any],
@@ -546,18 +671,26 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 f"Ожидаемый результат: {task['title']}\n\n"
                 f"Подробное задание:\n{task['prompt']}"
             )
-            client.prompt_async(
+            task_id = str(task["id"])
+            background = send_task_input(
+                client,
                 session_id,
+                task,
                 dispatched_prompt,
-                agent=task.get("agent"),
-                model=task.get("model"),
                 attachments=attachments or [],
+                before_command=lambda: state.store.update_task(
+                    project_id, task_id, status="running", session_id=session_id
+                ),
+                on_command_error=lambda error: state.store.update_task(
+                    project_id, task_id, status="failed", error=str(error)
+                ),
             )
-            updated = state.store.update_task(
-                project_id,
-                str(task["id"]),
-                status="running",
-                session_id=session_id,
+            updated = (
+                state.store.get_task(project_id, task_id)
+                if background
+                else state.store.update_task(
+                    project_id, task_id, status="running", session_id=session_id
+                )
             )
             assert updated is not None
             return updated
@@ -592,22 +725,33 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 status="dispatching",
                 session_id=session_id,
             )
-            client.prompt_async(
+            task_id = str(task["id"])
+            background = send_task_input(
+                client,
                 session_id,
+                task,
                 (
                     f"Продолжи задачу в этой же сессии: {task['title']}\n\n"
                     f"Актуальное задание:\n{task['prompt']}\n\n"
                     "Проверь текущее состояние файлов и выполни очередной запуск."
                 ),
-                agent=task.get("agent"),
-                model=task.get("model"),
+                before_command=lambda: state.store.update_task(
+                    project_id, task_id, status="running", session_id=session_id
+                ),
+                on_command_error=lambda error: state.store.update_task(
+                    project_id, task_id, status="failed", error=str(error)
+                ),
             )
-            updated = state.store.update_task(
-                project_id,
-                str(task["id"]),
-                status="running",
-                session_id=session_id,
-                error=None,
+            updated = (
+                state.store.get_task(project_id, task_id)
+                if background
+                else state.store.update_task(
+                    project_id,
+                    task_id,
+                    status="running",
+                    session_id=session_id,
+                    error=None,
+                )
             )
             assert updated is not None
             return updated
@@ -676,13 +820,24 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     f"{marker}\nОжидаемый результат: {task['title']}\n\n"  # noqa: RUF001
                     f"Подробное задание:\n{task['prompt']}"
                 )
-            client.prompt_async(
+            def mark_running() -> None:
+                if not state.store.mark_scheduled_run_running(run_id, lease_token):
+                    raise RuntimeError("scheduled run lease changed before command dispatch")
+
+            background = send_task_input(
+                client,
                 session_id,
+                task,
                 prompt,
-                agent=task.get("agent"),
-                model=task.get("model"),
+                marker=f"opencode-control-run:{run_id}",
+                before_command=mark_running,
+                on_command_error=lambda error: state.store.finish_scheduled_run(
+                    run_id, "failed", str(error)
+                ),
             )
-            if not state.store.mark_scheduled_run_running(run_id, lease_token):
+            if not background and not state.store.mark_scheduled_run_running(
+                run_id, lease_token
+            ):
                 raise RuntimeError("scheduled run lease changed after prompt dispatch")
         except Exception as error:
             detail = str(error)
@@ -909,6 +1064,12 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 status_code=409,
                 detail="project root is already registered",
             ) from error
+        try:
+            ensure_project_commands(project)
+        except (HTTPException, OSError, WorkspaceError) as error:
+            logging.getLogger("uvicorn.error").error(
+                "Could not initialize Commands for %s: %s", project["name"], error
+            )
         return _project_view(project, state.processes.status(str(project["id"])))
 
     @app.patch("/api/v1/projects/{project_id}")
@@ -1310,20 +1471,25 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             payload.prompt,
             agent=payload.agent,
             model=payload.model,
+            variant=payload.variant,
             attachments=[item.model_dump() for item in payload.attachments],
             mentions=payload.mentions,
         )
         task = state.store.task_for_session(project_id, session_id)
         if task is not None:
+            scheduled = bool(task.get("cron"))
             state.store.record_task_prompt(
                 project_id,
                 str(task["id"]),
                 session_id=session_id,
-                prompt=payload.prompt.strip() or None,
+                prompt=None if scheduled else payload.prompt.strip() or None,
                 agent=payload.agent,
                 model=payload.model,
-                update_agent="agent" in payload.model_fields_set,
-                update_model="model" in payload.model_fields_set,
+                variant=payload.variant,
+                mentions=payload.mentions,
+                update_agent=not scheduled and "agent" in payload.model_fields_set,
+                update_model=not scheduled and "model" in payload.model_fields_set,
+                update_variant=not scheduled and "variant" in payload.model_fields_set,
             )
         return {"accepted": True}
 
@@ -1427,12 +1593,19 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     @app.post("/api/v1/projects/{project_id}/tasks", status_code=202)
     def launch_task(project_id: str, payload: TaskCreate, guard: WriteGuard) -> dict[str, Any]:
         project_or_404(project_id)
+        if _slash_command(payload.prompt) is not None and payload.attachments:
+            raise HTTPException(
+                status_code=422,
+                detail="Slash Command tasks do not support attachments",
+            )
         task = state.store.create_task(
             project_id,
             title=payload.title,
             prompt=payload.prompt,
             agent=payload.agent,
             model=payload.model,
+            variant=payload.variant,
+            mentions=payload.mentions,
             cron=payload.cron,
             timezone=payload.timezone if payload.cron else None,
             cron_session_mode=payload.cron_session_mode,
@@ -1474,6 +1647,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 enabled=False,
                 cron_session_mode=None,
                 next_run_at=None,
+                prompt=payload.prompt,
+                mentions=payload.mentions,
             )
             assert updated is not None
             return updated
@@ -1490,6 +1665,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 next_run_at=(
                     _next_cron_run(payload.cron, payload.timezone) if enabled else None
                 ),
+                prompt=payload.prompt,
+                mentions=payload.mentions,
             )
             assert updated is not None
             return updated
@@ -1561,6 +1738,161 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     client.delete_session(session_id, missing_ok=True)
         state.store.delete_task(project_id, task_id)
         return Response(status_code=204)
+
+    def command_items(project: dict[str, Any]) -> list[dict[str, Any]]:
+        items: dict[str, dict[str, Any]] = {}
+        skill_ids = {"customize-opencode"}
+        for directory in (
+            Path.home() / ".config/opencode/skills",
+            Path.home() / ".claude/skills",
+            Path.home() / ".agents/skills",
+        ):
+            skill_ids.update(
+                str(item["effective_name"])
+                for item in list_external_markdown(directory, "SKILL.md")
+            )
+        for directory in (
+            Path(".claude/skills"),
+            Path(".agents/skills"),
+            Path(".opencode/skills"),
+        ):
+            skill_ids.update(
+                str(item["effective_name"])
+                for item in list_markdown(workspace_for(project), directory, "SKILL.md")
+            )
+        global_directory = Path.home() / ".config/opencode/commands"
+        for item in list_external_markdown(global_directory):
+            items[str(item["id"])] = {
+                **item,
+                "scope": "global",
+                "source": str(global_directory),
+                "editable": True,
+                "kind": "command",
+            }
+        project_directory = Path(".opencode/commands")
+        for item in list_markdown(workspace_for(project), project_directory):
+            items[str(item["id"])] = {
+                **item,
+                "scope": "project",
+                "source": str(Path(str(project["root"])) / project_directory),
+                "editable": True,
+                "kind": "command",
+            }
+        try:
+            runtime = client_for(str(project["id"])).commands()
+        except (HTTPException, OpenCodeError, ProcessError):
+            runtime = []
+        for command in runtime:
+            command_id = str(command["id"])
+            if command_id in items:
+                items[command_id] = {
+                    **items[command_id],
+                    "description": command.get("description")
+                    or items[command_id].get("description"),
+                    "agent": command.get("agent") or items[command_id].get("agent"),
+                    "model": command.get("model") or items[command_id].get("model"),
+                    "subtask": command.get("subtask") is True,
+                    "runtime": True,
+                }
+            else:
+                items[command_id] = {
+                    **command,
+                    "scope": "runtime",
+                    "source": "Runtime OpenCode или opencode.json(c)",
+                    "editable": False,
+                    "runtime": True,
+                    "kind": "skill" if command_id in skill_ids else "command",
+                }
+        for item in items.values():
+            content = str(item.get("content") or "")
+            item["has_shell"] = bool(re.search(r"!`[^`]+`", content))
+            item["has_arguments"] = "$ARGUMENTS" in content or bool(
+                re.search(r"\$[1-9][0-9]*", content)
+            )
+            if item.get("editable") is False:
+                item["content"] = ""
+        return sorted(items.values(), key=lambda item: str(item["id"]))
+
+    @app.get("/api/v1/projects/{project_id}/commands")
+    def commands(project_id: str) -> list[dict[str, Any]]:
+        return command_items(project_or_404(project_id))
+
+    @app.put("/api/v1/projects/{project_id}/commands/{command_id}")
+    def save_command(
+        project_id: str,
+        command_id: str,
+        payload: ScopedTextWrite,
+        guard: WriteGuard,
+    ) -> dict[str, Any]:
+        project = project_or_404(project_id)
+        item_id = validate_item_id(command_id)
+        metadata = parse_frontmatter(payload.content)
+        if not payload.content.strip():
+            raise HTTPException(status_code=422, detail="command template cannot be empty")
+        if metadata.get("subtask") not in {None, True, False}:
+            raise HTTPException(status_code=422, detail="subtask must be true or false")
+        if payload.scope == "global":
+            root = root_identity(resolve_project_root(str(Path.home() / ".config/opencode")))
+            target = Path(f"commands/{item_id}.md")
+        else:
+            root = workspace_for(project)
+            target = Path(f".opencode/commands/{item_id}.md")
+        write_text(root, target, payload.content)
+        return {
+            "id": item_id,
+            "content": payload.content,
+            "restarted": restart_changed_resources(project, payload.scope),
+        }
+
+    @app.delete("/api/v1/projects/{project_id}/commands/{command_id}", status_code=204)
+    def remove_command(
+        project_id: str,
+        command_id: str,
+        guard: WriteGuard,
+        scope: Literal["project", "global"] = "project",
+    ) -> Response:
+        project = project_or_404(project_id)
+        item_id = validate_item_id(command_id)
+        if scope == "global":
+            root = root_identity(resolve_project_root(str(Path.home() / ".config/opencode")))
+            target = Path(f"commands/{item_id}.md")
+        else:
+            root = workspace_for(project)
+            target = Path(f".opencode/commands/{item_id}.md")
+        delete_file(root, target)
+        restart_changed_resources(project, scope)
+        return Response(status_code=204)
+
+    @app.post(
+        "/api/v1/projects/{project_id}/sessions/{session_id}/commands/{command_id}",
+        status_code=202,
+    )
+    def run_command(
+        project_id: str,
+        session_id: str,
+        command_id: str,
+        payload: CommandRun,
+        guard: WriteGuard,
+    ) -> dict[str, bool]:
+        item_id = validate_item_id(command_id)
+        client = client_for_session(project_id, session_id)
+        assert client is not None
+        available = {str(item["id"]) for item in command_items(project_or_404(project_id))}
+        if item_id not in available:
+            raise HTTPException(status_code=404, detail="command not found")
+        snapshot = client.snapshot()
+        statuses = snapshot.get("statuses")
+        status = statuses.get(session_id, {}) if isinstance(statuses, dict) else {}
+        value = status.get("type") or status.get("status") if isinstance(status, dict) else None
+        if value in {"busy", "dispatching", "in_progress", "pending", "queued", "running"}:
+            raise HTTPException(status_code=409, detail="session is already active")
+        if not state.submit_command(
+            lambda: client.run_command(
+                session_id, item_id, payload.arguments, variant=payload.variant
+            )
+        ):
+            raise HTTPException(status_code=429, detail="too many commands are already running")
+        return {"accepted": True}
 
     @app.get("/api/v1/projects/{project_id}/agents")
     def agents(project_id: str) -> list[dict[str, Any]]:
@@ -1989,6 +2321,11 @@ def _project_view(project: dict[str, Any], server: dict[str, object]) -> dict[st
 
 def _segment(value: str) -> str:
     return urllib.parse.quote(value, safe="")
+
+
+def _slash_command(value: str) -> tuple[str, str] | None:
+    match = re.fullmatch(r"/([a-z0-9][a-z0-9_-]{0,63})(?:\s+([\s\S]*))?", value.strip())
+    return (match.group(1), match.group(2) or "") if match else None
 
 
 def _local_host(value: str | None) -> bool:

@@ -285,7 +285,10 @@ def list_markdown(
                     "effective_name": metadata.get("name") or item_id,
                     "description": metadata.get("description"),
                     "mode": metadata.get("mode"),
+                    "agent": metadata.get("agent"),
                     "model": metadata.get("model"),
+                    "variant": metadata.get("variant"),
+                    "subtask": metadata.get("subtask") is True,
                     "content": content,
                 }
             )
@@ -331,7 +334,10 @@ def list_external_markdown(directory: Path, filename: str | None = None) -> list
                 or (candidate.stem if filename is None else candidate.name),
                 "description": metadata.get("description"),
                 "mode": metadata.get("mode"),
+                "agent": metadata.get("agent"),
                 "model": metadata.get("model"),
+                "variant": metadata.get("variant"),
+                "subtask": metadata.get("subtask") is True,
                 "content": content,
             }
         )
@@ -357,17 +363,30 @@ def external_file_exists(path: Path) -> bool:
     return stat.S_ISREG(info.st_mode) and info.st_nlink == 1
 
 
-def parse_frontmatter(content: str) -> dict[str, str]:
+def parse_frontmatter(content: str) -> dict[str, Any]:
     if not content.startswith("---\n"):
         return {}
     end = content.find("\n---\n", 4)
     if end < 0:
         return {}
-    result: dict[str, str] = {}
+    result: dict[str, Any] = {}
     for line in content[4:end].splitlines():
         key, separator, value = line.partition(":")
-        if separator and key.strip() in {"name", "description", "mode", "model", "variant"}:
-            result[key.strip()] = value.strip().strip('"\'')
+        field = key.strip()
+        if separator and field in {
+            "name",
+            "description",
+            "mode",
+            "agent",
+            "model",
+            "variant",
+            "subtask",
+        }:
+            parsed = value.strip().strip('"\'')
+            if field == "subtask" and parsed in {"true", "false"}:
+                result[field] = parsed == "true"
+            else:
+                result[field] = parsed
     return result
 
 

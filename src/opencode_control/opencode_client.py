@@ -80,6 +80,7 @@ class OpenCodeClient:
         directory: bool = True,
         query: dict[str, str | int] | None = None,
         max_response_bytes: int = 8 * 1024 * 1024,
+        timeout: float | None = None,
     ) -> Any:
         context = self.guard() if self.guard else nullcontext()
         with context:
@@ -90,6 +91,7 @@ class OpenCodeClient:
                 directory=directory,
                 query=query,
                 max_response_bytes=max_response_bytes,
+                timeout=timeout,
             )
 
     def _request(
@@ -101,6 +103,7 @@ class OpenCodeClient:
         directory: bool = True,
         query: dict[str, str | int] | None = None,
         max_response_bytes: int = 8 * 1024 * 1024,
+        timeout: float | None = None,
     ) -> Any:
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
             raise OpenCodeError("unsupported OpenCode method")
@@ -112,7 +115,9 @@ class OpenCodeClient:
         encoded_query = urllib.parse.urlencode(parameters)
         target = f"{path}?{encoded_query}" if encoded_query else path
         payload = json.dumps(body).encode("utf-8") if body is not None else None
-        connection = http.client.HTTPConnection(self.host, self.port, timeout=self.timeout)
+        connection = http.client.HTTPConnection(
+            self.host, self.port, timeout=self.timeout if timeout is None else timeout
+        )
         try:
             headers = {
                 "Accept": "application/json",
@@ -311,6 +316,49 @@ class OpenCodeClient:
         )
         return _messages(value)
 
+    def commands(self) -> list[dict[str, Any]]:
+        value = self.request("GET", "/command")
+        if not isinstance(value, list):
+            raise OpenCodeError("OpenCode returned an invalid command list")
+        result: list[dict[str, Any]] = []
+        for item in value[:500]:
+            if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+                continue
+            template = item.get("template")
+            description = item.get("description")
+            agent = item.get("agent")
+            model = item.get("model")
+            result.append(
+                {
+                    "id": item["name"][:128],
+                    "description": description[:1000] if isinstance(description, str) else None,
+                    "agent": agent[:128] if isinstance(agent, str) else None,
+                    "model": model[:256] if isinstance(model, str) else None,
+                    "subtask": item.get("subtask") is True,
+                    "content": template[:200_000] if isinstance(template, str) else "",
+                }
+            )
+        return result
+
+    def run_command(
+        self,
+        session_id: str,
+        command: str,
+        arguments: str,
+        *,
+        variant: str | None = None,
+    ) -> None:
+        body = {"command": command, "arguments": arguments}
+        if variant:
+            body["variant"] = variant
+        self.request(
+            "POST",
+            f"/session/{_segment(session_id)}/command",
+            body=body,
+            max_response_bytes=128 * 1024 * 1024,
+            timeout=60 * 60,
+        )
+
     def session_todos(self, session_id: str) -> list[dict[str, str]]:
         value = self.request("GET", f"/session/{_segment(session_id)}/todo")
         if not isinstance(value, list):
@@ -384,6 +432,7 @@ class OpenCodeClient:
         *,
         agent: str | None = None,
         model: str | None = None,
+        variant: str | None = None,
         attachments: list[dict[str, str]] | None = None,
         mentions: list[str] | None = None,
     ) -> None:
@@ -419,6 +468,8 @@ class OpenCodeClient:
             if not separator:
                 raise OpenCodeError("model must use provider/model format")
             body["model"] = {"providerID": provider, "modelID": model_id}
+        if variant:
+            body["variant"] = variant
         self.request("POST", f"/session/{_segment(session_id)}/prompt_async", body=body)
 
 
@@ -577,7 +628,7 @@ def _messages(raw: Any) -> list[dict[str, Any]]:
             "role": info.get("role") if isinstance(info, dict) else None,
         }
         if isinstance(info, dict):
-            for key in ("agent", "modelID", "providerID", "finish"):
+            for key in ("agent", "modelID", "providerID", "variant", "finish"):
                 value = info.get(key)
                 if isinstance(value, str) and value:
                     safe_info[key] = value[:256]
@@ -930,12 +981,28 @@ def _providers(raw: Any) -> dict[str, Any]:
                 if isinstance(models, dict)
                 else []
             )
+            model_variants: dict[str, list[str]] = {}
+            if isinstance(models, dict):
+                for model_id, model in models.items():
+                    if not isinstance(model_id, str) or not isinstance(model, dict):
+                        continue
+                    variants = model.get("variants")
+                    if not isinstance(variants, dict):
+                        continue
+                    names = [
+                        name[:128]
+                        for name in variants
+                        if isinstance(name, str) and name and len(name) <= 128
+                    ][:100]
+                    if names:
+                        model_variants[f"{provider['id']}/{model_id}"] = names
             available.append(
                 {
                     "id": provider["id"],
                     "name": provider.get("name"),
                     "model_count": len(models) if isinstance(models, dict) else 0,
                     "models": model_ids[:1000],
+                    "model_variants": model_variants,
                     "default_model": (
                         f"{provider['id']}/{defaults[provider['id']]}"
                         if isinstance(defaults, dict)
