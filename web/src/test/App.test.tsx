@@ -12,9 +12,9 @@ const project = {
   server: { state: "running", managed: true, endpoint: "http://127.0.0.1:4100" },
 };
 
-function response(value: unknown): Response {
+function response(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), {
-    status: 200,
+    status,
     headers: { "Content-Type": "application/json" },
   });
 }
@@ -184,6 +184,22 @@ describe("OpenCode Control", () => {
     render(<App />);
     expect(await screen.findByText(/Весь OpenCode/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Добавить первый проект" })).toBeInTheDocument();
+  });
+
+  it("shows persistent startup diagnostics and OpenCode compatibility", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    const diagnosticServer = { state: "stopped", managed: false, endpoint: null, compatibility: { state: "untested_newer", version: "1.19.0", message: "Newer OpenCode version" }, last_error: { phase: "startup", summary: "OpenCode exited during startup", timestamp: "now", log_path: "/tmp/project.log", exit_code: 1, detail: "Configuration is invalid" } };
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/api/v1/projects")) return response([{ ...project, server: diagnosticServer }]);
+      if (String(input).endsWith(`/projects/${project.id}/server`)) return response(diagnosticServer);
+      return fallback(input, init);
+    });
+    render(<App />);
+    expect(await screen.findByText("OpenCode exited during startup")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Запустить сервер OpenCode" })).toHaveTextContent("1.19.0");
+    fireEvent.click(screen.getByText("OpenCode exited during startup"));
+    expect(screen.getByText("Configuration is invalid")).toBeInTheDocument();
+    expect(screen.getByText("/tmp/project.log")).toBeInTheDocument();
   });
 
   it("separates main and child subagent sessions", async () => {
@@ -710,7 +726,7 @@ describe("OpenCode Control", () => {
     });
   });
 
-  it("restarts a managed server after an MCP project override", async () => {
+  it("applies an MCP project override in one backend operation", async () => {
     render(<App />);
     await screen.findByText("Центр управления");
     fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
@@ -721,11 +737,11 @@ describe("OpenCode Control", () => {
     await waitFor(() => {
       const calls = vi.mocked(fetch).mock.calls;
       expect(calls.some(([input, init]) => String(input).includes("/mcp/context7/enabled") && init?.method === "PATCH")).toBe(true);
-      expect(calls.some(([input, init]) => String(input).endsWith("/server/restart") && init?.method === "POST")).toBe(true);
+      expect(calls.some(([input, init]) => String(input).endsWith("/server/restart") && init?.method === "POST")).toBe(false);
     });
   });
 
-  it("updates a global MCP and restarts all managed servers", async () => {
+  it("updates a global MCP in one backend operation", async () => {
     render(<App />);
     await screen.findByText("Центр управления");
     fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
@@ -738,7 +754,7 @@ describe("OpenCode Control", () => {
       const calls = vi.mocked(fetch).mock.calls;
       const toggle = calls.find(([input, init]) => String(input).includes("/mcp/context7/enabled") && init?.method === "PATCH");
       expect(JSON.parse(String(toggle?.[1]?.body))).toEqual({ enabled: false, scope: "global" });
-      expect(calls.some(([input, init]) => String(input).endsWith("/api/v1/servers/restart") && init?.method === "POST")).toBe(true);
+      expect(calls.some(([input, init]) => String(input).endsWith("/api/v1/servers/restart") && init?.method === "POST")).toBe(false);
     });
   });
 
@@ -750,6 +766,21 @@ describe("OpenCode Control", () => {
     fireEvent.change(screen.getByLabelText("Имя сервера"), { target: { value: "pencil" } });
     fireEvent.change(screen.getByLabelText("JSON-конфигурация MCP-сервера"), { target: { value: JSON.stringify({ name: "pencil", transport: "stdio", command: "/Applications/Pen.app/mcp-server", args: ["--app", "desktop"], env: {} }) } });
     expect(screen.getByText(/Обнаружен стандартный stdio-формат/)).toBeInTheDocument();
+  });
+
+  it("shows a structured MCP preflight error without a restart request", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes("/mcp/context7/enabled") && init?.method === "PATCH") return response({ detail: { state: "rejected", message: "OpenCode rejected the candidate configuration", preflight: { [project.id]: { valid: false, version: "1.18.5", error: "mcp.context7.url is invalid" } } } }, 422);
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByText("Центр управления");
+    fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
+    fireEvent.click((await screen.findByRole("heading", { name: "context7" })).closest("button")!);
+    fireEvent.click(screen.getByRole("button", { name: "Выключить для всех" }));
+    expect(await screen.findByText(/mcp.context7.url is invalid/)).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/servers/restart"))).toBe(false);
   });
 
   it("does not show a Runtime-only MCP as configured", async () => {

@@ -22,13 +22,25 @@ from opencode_control.command_catalog import (
     STARTER_COMMANDS_VERSION,
 )
 from opencode_control.config import ControlConfig
+from opencode_control.config_lifecycle import PreflightResult
 from opencode_control.opencode_client import OpenCodeError, OpenCodeHTTPError
+from opencode_control.processes import ProcessError
 from opencode_control.store import ControlStore
 from opencode_control.workspace import WorkspaceError, read_text, root_identity, write_text
 
 
 def _client(tmp_path: Path) -> TestClient:
-    return TestClient(create_app(ControlConfig(data_dir=tmp_path / "data")))
+    binary = tmp_path / "fake-opencode"
+    if not binary.exists():
+        binary.write_text(
+            '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.18.5; else echo "{}"; fi\n'
+        )
+        os.chmod(binary, 0o700)
+    return TestClient(
+        create_app(
+            ControlConfig(data_dir=tmp_path / "data", opencode_binary=str(binary))
+        )
+    )
 
 
 def _csrf(client: TestClient) -> dict[str, str]:
@@ -659,6 +671,139 @@ def test_mcp_enabled_updates_preserve_global_and_project_definitions(
         assert restored_inheritance.json()["inherited"] is True
         persisted_project = json.loads((root / "opencode.json").read_text())
         assert "docs" not in persisted_project["mcp"]
+
+
+def test_global_config_failure_rolls_back_and_leaves_unreached_project_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    home = tmp_path / "home"
+    global_dir = home / ".config/opencode"
+    global_dir.mkdir(parents=True)
+    global_config = global_dir / "opencode.json"
+    global_config.write_text('{"before":true}\n')
+    monkeypatch.setenv("HOME", str(home))
+    roots = [tmp_path / name for name in ("one", "two", "three")]
+    for root in roots:
+        root.mkdir()
+
+    with _client(tmp_path) as client:
+        projects = [_project(client, root) for root in roots]
+        state = client.app.state.control
+        stopped: list[str] = []
+        started: list[str] = []
+        failed = False
+
+        monkeypatch.setattr(
+            state.processes,
+            "status",
+            lambda project_id: {
+                "state": "running",
+                "managed": True,
+                "endpoint": "http://127.0.0.1:1",
+            },
+        )
+        monkeypatch.setattr(
+            state.processes,
+            "stop",
+            lambda project_id: stopped.append(project_id)
+            or {"state": "stopped", "managed": True, "endpoint": None},
+        )
+
+        def start(project_id: str, root: Any) -> dict[str, object]:
+            nonlocal failed
+            started.append(project_id)
+            candidate = json.loads(global_config.read_text()).get("candidate") is True
+            if project_id == projects[1]["id"] and candidate and not failed:
+                failed = True
+                raise ProcessError("candidate startup failed")
+            return {"state": "running", "managed": True, "endpoint": "test"}
+
+        monkeypatch.setattr(state.processes, "start", start)
+        response = client.patch(
+            f"/api/v1/projects/{projects[0]['id']}/configuration",
+            headers=_csrf(client),
+            json={"scope": "global", "values": {"candidate": True}},
+        )
+
+        assert response.status_code == 409
+        assert response.json()["state"] == "rolled_back"
+        assert global_config.read_text() == '{"before":true}\n'
+        assert projects[2]["id"] not in stopped
+        assert started == [
+            projects[0]["id"],
+            projects[1]["id"],
+            projects[0]["id"],
+            projects[1]["id"],
+        ]
+
+
+def test_preflight_rejection_does_not_write_or_restart(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    target = root / "opencode.json"
+    target.write_text('{"before":true}\n')
+    with _client(tmp_path) as client:
+        project = _project(client, root)
+        state = client.app.state.control
+        monkeypatch.setattr(
+            state.config_preflight,
+            "validate",
+            lambda **kwargs: PreflightResult(False, "1.18.5", "schema rejected"),
+        )
+        stopped: list[str] = []
+        monkeypatch.setattr(state.processes, "stop", lambda project_id: stopped.append(project_id))
+
+        response = client.patch(
+            f"/api/v1/projects/{project['id']}/configuration",
+            headers=_csrf(client),
+            json={"scope": "project", "values": {"after": True}},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["state"] == "rejected"
+        assert target.read_text() == '{"before":true}\n'
+        assert stopped == []
+
+
+def test_incompatible_opencode_blocks_config_mutation(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    target = root / "opencode.json"
+    target.write_text('{"before":true}\n')
+    with _client(tmp_path) as client:
+        project = _project(client, root)
+        state = client.app.state.control
+        state.config_preflight._version = "1.17.9"
+
+        response = client.patch(
+            f"/api/v1/projects/{project['id']}/configuration",
+            headers=_csrf(client),
+            json={"scope": "project", "values": {"after": True}},
+        )
+
+        assert response.status_code == 422
+        assert response.json()["compatibility"]["state"] == "incompatible"
+        assert target.read_text() == '{"before":true}\n'
+
+
+def test_manual_config_editor_replaces_the_target_file(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    target = root / "opencode.jsonc"
+    target.write_text('{"keep":"old","remove":true}\n')
+    with _client(tmp_path) as client:
+        project = _project(client, root)
+        response = client.patch(
+            f"/api/v1/projects/{project['id']}/configuration",
+            headers=_csrf(client),
+            json={"scope": "project", "values": {"keep": "new"}},
+        )
+
+        assert response.status_code == 200
+        assert response.json()["operation"]["state"] == "committed"
+        assert json.loads(target.read_text()) == {"keep": "new"}
 
 
 def test_workspace_rejects_invalid_ids_and_symlink_targets(tmp_path: Path) -> None:

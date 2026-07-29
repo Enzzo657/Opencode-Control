@@ -4,7 +4,7 @@
 только оставшуюся работу. Реализованные этапы приведены кратко, без старых checklist
 и вариантов реализации.
 
-Обновлено: 27 июля 2026.
+Обновлено: 29 июля 2026.
 
 ## Принципы
 
@@ -34,8 +34,14 @@
 - Durable scheduled runs: отдельные записи запусков, atomic materialization,
   lease fencing, recovery после restart, schedule revision, overlap history и
   явное состояние неопределённого dispatch.
-- Slash Commands Manager: project/global Markdown, starter pack, structured editor,
-  runtime discovery и нативный запуск `/command arguments` в Session.
+- Slash Commands Manager: project/global Markdown, автоматические project defaults,
+  structured editor, Skills palette и нативный запуск `/command arguments`.
+- Сквозной model variant для Session, Tasks, cron, Commands и rerun.
+- Transactional config lifecycle для MCP, providers и ручного editor: real OpenCode
+  preflight, exact temporary backup, crash recovery, rollback и global isolation.
+- Structured process diagnostics, per-project lifecycle locks и проверка совместимости
+  OpenCode.
+- Lazy Markdown chunk; production bundle остаётся ниже warning threshold Vite.
 
 ## Текущие ограничения
 
@@ -44,7 +50,6 @@
 - Локальные secrets хранятся plaintext-файлами с правами `0600`.
 - Сохранение `opencode.jsonc` может изменить форматирование и удалить комментарии.
 - Версия пока дублируется между Python package, API и frontend.
-- Совместимость с версией установленного OpenCode явно не проверяется.
 - Frontend остаётся крупным монолитным `App.tsx`; это приемлемо до локализации и
   расширения количества независимых экранов.
 
@@ -90,13 +95,10 @@
 этапами.
 
 - [ ] Сделать одну точку хранения версии для package, API, User-Agent и UI.
-- [ ] Проверять минимальную и известную совместимую версию OpenCode.
 - [ ] Сохранять комментарии и форматирование JSONC при точечных изменениях.
 - [ ] Расширить redaction для cookies, нестандартных credential keys и вложенных
   provider options.
 - [ ] Добавить runtime access token для read/write API перед публичным release.
-- [ ] Расширить карточку последнего scheduled run до полной истории запусков в UI.
-- [ ] Исследовать предупреждение frontend bundle больше 500 kB перед ростом UI.
 
 ## Отложено
 

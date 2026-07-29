@@ -30,6 +30,13 @@ from opencode_control.command_catalog import (
     STARTER_COMMANDS_VERSION,
 )
 from opencode_control.config import ControlConfig
+from opencode_control.config_lifecycle import (
+    ConfigFile,
+    ConfigOperationError,
+    ConfigTransactionManager,
+    OpenCodeConfigPreflight,
+    compatibility_for_version,
+)
 from opencode_control.git_workspace import (
     GitError,
     git_commit,
@@ -65,8 +72,6 @@ from opencode_control.workspace import (
     root_identity,
     validate_item_id,
     validate_root,
-    write_config,
-    write_json_config,
     write_text,
 )
 
@@ -328,6 +333,11 @@ class ControlState:
             binary=config.opencode_binary,
             data_dir=config.data_dir,
         )
+        self.config_transactions = ConfigTransactionManager(config.data_dir)
+        self.config_preflight = OpenCodeConfigPreflight(
+            config.opencode_binary, config.data_dir
+        )
+        self.config_lock = threading.RLock()
         self.browser_sessions: dict[str, str] = {}
         self._command_slots = threading.BoundedSemaphore(8)
         self._closing = threading.Event()
@@ -395,6 +405,14 @@ def _global_opencode_configs() -> tuple[WorkspaceRoot, dict[Path, dict[str, Any]
     return root, configs
 
 
+def _project_opencode_configs(root: WorkspaceRoot) -> dict[Path, dict[str, Any]]:
+    configs: dict[Path, dict[str, Any]] = {}
+    for relative in (Path("opencode.json"), Path("opencode.jsonc")):
+        if read_text(root, relative, missing="").strip():
+            configs[relative] = read_jsonc_config(root, relative)
+    return configs
+
+
 def _merged_global_mcp(configs: dict[Path, dict[str, Any]]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for config in configs.values():
@@ -423,6 +441,18 @@ def _global_mcp_target(
     relative = Path("opencode.json")
     config: dict[str, Any] = {}
     configs[relative] = config
+    return relative, config
+
+
+def _project_mcp_target(
+    root: WorkspaceRoot, configs: dict[Path, dict[str, Any]], name: str
+) -> tuple[Path, dict[str, Any]]:
+    for relative in reversed(tuple(configs)):
+        mcp = configs[relative].get("mcp")
+        if isinstance(mcp, dict) and name in mcp:
+            return relative, configs[relative]
+    relative = config_target(root)
+    config = configs.setdefault(relative, {})
     return relative, config
 
 
@@ -568,6 +598,12 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+        recovery = await asyncio.to_thread(state.config_transactions.recover_pending)
+        for result in recovery:
+            level = logging.ERROR if result["state"] == "recovery_failed" else logging.WARNING
+            logging.getLogger("uvicorn.error").log(
+                level, "Config transaction recovery: %s", result
+            )
         await initialize_project_commands()
         restore = asyncio.create_task(restore_managed_servers())
         scheduler = asyncio.create_task(scheduler_loop())
@@ -742,6 +778,181 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 detail = error.detail if isinstance(error, HTTPException) else str(error)
                 restarted[project_id] = {"state": "error", "detail": detail}
         return restarted
+
+    def raw_config_files(
+        root: WorkspaceRoot, candidates: dict[str, str]
+    ) -> dict[str, str]:
+        result: dict[str, str] = {}
+        for relative in (Path("opencode.json"), Path("opencode.jsonc")):
+            key = ConfigFile(root, relative).key
+            if key in candidates:
+                result[relative.name] = candidates[key]
+                continue
+            content = read_text(root, relative, missing="")
+            if content:
+                result[relative.name] = content
+        return result
+
+    def apply_config_candidates(
+        project: dict[str, Any],
+        scope: Literal["project", "global"],
+        label: str,
+        candidate_files: dict[ConfigFile, str],
+    ) -> dict[str, Any]:
+        candidates = {config_file.key: content for config_file, content in candidate_files.items()}
+        target_projects = state.store.list_projects() if scope == "global" else [project]
+        with state.config_lock:
+            compatibility = compatibility_for_version(state.config_preflight.version())
+            if compatibility["state"] == "incompatible":
+                raise ConfigOperationError(
+                    422,
+                    {
+                        "state": "rejected",
+                        "message": compatibility["message"],
+                        "compatibility": compatibility,
+                    },
+                )
+            global_root, _ = _global_opencode_configs()
+            preflight: dict[str, dict[str, object]] = {}
+            for candidate_project in target_projects:
+                project_id = str(candidate_project["id"])
+                try:
+                    workspace = workspace_for(candidate_project)
+                    result = state.config_preflight.validate(
+                        global_files=raw_config_files(global_root, candidates),
+                        project_files=raw_config_files(workspace, candidates),
+                    )
+                    preflight[project_id] = result.as_dict()
+                except (OSError, WorkspaceError) as error:
+                    preflight[project_id] = {
+                        "valid": False,
+                        "version": state.config_preflight.version(),
+                        "error": str(error),
+                    }
+            invalid = {
+                project_id: result
+                for project_id, result in preflight.items()
+                if result["valid"] is not True
+            }
+            if invalid:
+                raise ConfigOperationError(
+                    422,
+                    {
+                        "state": "rejected",
+                        "message": "OpenCode rejected the candidate configuration",
+                        "compatibility": compatibility,
+                        "preflight": preflight,
+                    },
+                )
+
+            running: list[dict[str, Any]] = []
+            for candidate_project in target_projects:
+                project_id = str(candidate_project["id"])
+                if (
+                    not candidate_project.get("endpoint")
+                    and state.processes.status(project_id)["state"] == "running"
+                ):
+                    running.append(candidate_project)
+
+            transaction = state.config_transactions.begin(
+                label, list(candidate_files)
+            )
+            try:
+                transaction.write_candidates(candidates)
+                transaction.mark_restarting()
+                restarts: dict[str, dict[str, object]] = {}
+                touched: list[dict[str, Any]] = []
+                failure: Exception | None = None
+                for candidate_project in running:
+                    project_id = str(candidate_project["id"])
+                    touched.append(candidate_project)
+                    try:
+                        workspace = workspace_for(candidate_project)
+                        validate_root(workspace)
+                        state.processes.stop(project_id)
+                        restarts[project_id] = state.processes.start(project_id, workspace)
+                    except (OSError, ProcessError, WorkspaceError) as error:
+                        failure = error
+                        diagnostic = (
+                            error.diagnostic.as_dict()
+                            if isinstance(error, ProcessError)
+                            and error.diagnostic is not None
+                            else None
+                        )
+                        restarts[project_id] = {
+                            "state": "error",
+                            "detail": str(error),
+                            "diagnostic": diagnostic,
+                        }
+                        break
+                if failure is None:
+                    transaction.commit()
+                    return {
+                        "state": "committed",
+                        "operation_id": transaction.operation_id,
+                        "compatibility": compatibility,
+                        "preflight": preflight,
+                        "projects": restarts,
+                    }
+
+                transaction.rollback()
+                restored: dict[str, dict[str, object]] = {}
+                rollback_failed = False
+                for candidate_project in touched:
+                    project_id = str(candidate_project["id"])
+                    try:
+                        workspace = workspace_for(candidate_project)
+                        state.processes.stop(project_id)
+                        restored[project_id] = state.processes.start(project_id, workspace)
+                    except (OSError, ProcessError, WorkspaceError) as error:
+                        rollback_failed = True
+                        restored[project_id] = {
+                            "state": "error",
+                            "detail": str(error),
+                        }
+                raise ConfigOperationError(
+                    500 if rollback_failed else 409,
+                    {
+                        "state": "rollback_failed" if rollback_failed else "rolled_back",
+                        "message": (
+                            "Candidate failed and rollback could not restore every server"
+                            if rollback_failed
+                            else "Candidate failed; previous configuration was restored"
+                        ),
+                        "operation_id": transaction.operation_id,
+                        "compatibility": compatibility,
+                        "preflight": preflight,
+                        "projects": restarts,
+                        "restored": restored,
+                    },
+                )
+            except ConfigOperationError:
+                raise
+            except Exception as error:
+                try:
+                    transaction.rollback()
+                except Exception as rollback_error:
+                    raise ConfigOperationError(
+                        500,
+                        {
+                            "state": "rollback_failed",
+                            "message": str(error),
+                            "rollback_error": str(rollback_error),
+                            "operation_id": transaction.operation_id,
+                            "compatibility": compatibility,
+                            "preflight": preflight,
+                        },
+                    ) from error
+                raise ConfigOperationError(
+                    409,
+                    {
+                        "state": "rolled_back",
+                        "message": str(error),
+                        "operation_id": transaction.operation_id,
+                        "compatibility": compatibility,
+                        "preflight": preflight,
+                    },
+                ) from error
 
     def send_task_input(
         client: OpenCodeClient,
@@ -1131,6 +1342,16 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     async def workspace_error(request: Request, error: WorkspaceError) -> JSONResponse:
         return JSONResponse({"detail": str(error)}, status_code=400)
 
+    @app.exception_handler(ConfigOperationError)
+    async def config_operation_error(
+        request: Request, error: ConfigOperationError
+    ) -> JSONResponse:
+        payload = cast(dict[str, Any], redact_for_browser(error.result))
+        return JSONResponse(
+            {**payload, "detail": payload},
+            status_code=error.status_code,
+        )
+
     @app.exception_handler(OpenCodeError)
     async def opencode_error(request: Request, error: OpenCodeError) -> JSONResponse:
         status = error.status if isinstance(error, OpenCodeHTTPError) else 502
@@ -1138,7 +1359,10 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
 
     @app.exception_handler(ProcessError)
     async def process_error(request: Request, error: ProcessError) -> JSONResponse:
-        return JSONResponse({"detail": str(error)}, status_code=409)
+        payload: dict[str, Any] = {"message": str(error)}
+        if error.diagnostic is not None:
+            payload["diagnostic"] = redact_for_browser(error.diagnostic.as_dict())
+        return JSONResponse({"detail": payload}, status_code=502)
 
     @app.get("/api/v1/session")
     def browser_session(request: Request, response: Response) -> dict[str, str]:
@@ -1162,10 +1386,22 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     def health() -> dict[str, Any]:
         return {"healthy": True, "version": "0.1.0", "projects": len(state.store.list_projects())}
 
+    def managed_server_status(project_id: str) -> dict[str, object]:
+        status = state.processes.status(project_id)
+        version = status.get("version")
+        status["compatibility"] = compatibility_for_version(
+            version if isinstance(version, str) else state.config_preflight.version()
+        )
+        return status
+
+    @app.get("/api/v1/compatibility")
+    def compatibility() -> dict[str, str | None]:
+        return compatibility_for_version(state.config_preflight.version())
+
     @app.get("/api/v1/projects")
     def projects() -> list[dict[str, Any]]:
         return [
-            _project_view(item, state.processes.status(str(item["id"])))
+            _project_view(item, managed_server_status(str(item["id"])))
             for item in state.store.list_projects()
         ]
 
@@ -1205,7 +1441,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             logging.getLogger("uvicorn.error").error(
                 "Could not initialize Commands for %s: %s", project["name"], error
             )
-        return _project_view(project, state.processes.status(str(project["id"])))
+        return _project_view(project, managed_server_status(str(project["id"])))
 
     @app.patch("/api/v1/projects/{project_id}")
     def update_project(
@@ -1230,7 +1466,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         if endpoint:
             state.store.set_managed_enabled(project_id, False)
             state.processes.stop(project_id)
-        return _project_view(updated, state.processes.status(project_id))
+        return _project_view(updated, managed_server_status(project_id))
 
     @app.delete("/api/v1/projects/{project_id}", status_code=204)
     def remove_project(project_id: str, guard: WriteGuard) -> Response:
@@ -1242,9 +1478,14 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     @app.get("/api/v1/projects/{project_id}/server")
     def server_status(project_id: str) -> dict[str, Any]:
         project = project_or_404(project_id)
-        status = state.processes.status(project_id)
+        status = managed_server_status(project_id)
         if status["state"] == "stopped" and project.get("endpoint"):
-            status = {"state": "external", "managed": False, "endpoint": project["endpoint"]}
+            status = {
+                "state": "external",
+                "managed": False,
+                "endpoint": project["endpoint"],
+                "compatibility": status["compatibility"],
+            }
         return status
 
     @app.post("/api/v1/projects/{project_id}/server/start")
@@ -1252,12 +1493,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         project = project_or_404(project_id)
         workspace = workspace_for(project)
         validate_root(workspace)
-        try:
-            status = state.processes.start(project_id, workspace)
-            state.store.set_managed_enabled(project_id, True)
-            return status
-        except ProcessError as error:
-            raise HTTPException(status_code=502, detail=str(error)) from error
+        status = state.processes.start(project_id, workspace)
+        state.store.set_managed_enabled(project_id, True)
+        return status
 
     @app.post("/api/v1/projects/{project_id}/server/stop")
     def stop_server(project_id: str, guard: WriteGuard) -> dict[str, object]:
@@ -1287,10 +1525,14 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             project_id = str(project["id"])
             if state.processes.status(project_id)["state"] != "running":
                 continue
-            workspace = workspace_for(project)
-            validate_root(workspace)
-            state.processes.stop(project_id)
-            restarted[project_id] = state.processes.start(project_id, workspace)
+            try:
+                workspace = workspace_for(project)
+                validate_root(workspace)
+                status = state.processes.restart_if_running(project_id, workspace)
+                if status is not None:
+                    restarted[project_id] = status
+            except (OSError, ProcessError, WorkspaceError) as error:
+                restarted[project_id] = {"state": "error", "detail": str(error)}
         return restarted
 
     @app.get("/api/v1/projects/{project_id}/snapshot")
@@ -1429,25 +1671,47 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         project = project_or_404(project_id)
         item_id = validate_item_id(provider_id)
         root = workspace_for(project)
-        config_value = read_config(root)
+        relative = config_target(root)
+        config_value = read_jsonc_config(root, relative)
         providers = config_value.setdefault("provider", {})
         if not isinstance(providers, dict):
             raise WorkspaceError("OpenCode config provider section must be an object")
         options: dict[str, Any] = {"baseURL": payload.base_url}
-        if payload.api_key:
-            managed_client_for_auth(project_id).set_provider_api_key(item_id, payload.api_key)
         providers[item_id] = {
             "npm": "@ai-sdk/openai-compatible",
             "name": payload.name,
             "options": options,
             "models": {model.strip(): {"name": model.strip()} for model in payload.models},
         }
-        write_config(root, config_value)
-        restarted = restart_changed_resources(project, "project")
+        operation = apply_config_candidates(
+            project,
+            "project",
+            f"provider:{item_id}",
+            {
+                ConfigFile(root, relative): json.dumps(
+                    config_value, ensure_ascii=False, indent=2
+                )
+                + "\n"
+            },
+        )
+        if payload.api_key:
+            try:
+                managed_client_for_auth(project_id).set_provider_api_key(
+                    item_id, payload.api_key
+                )
+            except (OpenCodeError, ProcessError) as error:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "message": "Provider config was applied, but authentication failed",
+                        "operation": operation,
+                        "auth_error": str(error),
+                    },
+                ) from error
         return {
             "id": item_id,
             "config": providers[item_id],
-            "restarted": restarted,
+            "operation": operation,
         }
 
     @app.get("/api/v1/projects/{project_id}/sessions/{session_id}/messages")
@@ -2249,18 +2513,25 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             root = workspace_for(project)
             relative = config_target(root)
             config_value = read_jsonc_config(root, relative)
-        for key, value in payload.values.items():
-            if value is None:
-                config_value.pop(key, None)
-            else:
-                config_value[key] = preserve_redacted(config_value.get(key), value)
-        write_json_config(root, relative, config_value)
-        restarted = restart_changed_resources(project, payload.scope)
+        replacement = preserve_redacted(config_value, payload.values)
+        if not isinstance(replacement, dict):
+            raise WorkspaceError("OpenCode config must contain an object")
+        operation = apply_config_candidates(
+            project,
+            payload.scope,
+            f"configuration:{payload.scope}",
+            {
+                ConfigFile(root, relative): json.dumps(
+                    replacement, ensure_ascii=False, indent=2
+                )
+                + "\n"
+            },
+        )
         return {
             "scope": payload.scope,
             "path": str(root.path / relative),
-            "values": redact_for_browser(config_value),
-            "restarted": restarted,
+            "values": redact_for_browser(replacement),
+            "operation": operation,
         }
 
     @app.get("/api/v1/projects/{project_id}/mcp/configuration")
@@ -2298,21 +2569,29 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             relative, config_value = _global_mcp_target(configs, item_id)
         else:
             root = workspace_for(project)
-            relative = Path("opencode.json")
-            config_value = read_config(root)
+            configs = _project_opencode_configs(root)
+            relative, config_value = _project_mcp_target(root, configs, item_id)
         mcp = config_value.setdefault("mcp", {})
         if not isinstance(mcp, dict):
             raise WorkspaceError("OpenCode config mcp section must be an object")
         normalized = _normalize_mcp_config(payload.config)
         mcp[item_id] = preserve_redacted(mcp.get(item_id), normalized)
-        if payload.scope == "global":
-            write_json_config(root, relative, config_value)
-        else:
-            write_config(root, config_value)
+        operation = apply_config_candidates(
+            project,
+            payload.scope,
+            f"mcp:{item_id}",
+            {
+                ConfigFile(root, relative): json.dumps(
+                    config_value, ensure_ascii=False, indent=2
+                )
+                + "\n"
+            },
+        )
         return {
             "name": item_id,
             "scope": payload.scope,
             "config": redact_for_browser(mcp[item_id]),
+            "operation": operation,
         }
 
     @app.patch("/api/v1/projects/{project_id}/mcp/{name}/enabled")
@@ -2331,8 +2610,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             relative, config_value = _global_mcp_target(configs, item_id)
         else:
             root = workspace_for(project)
-            relative = Path("opencode.json")
-            config_value = read_config(root)
+            configs = _project_opencode_configs(root)
+            relative, config_value = _project_mcp_target(root, configs, item_id)
         mcp = config_value.setdefault("mcp", {})
         if not isinstance(mcp, dict):
             raise WorkspaceError("OpenCode config mcp section must be an object")
@@ -2368,41 +2647,73 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 mcp[item_id] = {**current, "enabled": payload.enabled}
         else:
             mcp[item_id] = {**current, "enabled": payload.enabled}
-        if payload.scope == "global":
-            write_json_config(root, relative, config_value)
-        else:
-            write_config(root, config_value)
+        operation = apply_config_candidates(
+            project,
+            payload.scope,
+            f"mcp-enabled:{item_id}",
+            {
+                ConfigFile(root, relative): json.dumps(
+                    config_value, ensure_ascii=False, indent=2
+                )
+                + "\n"
+            },
+        )
         return {
             "name": item_id,
             "scope": payload.scope,
             "enabled": payload.enabled,
             "inherited": inherited,
+            "operation": operation,
         }
 
-    @app.delete("/api/v1/projects/{project_id}/mcp/{name}", status_code=204)
+    @app.delete("/api/v1/projects/{project_id}/mcp/{name}")
     def remove_mcp(
         project_id: str,
         name: str,
         guard: WriteGuard,
         scope: Literal["project", "global"] = "project",
-    ) -> Response:
+    ) -> dict[str, Any]:
         project = project_or_404(project_id)
         item_id = validate_item_id(name)
         if scope == "global":
             root, configs = _global_opencode_configs()
+            candidate_files: dict[ConfigFile, str] = {}
             for relative, config_value in configs.items():
                 mcp = config_value.get("mcp")
                 if isinstance(mcp, dict) and item_id in mcp:
                     mcp.pop(item_id)
-                    write_json_config(root, relative, config_value)
-            return Response(status_code=204)
+                    if not mcp:
+                        config_value.pop("mcp", None)
+                    candidate_files[ConfigFile(root, relative)] = json.dumps(
+                        config_value, ensure_ascii=False, indent=2
+                    ) + "\n"
+            if not candidate_files:
+                raise HTTPException(status_code=404, detail="global MCP server not found")
+            operation = apply_config_candidates(
+                project, "global", f"mcp-remove:{item_id}", candidate_files
+            )
+            return {"name": item_id, "scope": scope, "operation": operation}
         root = workspace_for(project)
-        config_value = read_config(root)
+        configs = _project_opencode_configs(root)
+        relative, config_value = _project_mcp_target(root, configs, item_id)
         mcp = config_value.get("mcp")
-        if isinstance(mcp, dict):
-            mcp.pop(item_id, None)
-            write_config(root, config_value)
-        return Response(status_code=204)
+        if not isinstance(mcp, dict) or item_id not in mcp:
+            raise HTTPException(status_code=404, detail="project MCP server not found")
+        mcp.pop(item_id)
+        if not mcp:
+            config_value.pop("mcp", None)
+        operation = apply_config_candidates(
+            project,
+            "project",
+            f"mcp-remove:{item_id}",
+            {
+                ConfigFile(root, relative): json.dumps(
+                    config_value, ensure_ascii=False, indent=2
+                )
+                + "\n"
+            },
+        )
+        return {"name": item_id, "scope": scope, "operation": operation}
 
     @app.post("/api/v1/projects/{project_id}/mcp/{name}/{action}")
     def mcp_connection(
@@ -2443,6 +2754,8 @@ def _project_view(project: dict[str, Any], server: dict[str, object]) -> dict[st
             "state": "external",
             "managed": False,
             "endpoint": project["endpoint"],
+            "compatibility": server.get("compatibility"),
+            "last_error": server.get("last_error"),
         }
     return {
         "id": project["id"],

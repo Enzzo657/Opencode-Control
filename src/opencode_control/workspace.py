@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import json
 import os
 import re
@@ -50,6 +51,14 @@ class WorkspaceRoot:
     path: Path
     device: int
     inode: int
+
+
+@dataclass(frozen=True)
+class WorkspaceFileSnapshot:
+    existed: bool
+    content: str
+    mode: int
+    sha256: str
 
 
 def validate_item_id(value: str) -> str:
@@ -169,6 +178,72 @@ def write_text(root: WorkspaceRoot, relative: Path, content: str) -> None:
         finally:
             with suppress(FileNotFoundError):
                 os.unlink(temporary, dir_fd=parent_fd)
+
+
+def snapshot_file(root: WorkspaceRoot, relative: Path) -> WorkspaceFileSnapshot:
+    _validate_relative(relative)
+    try:
+        with _open_parent(root, relative.parent, create=False) as parent_fd:
+            descriptor = os.open(
+                relative.name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+            try:
+                info = os.fstat(descriptor)
+                if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
+                    raise WorkspaceError("workspace file is unavailable or unsafe")
+                content = _read_descriptor(descriptor)
+            finally:
+                os.close(descriptor)
+    except FileNotFoundError:
+        return WorkspaceFileSnapshot(False, "", 0o600, _snapshot_hash(False, b""))
+    except OSError as error:
+        raise WorkspaceError("workspace file is unavailable or unsafe") from error
+    raw = content.encode("utf-8")
+    return WorkspaceFileSnapshot(
+        True,
+        content,
+        stat.S_IMODE(info.st_mode),
+        _snapshot_hash(True, raw),
+    )
+
+
+def restore_file(
+    root: WorkspaceRoot,
+    relative: Path,
+    snapshot: WorkspaceFileSnapshot,
+    *,
+    expected_sha256: str | None = None,
+) -> None:
+    if expected_sha256 is not None and snapshot_file(root, relative).sha256 != expected_sha256:
+        raise WorkspaceError("workspace file changed outside the config transaction")
+    if not snapshot.existed:
+        delete_file(root, relative)
+        return
+    write_text(root, relative, snapshot.content)
+    try:
+        with _open_parent(root, relative.parent, create=False) as parent_fd:
+            descriptor = os.open(
+                relative.name,
+                os.O_RDONLY | os.O_NOFOLLOW,
+                dir_fd=parent_fd,
+            )
+            try:
+                os.fchmod(descriptor, snapshot.mode)
+                os.fsync(descriptor)
+                os.fsync(parent_fd)
+            finally:
+                os.close(descriptor)
+    except OSError as error:
+        raise WorkspaceError("workspace file mode could not be restored safely") from error
+
+
+def _snapshot_hash(existed: bool, content: bytes) -> str:
+    digest = hashlib.sha256()
+    digest.update(b"1\0" if existed else b"0\0")
+    digest.update(content)
+    return digest.hexdigest()
 
 
 def delete_file(root: WorkspaceRoot, relative: Path) -> None:

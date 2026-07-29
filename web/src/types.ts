@@ -3,6 +3,20 @@ export type ServerState = {
   managed: boolean;
   endpoint: string | null;
   pid?: number | null;
+  version?: string | null;
+  compatibility?: {
+    state: "compatible" | "untested_newer" | "incompatible" | "unknown";
+    version: string | null;
+    message: string | null;
+  } | null;
+  last_error?: {
+    phase: string;
+    summary: string;
+    timestamp: string;
+    log_path: string;
+    exit_code?: number | null;
+    detail?: string | null;
+  } | null;
 };
 
 export type Project = {

@@ -1,7 +1,7 @@
 let csrfToken: string | null = null;
 
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  constructor(message: string, readonly status: number, readonly detail?: unknown) {
     super(message);
     this.name = "ApiError";
   }
@@ -31,7 +31,7 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
-    throw new ApiError(formatError(payload?.detail, response.status), response.status);
+    throw new ApiError(formatError(payload?.detail, response.status), response.status, payload?.detail);
   }
   if (response.status === 204) return undefined as T;
   return (await response.json()) as T;
@@ -47,6 +47,16 @@ function formatError(detail: unknown, status: number): string {
     if (staleMentions) return "Backend OpenCode Control ещё не поддерживает @-подагентов. Перезапустите Control: opencode-control restart.";
     const messages = issues.map((item) => { const field = item.loc?.filter((part) => part !== "body").join(" → "); return `${field ? `${field}: ` : ""}${item.msg ?? "Некорректное значение"}`; });
     if (messages.length) return messages.join(". ");
+  }
+  if (typeof detail === "object" && detail !== null) {
+    const value = detail as { message?: unknown; preflight?: unknown; diagnostic?: unknown };
+    const base = typeof value.message === "string" ? value.message : `Запрос не выполнен (${status})`;
+    if (typeof value.preflight === "object" && value.preflight !== null) {
+      const errors = Object.values(value.preflight as Record<string, unknown>).flatMap((entry) => typeof entry === "object" && entry !== null && typeof (entry as { error?: unknown }).error === "string" ? [(entry as { error: string }).error] : []);
+      if (errors.length) return `${base}: ${Array.from(new Set(errors)).join("; ")}`;
+    }
+    if (typeof value.diagnostic === "object" && value.diagnostic !== null && typeof (value.diagnostic as { detail?: unknown }).detail === "string") return `${base}: ${(value.diagnostic as { detail: string }).detail}`;
+    return base;
   }
   return `Запрос не выполнен (${status})`;
 }

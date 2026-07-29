@@ -247,6 +247,7 @@ export function App() {
         </header>
 
         <div className="content">
+          {project?.server.last_error && <details className="server-diagnostic"><summary>{project.server.last_error.summary}</summary><div><span>Фаза: {project.server.last_error.phase}{project.server.last_error.exit_code != null ? ` · exit ${project.server.last_error.exit_code}` : ""}</span>{project.server.last_error.detail && <pre>{project.server.last_error.detail}</pre>}<code>{project.server.last_error.log_path}</code></div></details>}
           {!project ? (
             <Welcome onAdd={() => setAddOpen(true)} />
           ) : (
@@ -805,14 +806,17 @@ function ServerControl({ project, onChange }: { project: Project; onChange: () =
   const server = status.data ?? project.server;
   const running = server.state === "running";
   const external = server.state === "external";
+  const compatibility = server.compatibility;
+  const lastError = server.last_error;
   async function toggle() {
     if (external) return;
     setBusy(true);
     try { await api(`/api/v1/projects/${project.id}/server/${running ? "stop" : "start"}`, { method: "POST", ...jsonBody({}) }); setError(null); status.reload(); onChange(); }
-    catch (reason) { setError(message(reason)); }
+    catch (reason) { setError(message(reason)); status.reload(); onChange(); }
     finally { setBusy(false); }
   }
-  return <button title={error ?? server.endpoint ?? undefined} aria-label={running ? "Остановить сервер OpenCode" : external ? "Внешний сервер OpenCode" : "Запустить сервер OpenCode"} className={`server-control ${running || external ? "online" : ""}`} onClick={() => void toggle()} disabled={busy || external}><span className="status-dot" />{error ? "Ошибка сервера" : busy ? "Выполняется…" : running ? "Сервер работает" : external ? "Внешний сервер" : "Запустить сервер"}{running ? <CircleStop size={14} /> : <Play size={14} />}</button>;
+  const title = error ?? (lastError ? `${lastError.summary}\n${lastError.log_path}` : compatibility?.message ?? server.endpoint ?? undefined);
+  return <button title={title} aria-label={running ? "Остановить сервер OpenCode" : external ? "Внешний сервер OpenCode" : "Запустить сервер OpenCode"} className={`server-control ${running || external ? "online" : ""} compatibility-${compatibility?.state ?? "unknown"}`} onClick={() => void toggle()} disabled={busy || external}><span className="status-dot" />{error || lastError ? "Ошибка сервера" : busy ? "Выполняется…" : running ? "Сервер работает" : external ? "Внешний сервер" : "Запустить сервер"}{compatibility?.version && <small>{compatibility.version}</small>}{running ? <CircleStop size={14} /> : <Play size={14} />}</button>;
 }
 
 function ProjectDialog({ projects, onClose, onCreated, onSelect }: { projects: Project[]; onClose: () => void; onCreated: (project: Project) => void; onSelect: (id: string) => void }) {
@@ -1375,14 +1379,10 @@ function McpEditor({ project, name, localConfig, globalConfig, effectiveConfig, 
     const nextConfig = next === "global" ? (hasGlobal ? globalConfig : { type: "local", command: ["npx", "-y", "@example/mcp"], enabled: true }) : (hasProject ? localConfig : name === "new" ? { type: "local", command: ["npx", "-y", "@example/mcp"], enabled: true } : { enabled: effectiveEnabled });
     setRaw(JSON.stringify(nextConfig, null, 2));
   }
-  async function restart(changedScope: "project" | "global") {
-    if (changedScope === "global") await api("/api/v1/servers/restart", { method: "POST", ...jsonBody({}) });
-    else if (!project.endpoint && project.server.state === "running") await api(`/api/v1/projects/${project.id}/server/restart`, { method: "POST", ...jsonBody({}) });
-  }
-  async function applyConfiguration(changedScope: "project" | "global", action: () => Promise<unknown>) { await action(); await restart(changedScope); onSaved(); }
-  async function save() { try { const parsed = JSON.parse(raw) as Record<string, unknown>; await applyConfiguration(scope, () => api(`/api/v1/projects/${project.id}/mcp/${encodeURIComponent(id)}`, { method: "PUT", ...jsonBody({ config: parsed, scope }) })); } catch (reason) { setError(message(reason)); } }
-  async function setEnabled(changedScope: "project" | "global", enabled: boolean) { try { await applyConfiguration(changedScope, () => api(`/api/v1/projects/${project.id}/mcp/${encodeURIComponent(id)}/enabled`, { method: "PATCH", ...jsonBody({ enabled, scope: changedScope }) })); } catch (reason) { setError(message(reason)); } }
-  async function remove(changedScope: "project" | "global") { if (name === "new" || !confirm(changedScope === "global" ? `Удалить общую настройку MCP ${name}? Она исчезнет из всех проектов без собственной настройки.` : `Удалить настройку MCP ${name} для проекта? После этого снова будет использоваться общая настройка, если она существует.`)) return; try { await applyConfiguration(changedScope, () => api(`/api/v1/projects/${project.id}/mcp/${encodeURIComponent(name)}?scope=${changedScope}`, { method: "DELETE" })); } catch (reason) { setError(message(reason)); } }
+  async function applyConfiguration(action: () => Promise<unknown>) { await action(); onSaved(); }
+  async function save() { try { const parsed = JSON.parse(raw) as Record<string, unknown>; await applyConfiguration(() => api(`/api/v1/projects/${project.id}/mcp/${encodeURIComponent(id)}`, { method: "PUT", ...jsonBody({ config: parsed, scope }) })); } catch (reason) { setError(message(reason)); } }
+  async function setEnabled(changedScope: "project" | "global", enabled: boolean) { try { await applyConfiguration(() => api(`/api/v1/projects/${project.id}/mcp/${encodeURIComponent(id)}/enabled`, { method: "PATCH", ...jsonBody({ enabled, scope: changedScope }) })); } catch (reason) { setError(message(reason)); } }
+  async function remove(changedScope: "project" | "global") { if (name === "new" || !confirm(changedScope === "global" ? `Удалить общую настройку MCP ${name}? Она исчезнет из всех проектов без собственной настройки.` : `Удалить настройку MCP ${name} для проекта? После этого снова будет использоваться общая настройка, если она существует.`)) return; try { await applyConfiguration(() => api(`/api/v1/projects/${project.id}/mcp/${encodeURIComponent(name)}?scope=${changedScope}`, { method: "DELETE" })); } catch (reason) { setError(message(reason)); } }
   async function connect() { try { await api(`/api/v1/projects/${project.id}/mcp/${encodeURIComponent(id)}/connect`, { method: "POST", ...jsonBody({}) }); onSaved(); } catch (reason) { setError(message(reason)); } }
   const runtimeStatus = status?.status ?? "unknown";
   let commonStdioFormat = false;
