@@ -1712,9 +1712,20 @@ def test_dashboard_aggregates_message_usage_for_project_and_global_scope(
                         "agent": "build",
                         "model": {"providerID": "openai", "modelID": "gpt-test"},
                         "time": {"created": now_ms - 1000, "updated": now_ms},
-                    }
+                    },
+                    {
+                        "id": "ses_child",
+                        "parentID": "ses_shared",
+                        "title": "Explore child",
+                        "agent": "explore",
+                        "model": {"providerID": "openai", "modelID": "gpt-test"},
+                        "time": {"created": now_ms - 900, "updated": now_ms},
+                    },
                 ],
-                "statuses": {"ses_shared": {"type": "idle"}},
+                "statuses": {
+                    "ses_shared": {"type": "idle"},
+                    "ses_child": {"type": "idle"},
+                },
                 "mcp": {"context7": {"status": "connected"}},
             }
 
@@ -1722,7 +1733,7 @@ def test_dashboard_aggregates_message_usage_for_project_and_global_scope(
             return [
                 {
                     "info": {
-                        "id": "msg_same_id",
+                        "id": f"msg_{session_id}",
                         "role": "assistant",
                         "agent": "build",
                         "providerID": "openai",
@@ -1772,26 +1783,27 @@ def test_dashboard_aggregates_message_usage_for_project_and_global_scope(
         assert project_usage.json()["totals"] == {
             "id": "total",
             "tokens": {
-                "input": 10,
-                "output": 4,
-                "reasoning": 2,
-                "cache_read": 3,
-                "cache_write": 1,
+                "input": 20,
+                "output": 8,
+                "reasoning": 4,
+                "cache_read": 6,
+                "cache_write": 2,
             },
-            "tokens_total": 16,
-            "cost": 0.5,
-            "messages": 1,
+            "tokens_total": 32,
+            "cost": 1.0,
+            "messages": 2,
             "sessions": 1,
             "active": 0,
             "mcp_connected": 1,
             "mcp_total": 1,
         }
         assert global_usage.status_code == 200, global_usage.text
-        assert global_usage.json()["totals"]["tokens_total"] == 32
-        assert global_usage.json()["totals"]["cost"] == 1.0
+        assert global_usage.json()["totals"]["tokens_total"] == 64
+        assert global_usage.json()["totals"]["cost"] == 2.0
         assert global_usage.json()["totals"]["sessions"] == 2
         assert len(global_usage.json()["projects"]) == 2
         assert global_usage.json()["models"][0]["id"] == "openai/gpt-test"
+        assert global_usage.json()["models"][0]["sessions"] == 2
         assert client.get(
             "/api/v1/dashboard",
             params={"scope": "global", "timezone": "Mars/Olympus"},

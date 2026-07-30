@@ -1778,11 +1778,34 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     reverse=True,
                 )[:200]
                 partial = True
+            session_index = {
+                str(item["id"]): item
+                for item in sessions
+                if isinstance(item, dict) and isinstance(item.get("id"), str)
+            }
+
+            def root_session_id(
+                session_id: str, index: dict[str, Any] = session_index
+            ) -> str:
+                current = session_id
+                seen: set[str] = set()
+                while current not in seen:
+                    seen.add(current)
+                    item = index.get(current)
+                    parent = item.get("parentID") if isinstance(item, dict) else None
+                    if not isinstance(parent, str) or parent not in index:
+                        return current
+                    current = parent
+                return session_id
+
             for session in sessions:
                 if not isinstance(session, dict) or not isinstance(session.get("id"), str):
                     continue
                 session_id = str(session["id"])
                 session_key = f"{project_id_value}:{session_id}"
+                usage_session_key = (
+                    f"{project_id_value}:{root_session_id(session_id)}"
+                )
                 session_time = session.get("time")
                 raw_time: dict[str, Any] = session_time if isinstance(session_time, dict) else {}
                 updated = raw_time.get("updated")
@@ -1863,7 +1886,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                         agents[agent],
                         daily[local_date],
                     ):
-                        add_usage(row, info, session_key)
+                        add_usage(row, info, usage_session_key)
 
         def serialize(row: dict[str, Any]) -> dict[str, Any]:
             return {
