@@ -346,9 +346,18 @@ class OpenCodeClient:
         command: str,
         arguments: str,
         *,
+        agent: str | None = None,
+        model: str | None = None,
         variant: str | None = None,
     ) -> None:
         body = {"command": command, "arguments": arguments}
+        if agent:
+            body["agent"] = agent
+        if model:
+            provider, separator, model_id = model.partition("/")
+            if not separator or not provider or not model_id:
+                raise OpenCodeError("model must use provider/model format")
+            body["model"] = model
         if variant:
             body["variant"] = variant
         self.request(

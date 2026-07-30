@@ -324,7 +324,7 @@ describe("OpenCode Control", () => {
     fireEvent.click(screen.getByRole("button", { name: "Создать сессию" }));
     await waitFor(() => {
       const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes("/sessions/ses_new/commands/fix") && init?.method === "POST");
-      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ arguments: "авторизацию" });
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ arguments: "авторизацию", agent: null, model: null });
     });
   });
 
@@ -916,7 +916,7 @@ describe("OpenCode Control", () => {
 
     await waitFor(() => {
       const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes("/sessions/ses_1/commands/review") && init?.method === "POST");
-      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ arguments: "авторизация", variant: "high" });
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ arguments: "авторизация", agent: "build", model: "openai/gpt-test", variant: "high" });
     });
   });
 
@@ -940,7 +940,7 @@ describe("OpenCode Control", () => {
 
     await waitFor(() => {
       const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).includes("/sessions/ses_1/commands/hacker-news-summary") && init?.method === "POST");
-      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ arguments: "" });
+      expect(JSON.parse(String(call?.[1]?.body))).toEqual({ arguments: "", agent: "build", model: "openai/gpt-test" });
     });
   });
 

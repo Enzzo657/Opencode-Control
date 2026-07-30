@@ -255,6 +255,8 @@ class SkillUpdate(StrictModel):
 
 class CommandRun(StrictModel):
     arguments: str = Field(default="", max_length=20_000)
+    agent: str | None = Field(default=None, max_length=100)
+    model: str | None = Field(default=None, max_length=256)
     variant: str | None = Field(default=None, max_length=128)
 
 
@@ -1194,6 +1196,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     session_id,
                     command,
                     arguments,
+                    agent=task.get("agent"),
+                    model=task.get("model"),
                     variant=task.get("variant"),
                 ),
                 before_start=before_command,
@@ -2244,6 +2248,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=404, detail="task not found")
         if task["status"] in {"queued", "dispatching", "running"}:
             raise HTTPException(status_code=409, detail="task is already active")
+        if task.get("cron") and task.get("cron_session_mode") == "new":
+            return dispatch_task(project_id, task)
         return continue_task(project_id, task)
 
     @app.patch("/api/v1/projects/{project_id}/tasks/{task_id}/schedule")
@@ -2506,7 +2512,12 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail="session is already active")
         if not state.submit_command(
             lambda: client.run_command(
-                session_id, item_id, payload.arguments, variant=payload.variant
+                session_id,
+                item_id,
+                payload.arguments,
+                agent=payload.agent,
+                model=payload.model,
+                variant=payload.variant,
             )
         ):
             raise HTTPException(status_code=429, detail="too many commands are already running")

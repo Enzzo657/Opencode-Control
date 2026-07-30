@@ -1209,9 +1209,13 @@ def test_task_launch_uses_dedicated_opencode_session(
             command: str,
             arguments: str,
             *,
+            agent: str | None = None,
+            model: str | None = None,
             variant: str | None = None,
         ) -> None:
-            calls.append(("command", (session_id, command, arguments, variant)))
+            calls.append(
+                ("command", (session_id, command, arguments, agent, model, variant))
+            )
 
         def session_todos(self, session_id: str) -> list[dict[str, str]]:
             return [{"content": "Run tests", "status": "in_progress", "priority": "high"}]
@@ -1445,14 +1449,40 @@ def test_task_launch_uses_dedicated_opencode_session(
         command_task = client.post(
             f"/api/v1/projects/{project_id}/tasks",
             headers=_csrf(client),
-            json={"title": "Fix auth", "prompt": "/fix authorization", "variant": "high"},
+            json={
+                "title": "Fix auth",
+                "prompt": "/fix authorization",
+                "agent": "build",
+                "model": "opencode/deepseek-v4-flash-free",
+                "variant": "max",
+            },
         )
         assert command_task.status_code == 202
         for _ in range(100):
-            if ("command", ("ses_command", "fix", "authorization", "high")) in calls:
+            if (
+                "command",
+                (
+                    "ses_command",
+                    "fix",
+                    "authorization",
+                    "build",
+                    "opencode/deepseek-v4-flash-free",
+                    "max",
+                ),
+            ) in calls:
                 break
             time.sleep(0.01)
-        assert ("command", ("ses_command", "fix", "authorization", "high")) in calls
+        assert (
+            "command",
+            (
+                "ses_command",
+                "fix",
+                "authorization",
+                "build",
+                "opencode/deepseek-v4-flash-free",
+                "max",
+            ),
+        ) in calls
 
 
 def test_provider_auth_uses_managed_opencode_without_echoing_key(
@@ -1714,7 +1744,80 @@ def test_scheduled_task_uses_a_fresh_session_by_default(
     assert "opencode-control-run:" in calls[1][1][1]
     assert runs[0]["status"] == "running"
     assert runs[0]["attempt_count"] == 1
+    assert runs[0]["scheduled_for"] == "2020-01-01T00:00:00+00:00"
     assert updated["last_scheduled_run"]["id"] == runs[0]["id"]
+
+
+def test_manual_rerun_of_scheduled_slash_task_uses_fresh_session_and_model(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    commanded = threading.Event()
+    calls: list[tuple[str, str | None, str | None, str | None]] = []
+
+    class FakeOpenCodeClient:
+        def __init__(self, endpoint: str, directory: str, **kwargs: Any) -> None:
+            return
+
+        def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            return {"worktree": str(root)}
+
+        def create_session(self, title: str | None = None) -> dict[str, Any]:
+            return {"id": "ses_manual_fresh", "title": title}
+
+        def run_command(
+            self,
+            session_id: str,
+            command: str,
+            arguments: str,
+            *,
+            agent: str | None = None,
+            model: str | None = None,
+            variant: str | None = None,
+        ) -> None:
+            calls.append((session_id, agent, model, variant))
+            commanded.set()
+
+    monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
+    client = _client(tmp_path)
+    store = client.app.state.control.store
+    project = store.create_project(
+        name="Scheduled project",
+        root=root,
+        endpoint="http://127.0.0.1:4096",
+    )
+    task = store.create_task(
+        str(project["id"]),
+        title="Daily summary",
+        prompt="/hacker-news-summary",
+        agent="build",
+        model="opencode/deepseek-v4-flash-free",
+        variant="max",
+        cron="20 11 * * *",
+        timezone="Europe/Moscow",
+        next_run_at="2099-01-01T08:20:00+00:00",
+    )
+
+    with client:
+        rerun = client.post(
+            f"/api/v1/projects/{project['id']}/tasks/{task['id']}/rerun",
+            headers=_csrf(client),
+            json={},
+        )
+        assert commanded.wait(timeout=1)
+
+    assert rerun.status_code == 202, rerun.text
+    assert rerun.json()["session_id"] == "ses_manual_fresh"
+    assert rerun.json()["session_ids"] == ["ses_manual_fresh"]
+    assert calls == [
+        (
+            "ses_manual_fresh",
+            "build",
+            "opencode/deepseek-v4-flash-free",
+            "max",
+        )
+    ]
 
 
 def test_git_status_diff_and_commit_are_scoped_to_project(tmp_path: Path) -> None:
@@ -2019,6 +2122,8 @@ def test_command_runs_natively_and_rejects_busy_session(
             command: str,
             arguments: str,
             *,
+            agent: str | None = None,
+            model: str | None = None,
             variant: str | None = None,
         ) -> None:
             started.set()

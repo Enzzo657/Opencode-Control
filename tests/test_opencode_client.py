@@ -131,11 +131,24 @@ def test_client_routes_directory_and_rejects_redirects() -> None:
                 "content": "Review $ARGUMENTS",
             }
         ]
-        client.run_command("ses_new", "review", "auth")
+        client.run_command(
+            "ses_new",
+            "review",
+            "auth",
+            agent="build",
+            model="opencode/deepseek-v4-flash-free",
+            variant="max",
+        )
         assert Handler.requests[-1] == (
             "POST",
             "/session/ses_new/command?directory=%2Ftmp%2Fmy+project",
-            {"command": "review", "arguments": "auth"},
+            {
+                "command": "review",
+                "arguments": "auth",
+                "agent": "build",
+                "model": "opencode/deepseek-v4-flash-free",
+                "variant": "max",
+            },
         )
 
 
