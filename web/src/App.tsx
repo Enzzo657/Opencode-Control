@@ -303,8 +303,11 @@ function Overview({ project, refreshKey, navigate }: { project: Project; refresh
     { id: "output", label: "Вывод", value: totals.tokens.output, color: "var(--green)" },
     { id: "reasoning", label: "Рассуждения", value: totals.tokens.reasoning, color: "var(--accent)" },
     { id: "cache", label: "Cache read", value: totals.tokens.cache_read, color: "var(--purple)" },
+    { id: "cache-write", label: "Cache write", value: totals.tokens.cache_write, color: "var(--faint)" },
   ] : [];
   const tokenPartTotal = tokenParts.reduce((sum, item) => sum + item.value, 0) || 1;
+  const inputContext = (totals?.tokens.input ?? 0) + (totals?.tokens.cache_read ?? 0) + (totals?.tokens.cache_write ?? 0);
+  const cacheReuse = inputContext > 0 ? Math.round((totals?.tokens.cache_read ?? 0) / inputContext * 100) : 0;
   const periodLabel = period === "today" ? "сегодня" : period === "7d" ? "за 7 дней" : period === "30d" ? "за 30 дней" : "за всё время";
   const recentSessions = usage.data?.recent_sessions ?? (scope === "project" ? (runtime.data?.sessions ?? []).filter((session) => !session.parentID).map((session) => ({ ...session, project_id: project.id, project_name: project.name, status: sessionStatus(runtime.data, session) })) : []);
 
@@ -315,13 +318,14 @@ function Overview({ project, refreshKey, navigate }: { project: Project; refresh
       {usage.data?.partial && <Banner tone="notice">Показаны доступные данные OpenCode. {usage.data.unavailable_projects.length ? `Не удалось прочитать проектов: ${usage.data.unavailable_projects.map((item) => item.name).join(", ")}.` : "Часть истории Sessions недоступна."}</Banner>}
       {scope === "project" && runtime.data?.state === "stopped" && <Banner tone="notice">Запустите сервер OpenCode, чтобы загрузить usage, Sessions и состояние Runtime.</Banner>}
       <section className="metric-grid">
-        <Metric icon={<Cpu />} label={`Токены · ${periodLabel}`} value={totals ? compact(totals.tokens_total) : "—"} detail={`${compact(totals?.tokens.input ?? 0)} ввод · ${compact(totals?.tokens.output ?? 0)} вывод`} accent="blue" />
+        <Metric icon={<Cpu />} label={`Токены · ${periodLabel}`} value={totals ? compact(totals.tokens_total) : "—"} detail={`${compact(totals?.tokens.input ?? 0)} ввод · ${compact(totals?.tokens.output ?? 0)} вывод · ${compact(totals?.tokens.reasoning ?? 0)} reasoning`} accent="blue" />
         <Metric icon={<CircleDollarSign />} label={`Расходы · ${periodLabel}`} value={totals ? `$${totals.cost.toFixed(3)}` : "—"} detail="по данным сообщений OpenCode" accent="green" />
         <Metric icon={<MessageSquareText />} label="Сессии" value={totals ? String(totals.sessions) : "—"} detail={`${totals?.active ?? 0} активных · ${totals?.messages ?? 0} ответов`} accent="orange" />
-        <Metric icon={<Activity />} label="Cache read" value={totals ? compact(totals.tokens.cache_read) : "—"} detail={`${compact(totals?.tokens.cache_write ?? 0)} записано в cache`} accent="purple" />
+        <Metric icon={<Activity />} label="Повторно из cache" value={totals ? compact(totals.tokens.cache_read) : "—"} detail={`${cacheReuse}% входного контекста · ${compact(totals?.tokens.cache_write ?? 0)} записано`} accent="purple" />
       </section>
       <div className="dashboard-analytics-grid">
         <Panel className="usage-chart-panel" title="Динамика использования" icon={<Activity size={17} />} action={<span className="panel-caption">timezone · {timezone}</span>}>
+          <p className="usage-composition-note">Распределение обычных токенов и кешированного контекста. Cache виден здесь, но не входит в основной total и рейтинг моделей.</p>
           <div className="usage-composition"><div className="usage-composition-bar">{tokenParts.filter((item) => item.value > 0).map((item) => <i key={item.id} style={{ width: `${Math.max(1.5, item.value / tokenPartTotal * 100)}%`, background: item.color }} />)}</div><div className="usage-legend">{tokenParts.map((item) => <span key={item.id}><i style={{ background: item.color }} /><small>{item.label}</small><strong>{compact(item.value)}</strong></span>)}</div></div>
           <div className="usage-bars" aria-label="Использование токенов по дням">{(usage.data?.daily ?? []).map((row) => <div key={row.id}><span className="usage-bar-track"><i style={{ height: `${Math.max(3, row.tokens_total / maxDailyTokens * 100)}%` }} /></span><strong>{compact(row.tokens_total)}</strong><small>{new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short" }).format(new Date(`${row.id}T12:00:00`))}</small></div>)}{usage.data && (usage.data.daily ?? []).length === 0 && <div className="usage-chart-empty">За выбранный период usage не найден.</div>}</div>
         </Panel>

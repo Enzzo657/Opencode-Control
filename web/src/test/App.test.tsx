@@ -90,6 +90,9 @@ describe("OpenCode Control", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Дашборд" })).toBeInTheDocument();
     expect(await screen.findByText("openai/gpt-test")).toBeInTheDocument();
+    expect(screen.getByText("Токены · за 7 дней")).toBeInTheDocument();
+    expect(screen.getByText("Повторно из cache")).toBeInTheDocument();
+    expect(screen.getByText(/Cache виден здесь, но не входит в основной total/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Все проекты" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/dashboard?scope=global"))).toBe(true));
     expect(screen.getByText("Использование OpenCode по всем проектам.")).toBeInTheDocument();

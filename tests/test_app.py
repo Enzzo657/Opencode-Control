@@ -1412,11 +1412,21 @@ def test_task_launch_uses_dedicated_opencode_session(
         assert sessions["ses_child"]["control_task"]["title"] == "Review auth"
         assert "control_task" not in sessions["ses_cli"]
 
+        control = client.app.state.control
+        control.dashboard_cache[(project_id, "7d", "UTC")] = (
+            datetime.now(UTC),
+            {"stale": True},
+        )
+        control.dashboard_cache[("*", "7d", "UTC")] = (
+            datetime.now(UTC),
+            {"stale": True},
+        )
         removed_session = client.delete(
             f"/api/v1/projects/{project_id}/sessions/ses_extra",
             headers=_csrf(client),
         )
         assert removed_session.status_code == 204
+        assert control.dashboard_cache == {}
         task = client.get(f"/api/v1/projects/{project_id}/tasks").json()[0]
         assert task["session_ids"] == ["ses_task"]
         replacement = client.post(

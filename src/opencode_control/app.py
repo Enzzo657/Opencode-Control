@@ -1630,6 +1630,12 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             for item in state.store.list_projects()
         ]
 
+    def invalidate_dashboard_cache(project_id: str) -> None:
+        with state.dashboard_lock:
+            for key in list(state.dashboard_cache):
+                if key[0] in {project_id, "*"}:
+                    state.dashboard_cache.pop(key, None)
+
     @app.get("/api/v1/dashboard")
     def dashboard_usage(
         scope: Literal["project", "global"] = "project",
@@ -2418,6 +2424,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         if client is not None:
             client.delete_session(session_id, missing_ok=True)
         state.store.remove_task_session(project_id, session_id)
+        invalidate_dashboard_cache(project_id)
         return Response(status_code=204)
 
     @app.get("/api/v1/projects/{project_id}/tasks")
@@ -2642,6 +2649,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 if client.ensure_session_directory(session_id, missing_ok=True):
                     client.delete_session(session_id, missing_ok=True)
         state.store.delete_task(project_id, task_id)
+        invalidate_dashboard_cache(project_id)
         return Response(status_code=204)
 
     def command_items(project: dict[str, Any]) -> list[dict[str, Any]]:
