@@ -49,6 +49,7 @@ describe("OpenCode Control", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/api/v1/projects")) return response([project]);
+      if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.1.0", projects: 1 });
       if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
       if (path.endsWith("/tasks") && (!init?.method || init.method === "GET")) return response([{ id: "task_1", project_id: project.id, title: "Fix checkout task", prompt: "Fix it", agent: "build", model: "openai/gpt-test", status: "completed", session_id: "ses_1", session_ids: ["ses_1"], error: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }]);
       if (path.includes("/snapshot")) {
@@ -83,7 +84,7 @@ describe("OpenCode Control", () => {
     expect(screen.getByText("Подключен")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Текущий проект.*Checkout API/ }));
     expect(screen.getAllByText("Подключен")).toHaveLength(2);
-    expect(screen.getByText("Local 1.0.0")).toBeInTheDocument();
+    expect(screen.getByText("Control 0.1.0")).toBeInTheDocument();
   });
 
   it("switches Dashboard usage between project, global scope, and periods", async () => {
@@ -93,6 +94,9 @@ describe("OpenCode Control", () => {
     expect(screen.getByText("Токены · за 7 дней")).toBeInTheDocument();
     expect(screen.getByText("Повторно из cache")).toBeInTheDocument();
     expect(screen.getByText(/Cache виден здесь, но не входит в основной total/)).toBeInTheDocument();
+    const usageHeading = screen.getByRole("heading", { name: "Динамика использования" });
+    expect(usageHeading.querySelector("svg")).not.toBeNull();
+    expect(usageHeading.parentElement?.classList.contains("panel-heading")).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Все проекты" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/dashboard?scope=global"))).toBe(true));
     expect(screen.getByText("Использование OpenCode по всем проектам.")).toBeInTheDocument();

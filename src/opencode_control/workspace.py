@@ -13,6 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from opencode_control.jsonc_edit import JsoncEditError, patch_jsonc
+from opencode_control.redaction import REDACTED as _REDACTED
+from opencode_control.redaction import redact_text
+
 _ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 _MAX_TEXT = 2 * 1024 * 1024
 _CONFIG_REFERENCE = re.compile(r"^\{(?:env|file):[^{}]+\}$")
@@ -39,7 +43,6 @@ _SECRET_CONTAINER_WORDS = {
     "secret",
     "token",
 }
-_REDACTED = "[REDACTED]"
 
 
 class WorkspaceError(ValueError):
@@ -695,7 +698,21 @@ def write_config(root: WorkspaceRoot, value: dict[str, Any]) -> None:
 
 
 def write_json_config(root: WorkspaceRoot, relative: Path, value: dict[str, Any]) -> None:
-    write_text(root, relative, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
+    write_text(root, relative, render_jsonc_update(root, relative, value))
+
+
+def render_jsonc_update(
+    root: WorkspaceRoot, relative: Path, value: dict[str, Any]
+) -> str:
+    source = read_text(root, relative, missing="")
+    if not source.strip():
+        return json.dumps(value, ensure_ascii=False, indent=2) + "\n"
+    try:
+        return patch_jsonc(source, value)
+    except JsoncEditError as error:
+        raise WorkspaceError(
+            f"{relative} cannot be updated without losing JSONC formatting: {error}"
+        ) from error
 
 
 def _strip_jsonc_comments(raw: str) -> str:
@@ -795,7 +812,7 @@ def redact_for_browser(value: Any, key: str | None = None, parent: str | None = 
         return [redact_for_browser(item, key, parent) for item in value]
     if not isinstance(value, str) or value == _REDACTED or _CONFIG_REFERENCE.fullmatch(value):
         return value
-    return _REDACTED if _secret_key(key, parent) else value
+    return _REDACTED if _secret_key(key, parent) else redact_text(value)
 
 
 def _redact_command(value: list[Any]) -> list[Any]:

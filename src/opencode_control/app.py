@@ -25,6 +25,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from opencode_control import __version__
 from opencode_control.command_catalog import (
     LEGACY_REVIEW_COMMAND_CONTENT,
     STARTER_COMMANDS,
@@ -77,6 +78,7 @@ from opencode_control.workspace import (
     read_jsonc_config,
     read_text,
     redact_for_browser,
+    render_jsonc_update,
     replace_directory,
     resolve_project_root,
     root_identity,
@@ -656,7 +658,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             await scheduler
             state.close()
 
-    app = FastAPI(title="OpenCode Control", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="OpenCode Control", version=__version__, lifespan=lifespan)
     app.state.control = state
 
     @app.middleware("http")
@@ -1609,7 +1611,11 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
 
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
-        return {"healthy": True, "version": "0.1.0", "projects": len(state.store.list_projects())}
+        return {
+            "healthy": True,
+            "version": __version__,
+            "projects": len(state.store.list_projects()),
+        }
 
     def managed_server_status(project_id: str) -> dict[str, object]:
         status = state.processes.status(project_id)
@@ -2221,10 +2227,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             "project",
             f"provider:{item_id}",
             {
-                ConfigFile(root, relative): json.dumps(
-                    config_value, ensure_ascii=False, indent=2
+                ConfigFile(root, relative): render_jsonc_update(
+                    root, relative, config_value
                 )
-                + "\n"
             },
         )
         if payload.api_key:
@@ -3222,10 +3227,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             payload.scope,
             f"configuration:{payload.scope}",
             {
-                ConfigFile(root, relative): json.dumps(
-                    replacement, ensure_ascii=False, indent=2
+                ConfigFile(root, relative): render_jsonc_update(
+                    root, relative, replacement
                 )
-                + "\n"
             },
         )
         return {
@@ -3282,10 +3286,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             payload.scope,
             f"mcp:{item_id}",
             {
-                ConfigFile(root, relative): json.dumps(
-                    config_value, ensure_ascii=False, indent=2
+                ConfigFile(root, relative): render_jsonc_update(
+                    root, relative, config_value
                 )
-                + "\n"
             },
         )
         return {
@@ -3353,10 +3356,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             payload.scope,
             f"mcp-enabled:{item_id}",
             {
-                ConfigFile(root, relative): json.dumps(
-                    config_value, ensure_ascii=False, indent=2
+                ConfigFile(root, relative): render_jsonc_update(
+                    root, relative, config_value
                 )
-                + "\n"
             },
         )
         return {
@@ -3385,9 +3387,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     mcp.pop(item_id)
                     if not mcp:
                         config_value.pop("mcp", None)
-                    candidate_files[ConfigFile(root, relative)] = json.dumps(
-                        config_value, ensure_ascii=False, indent=2
-                    ) + "\n"
+                    candidate_files[ConfigFile(root, relative)] = render_jsonc_update(
+                        root, relative, config_value
+                    )
             if not candidate_files:
                 raise HTTPException(status_code=404, detail="global MCP server not found")
             operation = apply_config_candidates(
@@ -3408,10 +3410,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             "project",
             f"mcp-remove:{item_id}",
             {
-                ConfigFile(root, relative): json.dumps(
-                    config_value, ensure_ascii=False, indent=2
+                ConfigFile(root, relative): render_jsonc_update(
+                    root, relative, config_value
                 )
-                + "\n"
             },
         )
         return {"name": item_id, "scope": scope, "operation": operation}

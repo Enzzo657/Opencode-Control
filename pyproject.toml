@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "opencode-control"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Local-first control plane for OpenCode projects, agents, sessions, MCP servers and skills"
 readme = "README.md"
 license = "MIT"
@@ -15,6 +15,9 @@ dependencies = [
   "pydantic>=2.10,<3",
   "uvicorn>=0.34,<1",
 ]
+
+[tool.hatch.version]
+path = "src/opencode_control/__init__.py"
 
 [project.optional-dependencies]
 dev = [

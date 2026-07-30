@@ -14,6 +14,8 @@ from contextlib import AbstractContextManager, nullcontext
 from pathlib import Path
 from typing import Any
 
+from opencode_control.redaction import redact_text
+
 _STATUSLESS_ACTIVE_TTL_MS = 15 * 60 * 1000
 
 
@@ -846,15 +848,15 @@ def _messages(raw: Any) -> list[dict[str, Any]]:
 
 def _message_error(raw: Any) -> str:
     if isinstance(raw, str):
-        return raw[:4000]
+        return redact_text(raw[:4000])
     if not isinstance(raw, dict):
         return ""
     data = raw.get("data")
     message = data.get("message") if isinstance(data, dict) else None
     if isinstance(message, str) and message:
-        return message[:4000]
+        return redact_text(message[:4000])
     name = raw.get("name")
-    return name[:200] if isinstance(name, str) else ""
+    return redact_text(name[:200]) if isinstance(name, str) else ""
 
 
 def _tool_input_summary(raw: dict[str, Any]) -> str:
@@ -867,14 +869,17 @@ def _tool_input_summary(raw: dict[str, Any]) -> str:
         ):
             continue
         if isinstance(value, str):
-            safe[str(key)[:100]] = value[:2000]
+            safe[str(key)[:100]] = redact_text(value[:2000])
         elif isinstance(value, (int, float, bool)) or value is None:
             safe[str(key)[:100]] = value
         elif isinstance(value, list) and all(
             isinstance(item, (str, int, float, bool)) or item is None
             for item in value[:50]
         ):
-            safe[str(key)[:100]] = value[:50]
+            safe[str(key)[:100]] = [
+                redact_text(item) if isinstance(item, str) else item
+                for item in value[:50]
+            ]
     return json.dumps(safe, ensure_ascii=False, indent=2) if safe else ""
 
 

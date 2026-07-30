@@ -79,6 +79,24 @@ OpenCode рассчитывает стоимость отдельно по та�
 Дочерние subagent Sessions учитываются в токенах и стоимости родительской Session, но
 не увеличивают число пользовательских Sessions в карточках и рейтингах.
 
+## Версия, JSONC и redaction
+
+Версия продукта хранится в `src/opencode_control/__init__.py`. Hatch использует её для
+wheel metadata, FastAPI и `/health` возвращают то же значение, HTTP User-Agent и sidebar
+Control также получают версию из этого источника. Версия private frontend package не
+является версией продукта.
+
+Точечные изменения MCP, providers и structured configuration используют позиционный
+JSONC patcher. Он сохраняет комментарии, отступы, порядок ключей, trailing commas,
+пустые строки и CRLF/LF, изменяя только нужные values или object members. Duplicate
+keys и неоднозначный JSONC блокируют операцию до записи; полной сериализации как
+fallback нет. Preflight, backup и rollback продолжают применяться после patching.
+
+Общий redaction layer очищает cookies, Basic/Bearer authorization, известные API token
+formats, credentials и query values в URL, secret CLI arguments, provider/tool errors,
+startup diagnostics и log tail. Ссылки вида `{env:NAME}` и `{file:path}` остаются
+видимыми, поскольку не содержат literal secret.
+
 Для другого loopback-порта:
 
 ```bash

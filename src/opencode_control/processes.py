@@ -18,6 +18,7 @@ from typing import BinaryIO
 
 from opencode_control.log_rotation import LogRotationError, rotate_log
 from opencode_control.opencode_client import OpenCodeClient, OpenCodeError
+from opencode_control.redaction import redact_text
 from opencode_control.workspace import WorkspaceRoot, open_root_descriptor
 
 
@@ -332,14 +333,5 @@ def _log_tail(path: Path, limit: int = 32_768) -> str:
         return ""
     text = raw.decode("utf-8", errors="replace")
     text = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", text)
-    text = re.sub(
-        r"(?i)(api[_-]?key|token|secret|password|authorization)(\s*[:=]\s*)([^\s,}\]]+)",
-        r"\1\2[REDACTED]",
-        text,
-    )
-    text = re.sub(
-        r"(?i)\b(?:sk-[a-z0-9_-]{12,}|github_pat_[a-z0-9_]{12,}|pencil_cli_[a-z0-9_-]{12,})\b",
-        "[REDACTED]",
-        text,
-    )
+    text = redact_text(text)
     return "\n".join(text.splitlines()[-80:]).strip()

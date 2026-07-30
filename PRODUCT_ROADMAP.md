@@ -49,35 +49,35 @@
   со всеми scripts, references, data, templates и другими sidecar-файлами.
 - Project/global Dashboard с периодами, message-level usage, дедупликацией,
   локальной timezone и breakdown по моделям, providers, agents и cache.
+- Dashboard вынесен из монолитного `App.tsx` в самостоятельный screen module; добавлен
+  typed RU/EN translation catalog как основа постепенной локализации.
 
 ## Текущие ограничения
 
 - Строгий exactly-once dispatch невозможен без idempotency key OpenCode. Control
   сохраняет неоднозначный HTTP-результат как `ambiguous` и не делает blind retry.
 - Локальные secrets хранятся plaintext-файлами с правами `0600`.
-- Сохранение `opencode.jsonc` может изменить форматирование и удалить комментарии.
-- Версия пока дублируется между Python package, API и frontend.
-- Frontend остаётся крупным монолитным `App.tsx`; это приемлемо до локализации и
-  расширения количества независимых экранов.
+- Большинство frontend-экранов всё ещё находится в `App.tsx`; Dashboard уже вынесен,
+  остальные экраны будут переноситься вместе с локализацией.
 
 ## 1. Локализация и декомпозиция UI
 
-- [ ] Добавить небольшой typed translation layer без тяжёлого i18n framework.
+- [x] Добавить небольшой typed translation layer без тяжёлого i18n framework.
 - [ ] Вынести русские строки в словарь.
 - [ ] Добавить английский словарь.
 - [ ] Учитывать язык браузера и сохранять выбор пользователя.
 - [ ] Локализовать даты, числа, стоимость и timezone labels.
 - [ ] Добавить тест полноты translation keys.
-- [ ] Разделить `App.tsx` по экранам во время переноса строк, а не отдельным rewrite.
+- [x] Начать разделение `App.tsx` по экранам с Dashboard без отдельного rewrite.
 
 ## Техническая полировка
 
 Эти задачи можно выполнять небольшими независимыми изменениями между продуктовыми
 этапами.
 
-- [ ] Сделать одну точку хранения версии для package, API, User-Agent и UI.
-- [ ] Сохранять комментарии и форматирование JSONC при точечных изменениях.
-- [ ] Расширить redaction для cookies, нестандартных credential keys и вложенных
+- [x] Сделать одну точку хранения версии для package, API, User-Agent и UI.
+- [x] Сохранять комментарии и форматирование JSONC при точечных изменениях.
+- [x] Расширить redaction для cookies, нестандартных credential keys и вложенных
   provider options.
 - [ ] Добавить runtime access token для read/write API перед публичным release.
 

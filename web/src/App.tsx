@@ -44,7 +44,8 @@ import {
 import { Component, lazy, memo, Suspense, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type ErrorInfo, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { ApiError, api, jsonBody } from "./api";
-import type { Agent, Attachment, CommandItem, DashboardUsage, GitState, Project, ProviderAuthEntry, ProviderSummary, RuntimeConfig, SecretInfo, Session, SkillImportPreview, Snapshot, Task, UsageRow, WorkspaceItem } from "./types";
+import { Dashboard } from "./screens/Dashboard";
+import type { Agent, Attachment, CommandItem, GitState, Project, ProviderAuthEntry, ProviderSummary, RuntimeConfig, SecretInfo, Session, SkillImportPreview, Snapshot, Task, WorkspaceItem } from "./types";
 
 const MarkdownRenderer = lazy(() => import("./MarkdownRenderer"));
 
@@ -146,6 +147,11 @@ export function App() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [theme, setTheme] = useState(() => normalizeTheme(window.localStorage.getItem("control-theme")));
   const [refreshKey, setRefreshKey] = useState(0);
+  const controlHealth = useResource<{ healthy: boolean; version: string }>(
+    "/api/v1/health",
+    refreshKey,
+    60000,
+  );
 
   useEffect(() => {
     let active = true;
@@ -233,7 +239,7 @@ export function App() {
             <Palette size={16} />
             Тема: {themes.find((item) => item.id === theme)?.name ?? "OpenCode"}
           </button>
-          <span>Local 1.0.0</span>
+          <span>Control {controlHealth.data?.version ?? "—"}</span>
         </div>
       </aside>
 
@@ -275,7 +281,7 @@ class ViewErrorBoundary extends Component<{ children: ReactNode }, { error: stri
 }
 
 function ViewContent({ view, project, refreshKey, onProjectChange, navigate }: { view: View; project: Project; refreshKey: number; onProjectChange: () => void; navigate: (view: View) => void }) {
-  if (view === "overview") return <Overview project={project} refreshKey={refreshKey} navigate={navigate} />;
+  if (view === "overview") return <Dashboard project={project} refreshKey={refreshKey} onOpenTasks={() => navigate("tasks")} onOpenSessions={() => navigate("sessions")} />;
   if (view === "sessions") return <Sessions project={project} refreshKey={refreshKey} />;
   if (view === "tasks") return <Tasks project={project} refreshKey={refreshKey} />;
   if (view === "agents") return <MarkdownCollection project={project} kind="agents" refreshKey={refreshKey} />;
@@ -286,68 +292,6 @@ function ViewContent({ view, project, refreshKey, onProjectChange, navigate }: {
   if (view === "mcp") return <Mcp project={project} refreshKey={refreshKey} />;
   if (view === "instructions") return <Instructions project={project} />;
   return <ProjectSettings project={project} onChange={onProjectChange} />;
-}
-
-function Overview({ project, refreshKey, navigate }: { project: Project; refreshKey: number; navigate: (view: View) => void }) {
-  const [scope, setScope] = useState<"project" | "global">("project");
-  const [period, setPeriod] = useState<"today" | "7d" | "30d" | "all">("7d");
-  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
-  const usageUrl = `/api/v1/dashboard?scope=${scope}&project_id=${encodeURIComponent(project.id)}&period=${period}&timezone=${encodeURIComponent(timezone)}`;
-  const usage = useResource<DashboardUsage>(usageUrl, refreshKey, 30000);
-  const runtime = useResource<Snapshot>(`/api/v1/projects/${project.id}/snapshot`, refreshKey, 5000);
-  const totals = usage.data?.totals;
-  const maxModelTokens = Math.max(1, ...(usage.data?.models ?? []).map((row) => row.tokens_total));
-  const maxDailyTokens = Math.max(1, ...(usage.data?.daily ?? []).map((row) => row.tokens_total));
-  const tokenParts = totals ? [
-    { id: "input", label: "Ввод", value: totals.tokens.input, color: "var(--blue)" },
-    { id: "output", label: "Вывод", value: totals.tokens.output, color: "var(--green)" },
-    { id: "reasoning", label: "Рассуждения", value: totals.tokens.reasoning, color: "var(--accent)" },
-    { id: "cache", label: "Cache read", value: totals.tokens.cache_read, color: "var(--purple)" },
-    { id: "cache-write", label: "Cache write", value: totals.tokens.cache_write, color: "var(--faint)" },
-  ] : [];
-  const tokenPartTotal = tokenParts.reduce((sum, item) => sum + item.value, 0) || 1;
-  const inputContext = (totals?.tokens.input ?? 0) + (totals?.tokens.cache_read ?? 0) + (totals?.tokens.cache_write ?? 0);
-  const cacheReuse = inputContext > 0 ? Math.round((totals?.tokens.cache_read ?? 0) / inputContext * 100) : 0;
-  const periodLabel = period === "today" ? "сегодня" : period === "7d" ? "за 7 дней" : period === "30d" ? "за 30 дней" : "за всё время";
-  const recentSessions = usage.data?.recent_sessions ?? (scope === "project" ? (runtime.data?.sessions ?? []).filter((session) => !session.parentID).map((session) => ({ ...session, project_id: project.id, project_name: project.name, status: sessionStatus(runtime.data, session) })) : []);
-
-  return (
-    <Page title="Дашборд" description={scope === "project" ? `Активность, использование и Runtime проекта ${project.name}.` : "Использование OpenCode по всем проектам."} action={<button className="primary-button" onClick={() => navigate("tasks")}><Play size={16} /> Запустить задачу</button>}>
-      <div className="dashboard-toolbar"><div className="dashboard-segment" aria-label="Область аналитики"><button className={scope === "project" ? "active" : ""} onClick={() => setScope("project")}>Проект · {project.name}</button><button className={scope === "global" ? "active" : ""} onClick={() => setScope("global")}>Все проекты</button></div><div className="dashboard-segment compact" aria-label="Период аналитики">{(["today", "7d", "30d", "all"] as const).map((value) => <button key={value} className={period === value ? "active" : ""} onClick={() => setPeriod(value)}>{value === "today" ? "Сегодня" : value === "7d" ? "7 дней" : value === "30d" ? "30 дней" : "Всё время"}</button>)}</div></div>
-      {usage.error && <Banner tone="danger">Не удалось собрать аналитику: {usage.error}</Banner>}
-      {usage.data?.partial && <Banner tone="notice">Показаны доступные данные OpenCode. {usage.data.unavailable_projects.length ? `Не удалось прочитать проектов: ${usage.data.unavailable_projects.map((item) => item.name).join(", ")}.` : "Часть истории Sessions недоступна."}</Banner>}
-      {scope === "project" && runtime.data?.state === "stopped" && <Banner tone="notice">Запустите сервер OpenCode, чтобы загрузить usage, Sessions и состояние Runtime.</Banner>}
-      <section className="metric-grid">
-        <Metric icon={<Cpu />} label={`Токены · ${periodLabel}`} value={totals ? compact(totals.tokens_total) : "—"} detail={`${compact(totals?.tokens.input ?? 0)} ввод · ${compact(totals?.tokens.output ?? 0)} вывод · ${compact(totals?.tokens.reasoning ?? 0)} reasoning`} accent="blue" />
-        <Metric icon={<CircleDollarSign />} label={`Расходы · ${periodLabel}`} value={totals ? `$${totals.cost.toFixed(3)}` : "—"} detail="по данным сообщений OpenCode" accent="green" />
-        <Metric icon={<MessageSquareText />} label="Сессии" value={totals ? String(totals.sessions) : "—"} detail={`${totals?.active ?? 0} активных · ${totals?.messages ?? 0} ответов`} accent="orange" />
-        <Metric icon={<Activity />} label="Повторно из cache" value={totals ? compact(totals.tokens.cache_read) : "—"} detail={`${cacheReuse}% входного контекста · ${compact(totals?.tokens.cache_write ?? 0)} записано`} accent="purple" />
-      </section>
-      <div className="dashboard-analytics-grid">
-        <Panel className="usage-chart-panel" title="Динамика использования" icon={<Activity size={17} />} action={<span className="panel-caption">timezone · {timezone}</span>}>
-          <p className="usage-composition-note">Распределение обычных токенов и кешированного контекста. Cache виден здесь, но не входит в основной total и рейтинг моделей.</p>
-          <div className="usage-composition"><div className="usage-composition-bar">{tokenParts.filter((item) => item.value > 0).map((item) => <i key={item.id} style={{ width: `${Math.max(1.5, item.value / tokenPartTotal * 100)}%`, background: item.color }} />)}</div><div className="usage-legend">{tokenParts.map((item) => <span key={item.id}><i style={{ background: item.color }} /><small>{item.label}</small><strong>{compact(item.value)}</strong></span>)}</div></div>
-          <div className="usage-bars" aria-label="Использование токенов по дням">{(usage.data?.daily ?? []).map((row) => <div key={row.id}><span className="usage-bar-track"><i style={{ height: `${Math.max(3, row.tokens_total / maxDailyTokens * 100)}%` }} /></span><strong>{compact(row.tokens_total)}</strong><small>{new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short" }).format(new Date(`${row.id}T12:00:00`))}</small></div>)}{usage.data && (usage.data.daily ?? []).length === 0 && <div className="usage-chart-empty">За выбранный период usage не найден.</div>}</div>
-        </Panel>
-        <Panel className="usage-ranking-panel" title="Модели" icon={<BrainCircuit size={17} />} action={<span className="panel-caption">токены · стоимость</span>}>
-          <UsageRanking rows={usage.data?.models ?? []} maxTokens={maxModelTokens} empty="Нет данных по моделям за этот период." />
-        </Panel>
-      </div>
-      <div className="overview-grid dashboard-bottom-grid">
-        <Panel title={scope === "project" ? "Последние сессии проекта" : "Последние сессии всех проектов"} icon={<MessageSquareText size={17} />} action={scope === "project" ? <button className="text-button" onClick={() => navigate("sessions")}>Показать все</button> : undefined}>
-          <div className="dashboard-session-rows">{recentSessions.map((session) => <div key={`${session.project_id}:${session.id}`}><span className="session-icon"><MessageSquareText size={16} /></span><span><strong>{session.title ?? "Сессия без названия"}</strong><small>{scope === "global" ? `${session.project_name} · ` : ""}{session.agent ?? "default"} · {modelOf(session)}</small></span><span><Status value={session.status} /><small>{relativeTime(session.time?.updated)}</small></span></div>)}{usage.data && recentSessions.length === 0 && <Empty icon={<MessageSquareText />} title="Сессий за период нет" detail="Измените период или запустите новую задачу." />}</div>
-        </Panel>
-        {scope === "project" ? <Panel title="Runtime проекта" icon={<SquareTerminal size={17} />}>
-          <dl className="runtime-list"><div><dt>Сервер</dt><dd><Status value={runtime.data?.server.state === "running" ? "connected" : runtime.data?.server.state ?? "stopped"} /></dd></div><div><dt>Адрес</dt><dd className="mono">{runtime.data?.server.endpoint ?? "не запущен"}</dd></div><div><dt>OpenCode</dt><dd>{runtime.data?.health?.version ?? "неизвестно"}</dd></div><div><dt>MCP</dt><dd>{totals?.mcp_connected ?? 0}/{totals?.mcp_total ?? 0} подключено</dd></div><div><dt>Папка</dt><dd className="mono truncate" title={project.root}>{project.root}</dd></div></dl>
-        </Panel> : <Panel title="Проекты" icon={<FolderGit2 size={17} />} action={<span className="panel-caption">usage за период</span>}><UsageRanking rows={usage.data?.projects ?? []} maxTokens={Math.max(1, ...(usage.data?.projects ?? []).map((row) => row.tokens_total))} empty="Нет доступных данных по проектам." /></Panel>}
-      </div>
-    </Page>
-  );
-}
-
-function UsageRanking({ rows, maxTokens, empty }: { rows: UsageRow[]; maxTokens: number; empty: string }) {
-  if (!rows.length) return <div className="usage-ranking-empty">{empty}</div>;
-  return <div className="usage-ranking">{rows.slice(0, 8).map((row, index) => <div key={row.id}><span className="usage-rank">{String(index + 1).padStart(2, "0")}</span><span><strong>{row.name ?? row.id}</strong><i><b style={{ width: `${Math.max(2, row.tokens_total / maxTokens * 100)}%` }} /></i></span><span><strong>{compact(row.tokens_total)}</strong><small>${row.cost.toFixed(3)} · {row.sessions} сесс.</small></span></div>)}</div>;
 }
 
 function Sessions({ project, refreshKey }: { project: Project; refreshKey: number }) {
@@ -1560,7 +1504,6 @@ function useOutsideClose(open: boolean, close: () => void) {
   }, [open, close]);
   return root;
 }
-function Metric({ icon, label, value, detail, accent }: { icon: ReactNode; label: string; value: string; detail: string; accent: string }) { return <article className={`metric ${accent}`}><div className="metric-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>; }
 function Banner({ tone, children }: { tone: "danger" | "success" | "notice"; children: ReactNode }) { return <div className={`banner ${tone}`}>{children}</div>; }
 function Status({ value }: { value: string }) { return <span className="status" data-status={value}><i />{statusLabel(value)}</span>; }
 function TaskStatus({ value }: { value: string }) { const labels: Record<string, string> = { queued: "В очереди", dispatching: "Запускается", running: "Выполняется", scheduled: "По расписанию", paused: "Расписание на паузе", completed: "Завершена", failed: "Ошибка", aborted: "Остановлена" }; return <span className="status" data-status={value}><i />{labels[value] ?? value.replaceAll("_", " ")}</span>; }

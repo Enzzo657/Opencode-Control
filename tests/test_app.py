@@ -16,6 +16,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import opencode_control.app as app_module
+from opencode_control import __version__
 from opencode_control.app import create_app
 from opencode_control.command_catalog import (
     LEGACY_REVIEW_COMMAND_CONTENT,
@@ -28,7 +29,13 @@ from opencode_control.opencode_client import OpenCodeError, OpenCodeHTTPError
 from opencode_control.processes import ProcessError
 from opencode_control.skill_import import DownloadedSkill, SkillFile, validate_skill_document
 from opencode_control.store import ControlStore
-from opencode_control.workspace import WorkspaceError, read_text, root_identity, write_text
+from opencode_control.workspace import (
+    WorkspaceError,
+    read_jsonc_config,
+    read_text,
+    root_identity,
+    write_text,
+)
 
 
 def _client(tmp_path: Path) -> TestClient:
@@ -49,6 +56,14 @@ def _csrf(client: TestClient) -> dict[str, str]:
     response = client.get("/api/v1/session")
     assert response.status_code == 200
     return {"X-CSRF-Token": response.json()["csrf_token"]}
+
+
+def test_health_uses_package_version(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        response = client.get("/api/v1/health")
+
+    assert response.status_code == 200
+    assert response.json()["version"] == __version__
 
 
 def _project(client: TestClient, root: Path, *, endpoint: str | None = None) -> dict[str, Any]:
@@ -717,10 +732,11 @@ def test_project_and_global_jsonc_are_editable_without_losing_secrets(
         )
         assert saved_project.status_code == 200
         assert not (root / "opencode.json").exists()
-        assert json.loads(project_path.read_text()) == {
+        assert read_jsonc_config(root_identity(root), Path("opencode.jsonc")) == {
             "model": "openai/new-project",
             "apiKey": "project-secret",
         }
+        assert "// project override" in project_path.read_text()
 
         saved_global = client.patch(
             f"/api/v1/projects/{project_id}/configuration",
@@ -732,10 +748,11 @@ def test_project_and_global_jsonc_are_editable_without_losing_secrets(
         )
         assert saved_global.status_code == 200
         assert not (global_root / "opencode.json").exists()
-        assert json.loads(global_path.read_text()) == {
+        assert read_jsonc_config(root_identity(global_root), Path("opencode.jsonc")) == {
             "model": "openai/new-global",
             "apiKey": "global-secret",
         }
+        assert "// shared provider" in global_path.read_text()
 
 
 def test_secret_manager_writes_private_files_without_returning_values(
@@ -899,7 +916,10 @@ def test_mcp_enabled_updates_preserve_global_and_project_definitions(
             json={"scope": "global", "enabled": True},
         )
         assert enabled_global.status_code == 200
-        persisted_global = json.loads(global_path.read_text())
+        persisted_global = read_jsonc_config(
+            root_identity(global_root), Path("opencode.jsonc")
+        )
+        assert "// Global server inherited by projects." in global_path.read_text()
         assert persisted_global["mcp"]["docs"] == {
             "type": "remote",
             "url": "https://example.test/mcp",
@@ -938,6 +958,53 @@ def test_mcp_enabled_updates_preserve_global_and_project_definitions(
         assert restored_inheritance.json()["inherited"] is True
         persisted_project = json.loads((root / "opencode.json").read_text())
         assert "docs" not in persisted_project["mcp"]
+
+
+def test_mcp_updates_preserve_jsonc_comments_formatting_and_crlf(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    config = root / "opencode.jsonc"
+    config.write_bytes(
+        b'{\r\n  // Keep project model\r\n  "model": "openai/gpt",\r\n}\r\n'
+    )
+
+    with _client(tmp_path) as client:
+        project_id = _project(client, root)["id"]
+        headers = _csrf(client)
+        saved = client.put(
+            f"/api/v1/projects/{project_id}/mcp/docs",
+            headers=headers,
+            json={
+                "scope": "project",
+                "config": {
+                    "type": "remote",
+                    "url": "https://example.test/mcp",
+                    "enabled": True,
+                },
+            },
+        )
+        assert saved.status_code == 200, saved.text
+        after_save = config.read_bytes()
+        assert b"// Keep project model" in after_save
+        assert b"\r\n" in after_save
+        assert b'  "mcp": {\r\n    "docs": {' in after_save
+        assert read_jsonc_config(root_identity(root), Path("opencode.jsonc"))["mcp"][
+            "docs"
+        ]["enabled"] is True
+
+        removed = client.delete(
+            f"/api/v1/projects/{project_id}/mcp/docs?scope=project",
+            headers=headers,
+        )
+        assert removed.status_code == 200, removed.text
+        after_remove = config.read_bytes()
+        assert b"// Keep project model" in after_remove
+        assert b"\r\n" in after_remove
+        assert "mcp" not in read_jsonc_config(
+            root_identity(root), Path("opencode.jsonc")
+        )
 
 
 def test_global_config_failure_rolls_back_and_leaves_unreached_project_running(
