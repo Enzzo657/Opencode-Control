@@ -19,6 +19,17 @@ function response(value: unknown, status = 200): Response {
   });
 }
 
+function dashboardUsage(scope: "project" | "global" = "project") {
+  return {
+    scope, period: "7d", timezone: "UTC", generated_at: "2026-01-01T00:00:00Z", partial: false, unavailable_projects: [],
+    totals: { id: "total", tokens: { input: 10, output: 4, reasoning: 2, cache_read: 3, cache_write: 1 }, tokens_total: 16, cost: 0.5, messages: 1, sessions: 1, active: 0, mcp_connected: 1, mcp_total: 2 },
+    projects: [{ id: project.id, name: project.name, tokens: { input: 10, output: 4, reasoning: 2, cache_read: 3, cache_write: 1 }, tokens_total: 16, cost: 0.5, messages: 1, sessions: 1 }],
+    models: [{ id: "openai/gpt-test", tokens: { input: 10, output: 4, reasoning: 2, cache_read: 3, cache_write: 1 }, tokens_total: 16, cost: 0.5, messages: 1, sessions: 1 }],
+    providers: [], agents: [], daily: [{ id: "2026-01-01", tokens: { input: 10, output: 4, reasoning: 2, cache_read: 3, cache_write: 1 }, tokens_total: 16, cost: 0.5, messages: 1, sessions: 1 }],
+    recent_sessions: [{ id: "ses_1", title: "Fix checkout", agent: "build", model: { providerID: "openai", modelID: "gpt-test" }, time: { updated: Date.now() }, project_id: project.id, project_name: project.name, status: "idle", cost: 0.5, tokens: { input: 10, output: 4, reasoning: 2 } }],
+  };
+}
+
 function contrastRatio(left: string, right: string) {
   function luminance(hex: string) {
     const channels = hex.match(/[a-f\d]{2}/gi)!.map((value) => Number.parseInt(value, 16) / 255);
@@ -38,6 +49,7 @@ describe("OpenCode Control", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/api/v1/projects")) return response([project]);
+      if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
       if (path.endsWith("/tasks") && (!init?.method || init.method === "GET")) return response([{ id: "task_1", project_id: project.id, title: "Fix checkout task", prompt: "Fix it", agent: "build", model: "openai/gpt-test", status: "completed", session_id: "ses_1", session_ids: ["ses_1"], error: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }]);
       if (path.includes("/snapshot")) {
         return response({
@@ -64,14 +76,25 @@ describe("OpenCode Control", () => {
 
   it("renders the project control room with runtime information", async () => {
     render(<App />);
-    expect(await screen.findByText("Центр управления")).toBeInTheDocument();
+    expect(await screen.findByRole("heading", { name: "Дашборд" })).toBeInTheDocument();
     expect(screen.getAllByText("Checkout API").length).toBeGreaterThan(0);
     expect(await screen.findByText("Fix checkout")).toBeInTheDocument();
     expect(screen.getByText("1.18.1")).toBeInTheDocument();
     expect(screen.getByText("Подключен")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /Checkout API/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Текущий проект.*Checkout API/ }));
     expect(screen.getAllByText("Подключен")).toHaveLength(2);
     expect(screen.getByText("Local 1.0.0")).toBeInTheDocument();
+  });
+
+  it("switches Dashboard usage between project, global scope, and periods", async () => {
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Дашборд" })).toBeInTheDocument();
+    expect(await screen.findByText("openai/gpt-test")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Все проекты" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/dashboard?scope=global"))).toBe(true));
+    expect(screen.getByText("Использование OpenCode по всем проектам.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Сегодня" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("period=today"))).toBe(true));
   });
 
   it("edits project and global OpenCode configurations separately", async () => {
@@ -85,7 +108,7 @@ describe("OpenCode Control", () => {
       return response([]);
     }));
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Настройки проекта" }));
     expect(await screen.findByText("/code/checkout/opencode.jsonc")).toBeInTheDocument();
     expect(screen.getAllByText("/home/dev/.config/opencode/opencode.jsonc")).toHaveLength(2);
@@ -109,7 +132,7 @@ describe("OpenCode Control", () => {
     }));
 
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Настройки проекта" }));
     await screen.findAllByText("/home/dev/.config/opencode/opencode.jsonc");
     const editor = screen.getByLabelText("Общая конфигурация OpenCode");
@@ -141,7 +164,7 @@ describe("OpenCode Control", () => {
     }));
 
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Секреты" }));
     expect(await screen.findByText("context7_api_key")).toBeInTheDocument();
     expect(screen.getByText("{file:~/.config/opencode/secrets/context7_api_key}")).toBeInTheDocument();
@@ -170,7 +193,7 @@ describe("OpenCode Control", () => {
       return response({});
     }));
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "AGENTS.md" }));
     expect(await screen.findByText("/code/checkout/AGENTS.md")).toBeInTheDocument();
     expect(screen.getByText("файл создан")).toHaveClass("state-enabled");
@@ -216,7 +239,7 @@ describe("OpenCode Control", () => {
 
   it("deletes a session from Control", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     await screen.findByText("Fix checkout");
     fireEvent.click(screen.getByRole("button", { name: "Удалить сессию" }));
@@ -232,7 +255,7 @@ describe("OpenCode Control", () => {
       return response([]);
     }));
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     expect(await screen.findByRole("heading", { name: "Задачи" })).toBeInTheDocument();
     expect(screen.queryByText("Раздел не удалось открыть")).not.toBeInTheDocument();
@@ -240,7 +263,7 @@ describe("OpenCode Control", () => {
 
   it("shows the reasoning level on every task card", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     const card = (await screen.findByText("Fix checkout task")).closest(".task-card");
     expect(card?.querySelector(".task-meta")?.textContent).toContain("Рассуждениепо умолчанию");
@@ -248,7 +271,7 @@ describe("OpenCode Control", () => {
 
   it("keeps agent and connected-model pickers open until selection", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Запустить задачу" }));
     fireEvent.click(screen.getByRole("button", { name: "Агент: по умолчанию" }));
@@ -261,7 +284,7 @@ describe("OpenCode Control", () => {
 
   it("keeps the selected agent, model, and reasoning level for the next task", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Запустить задачу" }));
     fireEvent.click(screen.getByRole("button", { name: "Агент: по умолчанию" }));
@@ -287,7 +310,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Запустить задачу" }));
     const prompt = screen.getByPlaceholderText(/Опишите задачу/);
@@ -314,7 +337,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(screen.getByRole("button", { name: "Новая сессия" }));
     const prompt = screen.getByPlaceholderText("Первое сообщение…");
@@ -337,7 +360,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Провайдеры" }));
     fireEvent.click(await screen.findByRole("button", { name: /OpenAI/ }));
     fireEvent.change(screen.getByPlaceholderText("Вставьте ключ провайдера"), { target: { value: "test-secret" } });
@@ -357,7 +380,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Провайдеры" }));
     fireEvent.click(await screen.findByRole("button", { name: "Добавить своего провайдера" }));
     fireEvent.change(screen.getByPlaceholderText(/qwen3-coder/), { target: { value: "qwen3-coder:30b" } });
@@ -370,7 +393,7 @@ describe("OpenCode Control", () => {
 
   it("continues an existing session with another prompt", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const textarea = screen.getByPlaceholderText("Продолжите диалог в этой же сессии…");
@@ -396,7 +419,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const stop = await screen.findByRole("button", { name: "Остановить ответ" });
@@ -407,7 +430,7 @@ describe("OpenCode Control", () => {
 
   it("mentions a subagent with @ and sends a native mention", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const textarea = screen.getByPlaceholderText("Продолжите диалог в этой же сессии…");
@@ -425,7 +448,7 @@ describe("OpenCode Control", () => {
 
   it("remembers agent and model for each session", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     fireEvent.click(screen.getByRole("button", { name: "Агент: build" }));
@@ -444,7 +467,7 @@ describe("OpenCode Control", () => {
 
   it("shows one white task title without the session id", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const dialog = await screen.findByRole("dialog", { name: "Сессия Fix checkout" });
@@ -470,7 +493,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Fix checkout" }));
     const dialog = await screen.findByRole("dialog", { name: "Сессия Fix checkout" });
@@ -486,7 +509,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     expect(await screen.findByRole("button", { name: "Отправить в эту сессию" })).toBeInTheDocument();
@@ -497,7 +520,7 @@ describe("OpenCode Control", () => {
   it("offers a manual jump to the latest message", async () => {
     const scrollTo = vi.fn();
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const stream = (await screen.findByRole("dialog", { name: "Сессия Fix checkout" })).querySelector<HTMLElement>(".message-stream")!;
@@ -510,7 +533,7 @@ describe("OpenCode Control", () => {
 
   it("adds dropped files from the whole chat composer", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const composer = screen.getByPlaceholderText("Продолжите диалог в этой же сессии…").closest(".composer-box")!;
@@ -531,7 +554,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     expect(await screen.findByRole("heading", { name: "Проверка" })).toBeInTheDocument();
@@ -551,7 +574,7 @@ describe("OpenCode Control", () => {
       return response([]);
     }));
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     expect(await screen.findByText("Forbidden")).toBeInTheDocument();
@@ -567,7 +590,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     expect(await screen.findByRole("button", { name: "Отправить в эту сессию" })).toBeInTheDocument();
@@ -585,7 +608,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     expect(await screen.findByText("Получить документацию")).toBeInTheDocument();
@@ -605,7 +628,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const command = await screen.findByText("$ python3 script.py --all");
@@ -626,7 +649,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const dialog = await screen.findByRole("dialog", { name: /Сессия Fix checkout/ });
@@ -641,7 +664,7 @@ describe("OpenCode Control", () => {
 
   it("resizes the session drawer with its left handle", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const handle = await screen.findByRole("separator", { name: "Изменить ширину окна сессии" });
@@ -665,7 +688,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     expect((await screen.findAllByText("src/app.ts")).length).toBeGreaterThan(0);
@@ -710,7 +733,7 @@ describe("OpenCode Control", () => {
 
   it("saves a new agent in the selected global scope", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Агенты" }));
     fireEvent.click(await screen.findByRole("button", { name: "Создать агента" }));
     fireEvent.change(screen.getByPlaceholderText("security-reviewer"), { target: { value: "reviewer" } });
@@ -728,7 +751,7 @@ describe("OpenCode Control", () => {
 
   it("applies an MCP project override in one backend operation", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
     fireEvent.click((await screen.findByRole("heading", { name: "context7" })).closest("button")!);
     fireEvent.change(screen.getByLabelText("Где действует настройка"), { target: { value: "project" } });
@@ -743,7 +766,7 @@ describe("OpenCode Control", () => {
 
   it("updates a global MCP in one backend operation", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
     fireEvent.click((await screen.findByRole("heading", { name: "context7" })).closest("button")!);
     expect(screen.getAllByText("Сейчас в OpenCode").length).toBeGreaterThan(0);
@@ -760,7 +783,7 @@ describe("OpenCode Control", () => {
 
   it("recognizes a copied stdio MCP descriptor", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
     fireEvent.click(await screen.findByRole("button", { name: "Добавить MCP" }));
     fireEvent.change(screen.getByLabelText("Имя сервера"), { target: { value: "pencil" } });
@@ -775,7 +798,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
     fireEvent.click((await screen.findByRole("heading", { name: "context7" })).closest("button")!);
     fireEvent.click(screen.getByRole("button", { name: "Выключить для всех" }));
@@ -785,7 +808,7 @@ describe("OpenCode Control", () => {
 
   it("does not show a Runtime-only MCP as configured", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "MCP-серверы" }));
     const runtimeOnly = (await screen.findByRole("heading", { name: "xlsx" })).closest("button")!;
     expect(runtimeOnly).toHaveTextContent("Обнаружен только в запущенном OpenCode");
@@ -795,7 +818,7 @@ describe("OpenCode Control", () => {
 
   it("pins the displayed default model when launching a task", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Запустить задачу" }));
     expect(screen.getByRole("button", { name: "Модель: openai/gpt-test" })).toBeInTheDocument();
@@ -811,7 +834,7 @@ describe("OpenCode Control", () => {
 
   it("creates a readable daily schedule", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Запустить задачу" }));
     fireEvent.change(screen.getByPlaceholderText("Что нужно сделать?"), { target: { value: "Утренний отчёт" } });
@@ -838,7 +861,7 @@ describe("OpenCode Control", () => {
     });
 
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Команды" }));
 
     expect(await screen.findByText("/fix")).toBeInTheDocument();
@@ -854,7 +877,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Команды" }));
     fireEvent.click(await screen.findByRole("button", { name: "Создать команду" }));
     fireEvent.change(screen.getByPlaceholderText("review"), { target: { value: "research" } });
@@ -876,7 +899,7 @@ describe("OpenCode Control", () => {
 
   it("offers only variants supported by the effective command model", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Команды" }));
     fireEvent.click(await screen.findByRole("button", { name: "Создать команду" }));
     fireEvent.change(screen.getByRole("textbox", { name: /Имя команды/ }), { target: { value: "reason" } });
@@ -903,7 +926,7 @@ describe("OpenCode Control", () => {
     });
 
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     fireEvent.click(screen.getByRole("button", { name: "Рассуждение: по умолчанию" }));
@@ -930,7 +953,7 @@ describe("OpenCode Control", () => {
     });
 
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const textarea = screen.getByPlaceholderText("Продолжите диалог в этой же сессии…");
@@ -954,7 +977,7 @@ describe("OpenCode Control", () => {
     });
 
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     const textarea = screen.getByPlaceholderText("Продолжите диалог в этой же сессии…");
@@ -975,7 +998,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Настроить запуск" }));
     const prompt = screen.getByLabelText("Задание для каждого запуска");
@@ -1000,7 +1023,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Запустить задачу" }));
     fireEvent.change(screen.getByPlaceholderText("Что нужно сделать?"), { target: { value: "Отчёт" } });
@@ -1012,7 +1035,7 @@ describe("OpenCode Control", () => {
 
   it("adds a dropped spreadsheet to a task", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Запустить задачу" }));
     const dropzone = screen.getByRole("button", { name: "Прикрепить файлы" }).closest(".attachment-field")!;
@@ -1030,7 +1053,7 @@ describe("OpenCode Control", () => {
 
   it("reruns a completed task in place", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Запустить повторно" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/tasks/task_1/rerun") && init?.method === "POST")).toBe(true));
@@ -1043,7 +1066,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Навыки" }));
     expect(await screen.findByRole("heading", { name: "hacker-news-parser" })).toBeInTheDocument();
     expect(screen.getByText("каталог: parsers-news")).toBeInTheDocument();
@@ -1077,7 +1100,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Навыки" }));
     expect(screen.getByText(/В обоих случаях Control загрузит весь родительский каталог/)).toBeInTheDocument();
     expect(screen.getByText(/scripts\//)).toBeInTheDocument();
@@ -1125,7 +1148,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Навыки" }));
     fireEvent.click(await screen.findByRole("button", { name: "Создать навык" }));
     fireEvent.click(screen.getByRole("tab", { name: /По HTTPS/ }));
@@ -1152,7 +1175,7 @@ describe("OpenCode Control", () => {
       return fallback(input, init);
     });
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Навыки" }));
     fireEvent.click(await screen.findByRole("heading", { name: "old-skill" }));
     const name = screen.getByDisplayValue("old-skill");
@@ -1169,7 +1192,7 @@ describe("OpenCode Control", () => {
 
   it("creates another session linked to an existing task", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Новая сессия" }));
     expect(screen.getByRole("dialog", { name: "Новая сессия в задаче" })).toHaveClass("composer-modal");
@@ -1187,7 +1210,7 @@ describe("OpenCode Control", () => {
     window.localStorage.setItem("studio-session-drawer-width", "880");
 
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
 
     expect(window.localStorage.getItem("control-project")).toBe(project.id);
     expect(window.localStorage.getItem("control-theme")).toBe("aura");
@@ -1199,7 +1222,7 @@ describe("OpenCode Control", () => {
 
   it("selects and persists an OpenCode-style theme", async () => {
     render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: /Тема: OpenCode/ }));
     fireEvent.change(screen.getByPlaceholderText("Поиск темы"), { target: { value: "aura" } });
     fireEvent.click(screen.getByRole("option", { name: /Aura/ }));
@@ -1226,7 +1249,7 @@ describe("OpenCode Control", () => {
 
   it("does not steal input focus when polling rerenders an open modal", async () => {
     const view = render(<App />);
-    await screen.findByText("Центр управления");
+    await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
     fireEvent.click(await screen.findByRole("button", { name: "Запустить задачу" }));
     const title = screen.getByPlaceholderText("Что нужно сделать?");

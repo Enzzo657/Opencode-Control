@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1673,6 +1674,118 @@ def test_scheduled_task_can_be_paused_and_resumed(
             json={"title": "Bad", "prompt": "Bad cron", "cron": "every day"},
         )
         assert invalid.status_code == 422
+
+
+def test_dashboard_aggregates_message_usage_for_project_and_global_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    roots = [tmp_path / "one", tmp_path / "two"]
+    for root in roots:
+        root.mkdir()
+    now_ms = datetime.now(UTC).timestamp() * 1000
+
+    class FakeOpenCodeClient:
+        def __init__(self, endpoint: str, directory: str, **kwargs: Any) -> None:
+            self.directory = directory
+
+        def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            return {"worktree": self.directory}
+
+        def snapshot(self) -> dict[str, Any]:
+            return {
+                "state": "connected",
+                "errors": [],
+                "sessions": [
+                    {
+                        "id": "ses_shared",
+                        "title": f"Session {Path(self.directory).name}",
+                        "agent": "build",
+                        "model": {"providerID": "openai", "modelID": "gpt-test"},
+                        "time": {"created": now_ms - 1000, "updated": now_ms},
+                    }
+                ],
+                "statuses": {"ses_shared": {"type": "idle"}},
+                "mcp": {"context7": {"status": "connected"}},
+            }
+
+        def session_messages(self, session_id: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "info": {
+                        "id": "msg_same_id",
+                        "role": "assistant",
+                        "agent": "build",
+                        "providerID": "openai",
+                        "modelID": "gpt-test",
+                        "cost": 0.5,
+                        "tokens": {
+                            "input": 10,
+                            "output": 4,
+                            "reasoning": 2,
+                            "cache": {"read": 3, "write": 1},
+                        },
+                        "time": {"created": now_ms - 500, "completed": now_ms},
+                    },
+                    "parts": [],
+                },
+                {
+                    "info": {
+                        "id": "msg_old",
+                        "role": "assistant",
+                        "cost": 9,
+                        "tokens": {"input": 1000},
+                        "time": {"completed": now_ms - 40 * 24 * 60 * 60 * 1000},
+                    },
+                    "parts": [],
+                },
+            ]
+
+    monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
+    with _client(tmp_path) as client:
+        first = _project(client, roots[0], endpoint="http://127.0.0.1:4096")
+        _project(client, roots[1], endpoint="http://127.0.0.1:4097")
+        project_usage = client.get(
+            "/api/v1/dashboard",
+            params={
+                "scope": "project",
+                "project_id": first["id"],
+                "period": "7d",
+                "timezone": "UTC",
+            },
+        )
+        global_usage = client.get(
+            "/api/v1/dashboard",
+            params={"scope": "global", "period": "7d", "timezone": "UTC"},
+        )
+
+        assert project_usage.status_code == 200, project_usage.text
+        assert project_usage.json()["totals"] == {
+            "id": "total",
+            "tokens": {
+                "input": 10,
+                "output": 4,
+                "reasoning": 2,
+                "cache_read": 3,
+                "cache_write": 1,
+            },
+            "tokens_total": 16,
+            "cost": 0.5,
+            "messages": 1,
+            "sessions": 1,
+            "active": 0,
+            "mcp_connected": 1,
+            "mcp_total": 1,
+        }
+        assert global_usage.status_code == 200, global_usage.text
+        assert global_usage.json()["totals"]["tokens_total"] == 32
+        assert global_usage.json()["totals"]["cost"] == 1.0
+        assert global_usage.json()["totals"]["sessions"] == 2
+        assert len(global_usage.json()["projects"]) == 2
+        assert global_usage.json()["models"][0]["id"] == "openai/gpt-test"
+        assert client.get(
+            "/api/v1/dashboard",
+            params={"scope": "global", "timezone": "Mars/Olympus"},
+        ).status_code == 422
 
 
 def test_scheduled_task_uses_a_fresh_session_by_default(

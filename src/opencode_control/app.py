@@ -376,6 +376,8 @@ class ControlState:
         self.skill_import_previews: dict[str, dict[str, Any]] = {}
         self.skill_import_lock = threading.RLock()
         self.skill_import_slots = threading.BoundedSemaphore(4)
+        self.dashboard_cache: dict[tuple[str, str, str], tuple[datetime, dict[str, Any]]] = {}
+        self.dashboard_lock = threading.RLock()
         self._command_slots = threading.BoundedSemaphore(8)
         self._closing = threading.Event()
 
@@ -1627,6 +1629,285 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             _project_view(item, managed_server_status(str(item["id"])))
             for item in state.store.list_projects()
         ]
+
+    @app.get("/api/v1/dashboard")
+    def dashboard_usage(
+        scope: Literal["project", "global"] = "project",
+        project_id: str | None = None,
+        period: Literal["today", "7d", "30d", "all"] = "7d",
+        timezone: str = "UTC",
+    ) -> dict[str, Any]:
+        try:
+            zone = ZoneInfo(timezone)
+        except ZoneInfoNotFoundError as error:
+            raise HTTPException(status_code=422, detail="unknown dashboard timezone") from error
+        if scope == "project":
+            selected = project_or_404(project_id or "")
+            selected_projects = [selected]
+        else:
+            selected_projects = state.store.list_projects()
+        cache_key = (
+            str(selected_projects[0]["id"]) if scope == "project" else "*",
+            period,
+            timezone,
+        )
+        now = datetime.now(UTC)
+        with state.dashboard_lock:
+            cached = state.dashboard_cache.get(cache_key)
+            if cached is not None and now - cached[0] < timedelta(seconds=30):
+                return cached[1]
+        local_now = now.astimezone(zone)
+        if period == "today":
+            local_cutoff = local_now.replace(hour=0, minute=0, second=0, microsecond=0)
+        elif period == "7d":
+            local_cutoff = (local_now - timedelta(days=6)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+        elif period == "30d":
+            local_cutoff = (local_now - timedelta(days=29)).replace(
+                hour=0, minute=0, second=0, microsecond=0
+            )
+        else:
+            local_cutoff = None
+        cutoff_ms = local_cutoff.timestamp() * 1000 if local_cutoff else None
+
+        def usage_row(name: str) -> dict[str, Any]:
+            return {
+                "id": name,
+                "tokens": {
+                    "input": 0,
+                    "output": 0,
+                    "reasoning": 0,
+                    "cache_read": 0,
+                    "cache_write": 0,
+                },
+                "tokens_total": 0,
+                "cost": 0.0,
+                "messages": 0,
+                "sessions": set(),
+            }
+
+        totals = usage_row("total")
+        totals.update({"sessions": set(), "active": 0, "mcp_connected": 0, "mcp_total": 0})
+        models: dict[str, dict[str, Any]] = {}
+        providers: dict[str, dict[str, Any]] = {}
+        agents: dict[str, dict[str, Any]] = {}
+        projects_usage: dict[str, dict[str, Any]] = {}
+        daily: dict[str, dict[str, Any]] = {}
+        recent_sessions: list[dict[str, Any]] = []
+        unavailable: list[dict[str, str]] = []
+        seen_messages: set[str] = set()
+        partial = False
+
+        def add_usage(row: dict[str, Any], info: dict[str, Any], session_key: str) -> None:
+            raw_tokens = info.get("tokens")
+            tokens: dict[str, Any] = raw_tokens if isinstance(raw_tokens, dict) else {}
+            for key in ("input", "output", "reasoning"):
+                value = tokens.get(key)
+                if isinstance(value, (int, float)) and value >= 0:
+                    row["tokens"][key] += value
+                    row["tokens_total"] += value
+            raw_cache = tokens.get("cache")
+            cache: dict[str, Any] = raw_cache if isinstance(raw_cache, dict) else {}
+            for source, target in (("read", "cache_read"), ("write", "cache_write")):
+                value = cache.get(source)
+                if isinstance(value, (int, float)) and value >= 0:
+                    row["tokens"][target] += value
+            cost = info.get("cost")
+            if isinstance(cost, (int, float)) and cost >= 0:
+                row["cost"] += cost
+            row["messages"] += 1
+            cast(set[str], row["sessions"]).add(session_key)
+
+        for project in selected_projects:
+            project_id_value = str(project["id"])
+            project_row = usage_row(project_id_value)
+            project_row["name"] = str(project["name"])
+            projects_usage[project_id_value] = project_row
+            try:
+                client = client_for(project_id_value)
+                snapshot = client.snapshot()
+            except (HTTPException, OpenCodeError) as error:
+                unavailable.append(
+                    {
+                        "id": project_id_value,
+                        "name": str(project["name"]),
+                        "error": str(error),
+                    }
+                )
+                partial = True
+                continue
+            snapshot_errors = snapshot.get("errors")
+            if snapshot.get("state") != "connected" or (
+                isinstance(snapshot_errors, list) and snapshot_errors
+            ):
+                unavailable.append(
+                    {
+                        "id": project_id_value,
+                        "name": str(project["name"]),
+                        "error": "OpenCode snapshot is temporarily incomplete",
+                    }
+                )
+                partial = True
+            raw_statuses = snapshot.get("statuses")
+            statuses: dict[str, Any] = raw_statuses if isinstance(raw_statuses, dict) else {}
+            raw_mcp = snapshot.get("mcp")
+            mcp: dict[str, Any] = raw_mcp if isinstance(raw_mcp, dict) else {}
+            totals["mcp_total"] += len(mcp)
+            totals["mcp_connected"] += sum(
+                1
+                for item in mcp.values()
+                if isinstance(item, dict) and item.get("status") == "connected"
+            )
+            raw_sessions = snapshot.get("sessions")
+            sessions: list[Any] = raw_sessions if isinstance(raw_sessions, list) else []
+            if len(sessions) > 200:
+                sessions = sorted(
+                    sessions,
+                    key=lambda item: (
+                        item.get("time", {}).get("updated", 0)
+                        if isinstance(item, dict) and isinstance(item.get("time"), dict)
+                        else 0
+                    ),
+                    reverse=True,
+                )[:200]
+                partial = True
+            for session in sessions:
+                if not isinstance(session, dict) or not isinstance(session.get("id"), str):
+                    continue
+                session_id = str(session["id"])
+                session_key = f"{project_id_value}:{session_id}"
+                session_time = session.get("time")
+                raw_time: dict[str, Any] = session_time if isinstance(session_time, dict) else {}
+                updated = raw_time.get("updated")
+                in_period = cutoff_ms is None or (
+                    isinstance(updated, (int, float)) and updated >= cutoff_ms
+                )
+                if in_period and not session.get("parentID"):
+                    cast(set[str], totals["sessions"]).add(session_key)
+                    cast(set[str], project_row["sessions"]).add(session_key)
+                    status = statuses.get(session_id, {})
+                    status_value = status.get("type") if isinstance(status, dict) else None
+                    if status_value not in {None, "idle"}:
+                        totals["active"] += 1
+                    recent_sessions.append(
+                        {
+                            "id": session_id,
+                            "project_id": project_id_value,
+                            "project_name": project["name"],
+                            "title": session.get("title"),
+                            "agent": session.get("agent"),
+                            "model": session.get("model"),
+                            "time": session.get("time"),
+                            "status": status_value or "idle",
+                            "cost": session.get("cost") or 0,
+                            "tokens": session.get("tokens") or {},
+                        }
+                    )
+                try:
+                    messages = client.session_messages(session_id)
+                except OpenCodeError:
+                    partial = True
+                    continue
+                for index, message in enumerate(messages):
+                    if not isinstance(message, dict) or not isinstance(message.get("info"), dict):
+                        continue
+                    info = cast(dict[str, Any], message["info"])
+                    if info.get("role") != "assistant":
+                        continue
+                    raw_message_time = info.get("time")
+                    message_time: dict[str, Any] = (
+                        raw_message_time if isinstance(raw_message_time, dict) else {}
+                    )
+                    occurred = message_time.get("completed") or message_time.get("created")
+                    if cutoff_ms is not None and (
+                        not isinstance(occurred, (int, float)) or occurred < cutoff_ms
+                    ):
+                        continue
+                    message_id = str(info.get("id") or f"{session_key}:{index}")
+                    dedupe_key = f"{project_id_value}:{message_id}"
+                    if dedupe_key in seen_messages:
+                        continue
+                    seen_messages.add(dedupe_key)
+                    provider = str(info.get("providerID") or "unknown")
+                    model_id = str(info.get("modelID") or "unknown")
+                    model = f"{provider}/{model_id}"
+                    agent = str(info.get("agent") or session.get("agent") or "default")
+                    local_date = (
+                        datetime.fromtimestamp(float(occurred) / 1000, UTC)
+                        .astimezone(zone)
+                        .date()
+                        .isoformat()
+                        if isinstance(occurred, (int, float))
+                        else "unknown"
+                    )
+                    for collection, key in (
+                        (models, model),
+                        (providers, provider),
+                        (agents, agent),
+                        (daily, local_date),
+                    ):
+                        if key not in collection:
+                            collection[key] = usage_row(key)
+                    for row in (
+                        totals,
+                        project_row,
+                        models[model],
+                        providers[provider],
+                        agents[agent],
+                        daily[local_date],
+                    ):
+                        add_usage(row, info, session_key)
+
+        def serialize(row: dict[str, Any]) -> dict[str, Any]:
+            return {
+                **{key: value for key, value in row.items() if key != "sessions"},
+                "sessions": len(cast(set[str], row["sessions"])),
+            }
+
+        recent_sessions.sort(
+            key=lambda item: item.get("time", {}).get("updated", 0)
+            if isinstance(item.get("time"), dict)
+            else 0,
+            reverse=True,
+        )
+        result = {
+            "scope": scope,
+            "period": period,
+            "timezone": timezone,
+            "generated_at": now.isoformat(),
+            "partial": partial,
+            "unavailable_projects": unavailable,
+            "totals": serialize(totals),
+            "projects": sorted(
+                (serialize(row) for row in projects_usage.values()),
+                key=lambda row: row["tokens_total"],
+                reverse=True,
+            ),
+            "models": sorted(
+                (serialize(row) for row in models.values()),
+                key=lambda row: row["tokens_total"],
+                reverse=True,
+            ),
+            "providers": sorted(
+                (serialize(row) for row in providers.values()),
+                key=lambda row: row["tokens_total"],
+                reverse=True,
+            ),
+            "agents": sorted(
+                (serialize(row) for row in agents.values()),
+                key=lambda row: row["tokens_total"],
+                reverse=True,
+            ),
+            "daily": [serialize(daily[key]) for key in sorted(daily)],
+            "recent_sessions": recent_sessions[:8],
+        }
+        if not partial:
+            with state.dashboard_lock:
+                state.dashboard_cache[cache_key] = (now, result)
+                if len(state.dashboard_cache) > 32:
+                    state.dashboard_cache.pop(next(iter(state.dashboard_cache)))
+        return result
 
     @app.get("/api/v1/secrets")
     def secrets_catalog() -> list[dict[str, Any]]:

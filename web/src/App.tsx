@@ -44,7 +44,7 @@ import {
 import { Component, lazy, memo, Suspense, useEffect, useEffectEvent, useLayoutEffect, useRef, useState, type CSSProperties, type DragEvent, type ErrorInfo, type FormEvent, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import { ApiError, api, jsonBody } from "./api";
-import type { Agent, Attachment, CommandItem, GitState, Project, ProviderAuthEntry, ProviderSummary, RuntimeConfig, SecretInfo, Session, SkillImportPreview, Snapshot, Task, WorkspaceItem } from "./types";
+import type { Agent, Attachment, CommandItem, DashboardUsage, GitState, Project, ProviderAuthEntry, ProviderSummary, RuntimeConfig, SecretInfo, Session, SkillImportPreview, Snapshot, Task, UsageRow, WorkspaceItem } from "./types";
 
 const MarkdownRenderer = lazy(() => import("./MarkdownRenderer"));
 
@@ -65,7 +65,7 @@ const nav: Array<{ group: string; items: Array<{ id: View; label: string; icon: 
   {
     group: "Работа",
     items: [
-      { id: "overview", label: "Обзор", icon: Gauge },
+      { id: "overview", label: "Дашборд", icon: Gauge },
       { id: "sessions", label: "Сессии", icon: MessageSquareText },
       { id: "tasks", label: "Задачи", icon: Zap },
     ],
@@ -289,42 +289,61 @@ function ViewContent({ view, project, refreshKey, onProjectChange, navigate }: {
 }
 
 function Overview({ project, refreshKey, navigate }: { project: Project; refreshKey: number; navigate: (view: View) => void }) {
-  const resource = useResource<Snapshot>(`/api/v1/projects/${project.id}/snapshot`, refreshKey, 3000);
-  const snapshot = resource.data;
-  const allSessions = snapshot?.sessions ?? [];
-  const sessions = allSessions.filter((session) => !session.parentID);
-  const childCount = allSessions.length - sessions.length;
-  const totalTokens = allSessions.reduce((sum, session) => sum + (session.tokens?.input ?? 0) + (session.tokens?.output ?? 0) + (session.tokens?.reasoning ?? 0), 0);
-  const totalCost = allSessions.reduce((sum, session) => sum + (session.cost ?? 0), 0);
-  const active = allSessions.filter((session) => statusOf(snapshot, session.id) !== "idle").length;
-  const connectedMcp = Object.values(snapshot?.mcp ?? {}).filter((item) => item.status === "connected").length;
+  const [scope, setScope] = useState<"project" | "global">("project");
+  const [period, setPeriod] = useState<"today" | "7d" | "30d" | "all">("7d");
+  const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const usageUrl = `/api/v1/dashboard?scope=${scope}&project_id=${encodeURIComponent(project.id)}&period=${period}&timezone=${encodeURIComponent(timezone)}`;
+  const usage = useResource<DashboardUsage>(usageUrl, refreshKey, 30000);
+  const runtime = useResource<Snapshot>(`/api/v1/projects/${project.id}/snapshot`, refreshKey, 5000);
+  const totals = usage.data?.totals;
+  const maxModelTokens = Math.max(1, ...(usage.data?.models ?? []).map((row) => row.tokens_total));
+  const maxDailyTokens = Math.max(1, ...(usage.data?.daily ?? []).map((row) => row.tokens_total));
+  const tokenParts = totals ? [
+    { id: "input", label: "Ввод", value: totals.tokens.input, color: "var(--blue)" },
+    { id: "output", label: "Вывод", value: totals.tokens.output, color: "var(--green)" },
+    { id: "reasoning", label: "Рассуждения", value: totals.tokens.reasoning, color: "var(--accent)" },
+    { id: "cache", label: "Cache read", value: totals.tokens.cache_read, color: "var(--purple)" },
+  ] : [];
+  const tokenPartTotal = tokenParts.reduce((sum, item) => sum + item.value, 0) || 1;
+  const periodLabel = period === "today" ? "сегодня" : period === "7d" ? "за 7 дней" : period === "30d" ? "за 30 дней" : "за всё время";
+  const recentSessions = usage.data?.recent_sessions ?? (scope === "project" ? (runtime.data?.sessions ?? []).filter((session) => !session.parentID).map((session) => ({ ...session, project_id: project.id, project_name: project.name, status: sessionStatus(runtime.data, session) })) : []);
 
   return (
-    <Page title="Центр управления" description="Сессии, расходы и состояние OpenCode в одном месте." action={<button className="primary-button" onClick={() => navigate("tasks")}><Play size={16} /> Запустить задачу</button>}>
-      {resource.error && <Banner tone="danger">{resource.error}</Banner>}
-      {snapshot?.state === "stopped" && <Banner tone="notice">Запустите сервер OpenCode, чтобы загрузить сессии, агентов и состояние MCP.</Banner>}
+    <Page title="Дашборд" description={scope === "project" ? `Активность, использование и Runtime проекта ${project.name}.` : "Использование OpenCode по всем проектам."} action={<button className="primary-button" onClick={() => navigate("tasks")}><Play size={16} /> Запустить задачу</button>}>
+      <div className="dashboard-toolbar"><div className="dashboard-segment" aria-label="Область аналитики"><button className={scope === "project" ? "active" : ""} onClick={() => setScope("project")}>Проект · {project.name}</button><button className={scope === "global" ? "active" : ""} onClick={() => setScope("global")}>Все проекты</button></div><div className="dashboard-segment compact" aria-label="Период аналитики">{(["today", "7d", "30d", "all"] as const).map((value) => <button key={value} className={period === value ? "active" : ""} onClick={() => setPeriod(value)}>{value === "today" ? "Сегодня" : value === "7d" ? "7 дней" : value === "30d" ? "30 дней" : "Всё время"}</button>)}</div></div>
+      {usage.error && <Banner tone="danger">Не удалось собрать аналитику: {usage.error}</Banner>}
+      {usage.data?.partial && <Banner tone="notice">Показаны доступные данные OpenCode. {usage.data.unavailable_projects.length ? `Не удалось прочитать проектов: ${usage.data.unavailable_projects.map((item) => item.name).join(", ")}.` : "Часть истории Sessions недоступна."}</Banner>}
+      {scope === "project" && runtime.data?.state === "stopped" && <Banner tone="notice">Запустите сервер OpenCode, чтобы загрузить usage, Sessions и состояние Runtime.</Banner>}
       <section className="metric-grid">
-        <Metric icon={<MessageSquareText />} label="Сессии" value={String(sessions.length)} detail={`${active} активных · ${childCount} запусков подагентов`} accent="orange" />
-        <Metric icon={<Cpu />} label="Токены" value={compact(totalTokens)} detail="ввод + вывод + рассуждения" accent="blue" />
-        <Metric icon={<Activity />} label="Расходы" value={`$${totalCost.toFixed(3)}`} detail="по данным OpenCode" accent="green" />
-        <Metric icon={<Network />} label="MCP подключено" value={`${connectedMcp}/${Object.keys(snapshot?.mcp ?? {}).length}`} detail="соединения Runtime" accent="purple" />
+        <Metric icon={<Cpu />} label={`Токены · ${periodLabel}`} value={totals ? compact(totals.tokens_total) : "—"} detail={`${compact(totals?.tokens.input ?? 0)} ввод · ${compact(totals?.tokens.output ?? 0)} вывод`} accent="blue" />
+        <Metric icon={<CircleDollarSign />} label={`Расходы · ${periodLabel}`} value={totals ? `$${totals.cost.toFixed(3)}` : "—"} detail="по данным сообщений OpenCode" accent="green" />
+        <Metric icon={<MessageSquareText />} label="Сессии" value={totals ? String(totals.sessions) : "—"} detail={`${totals?.active ?? 0} активных · ${totals?.messages ?? 0} ответов`} accent="orange" />
+        <Metric icon={<Activity />} label="Cache read" value={totals ? compact(totals.tokens.cache_read) : "—"} detail={`${compact(totals?.tokens.cache_write ?? 0)} записано в cache`} accent="purple" />
       </section>
-      <div className="overview-grid">
-        <Panel title="Последние сессии" icon={<MessageSquareText size={17} />} action={<button className="text-button" onClick={() => navigate("sessions")}>Показать все</button>}>
-          <SessionRows sessions={sessions.slice(0, 5)} snapshot={snapshot ?? undefined} empty="Запустите задачу или создайте первую сессию." />
+      <div className="dashboard-analytics-grid">
+        <Panel className="usage-chart-panel" title="Динамика использования" icon={<Activity size={17} />} action={<span className="panel-caption">timezone · {timezone}</span>}>
+          <div className="usage-composition"><div className="usage-composition-bar">{tokenParts.filter((item) => item.value > 0).map((item) => <i key={item.id} style={{ width: `${Math.max(1.5, item.value / tokenPartTotal * 100)}%`, background: item.color }} />)}</div><div className="usage-legend">{tokenParts.map((item) => <span key={item.id}><i style={{ background: item.color }} /><small>{item.label}</small><strong>{compact(item.value)}</strong></span>)}</div></div>
+          <div className="usage-bars" aria-label="Использование токенов по дням">{(usage.data?.daily ?? []).map((row) => <div key={row.id}><span className="usage-bar-track"><i style={{ height: `${Math.max(3, row.tokens_total / maxDailyTokens * 100)}%` }} /></span><strong>{compact(row.tokens_total)}</strong><small>{new Intl.DateTimeFormat("ru-RU", { day: "2-digit", month: "short" }).format(new Date(`${row.id}T12:00:00`))}</small></div>)}{usage.data && (usage.data.daily ?? []).length === 0 && <div className="usage-chart-empty">За выбранный период usage не найден.</div>}</div>
         </Panel>
-        <Panel title="Runtime" icon={<SquareTerminal size={17} />}>
-          <dl className="runtime-list">
-            <div><dt>Сервер</dt><dd><Status value={snapshot?.server.state === "running" ? "connected" : snapshot?.server.state ?? "stopped"} /></dd></div>
-            <div><dt>Адрес</dt><dd className="mono">{snapshot?.server.endpoint ?? "не запущен"}</dd></div>
-            <div><dt>OpenCode</dt><dd>{snapshot?.health?.version ?? "неизвестно"}</dd></div>
-            <div><dt>Агенты</dt><dd>{snapshot?.agents.length ?? 0} обнаружено</dd></div>
-            <div><dt>Папка проекта</dt><dd className="mono truncate" title={project.root}>{project.root}</dd></div>
-          </dl>
+        <Panel className="usage-ranking-panel" title="Модели" icon={<BrainCircuit size={17} />} action={<span className="panel-caption">токены · стоимость</span>}>
+          <UsageRanking rows={usage.data?.models ?? []} maxTokens={maxModelTokens} empty="Нет данных по моделям за этот период." />
         </Panel>
+      </div>
+      <div className="overview-grid dashboard-bottom-grid">
+        <Panel title={scope === "project" ? "Последние сессии проекта" : "Последние сессии всех проектов"} icon={<MessageSquareText size={17} />} action={scope === "project" ? <button className="text-button" onClick={() => navigate("sessions")}>Показать все</button> : undefined}>
+          <div className="dashboard-session-rows">{recentSessions.map((session) => <div key={`${session.project_id}:${session.id}`}><span className="session-icon"><MessageSquareText size={16} /></span><span><strong>{session.title ?? "Сессия без названия"}</strong><small>{scope === "global" ? `${session.project_name} · ` : ""}{session.agent ?? "default"} · {modelOf(session)}</small></span><span><Status value={session.status} /><small>{relativeTime(session.time?.updated)}</small></span></div>)}{usage.data && recentSessions.length === 0 && <Empty icon={<MessageSquareText />} title="Сессий за период нет" detail="Измените период или запустите новую задачу." />}</div>
+        </Panel>
+        {scope === "project" ? <Panel title="Runtime проекта" icon={<SquareTerminal size={17} />}>
+          <dl className="runtime-list"><div><dt>Сервер</dt><dd><Status value={runtime.data?.server.state === "running" ? "connected" : runtime.data?.server.state ?? "stopped"} /></dd></div><div><dt>Адрес</dt><dd className="mono">{runtime.data?.server.endpoint ?? "не запущен"}</dd></div><div><dt>OpenCode</dt><dd>{runtime.data?.health?.version ?? "неизвестно"}</dd></div><div><dt>MCP</dt><dd>{totals?.mcp_connected ?? 0}/{totals?.mcp_total ?? 0} подключено</dd></div><div><dt>Папка</dt><dd className="mono truncate" title={project.root}>{project.root}</dd></div></dl>
+        </Panel> : <Panel title="Проекты" icon={<FolderGit2 size={17} />} action={<span className="panel-caption">usage за период</span>}><UsageRanking rows={usage.data?.projects ?? []} maxTokens={Math.max(1, ...(usage.data?.projects ?? []).map((row) => row.tokens_total))} empty="Нет доступных данных по проектам." /></Panel>}
       </div>
     </Page>
   );
+}
+
+function UsageRanking({ rows, maxTokens, empty }: { rows: UsageRow[]; maxTokens: number; empty: string }) {
+  if (!rows.length) return <div className="usage-ranking-empty">{empty}</div>;
+  return <div className="usage-ranking">{rows.slice(0, 8).map((row, index) => <div key={row.id}><span className="usage-rank">{String(index + 1).padStart(2, "0")}</span><span><strong>{row.name ?? row.id}</strong><i><b style={{ width: `${Math.max(2, row.tokens_total / maxTokens * 100)}%` }} /></i></span><span><strong>{compact(row.tokens_total)}</strong><small>${row.cost.toFixed(3)} · {row.sessions} сесс.</small></span></div>)}</div>;
 }
 
 function Sessions({ project, refreshKey }: { project: Project; refreshKey: number }) {
@@ -1545,8 +1564,6 @@ function Empty({ icon, title, detail }: { icon: ReactNode; title: string; detail
 function FullState({ icon, title, detail }: { icon: ReactNode; title: string; detail: string }) { return <div className="full-state"><div className="brand-mark">{icon}</div><h1>{title}</h1><p>{detail}</p></div>; }
 function Field({ label, hint, children }: { label: string; hint?: ReactNode; children: ReactNode }) { return <label className="field"><span>{label}</span>{children}{hint && <small>{hint}</small>}</label>; }
 function Modal({ title, subtitle, wide = false, composer = false, onClose, children }: { title: string; subtitle?: string; wide?: boolean; composer?: boolean; onClose: () => void; children: ReactNode }) { const dialog = useRef<HTMLElement>(null); const closeDialog = useEffectEvent(onClose); useEffect(() => { dialog.current?.focus(); function keydown(event: KeyboardEvent) { if (event.key === "Escape") closeDialog(); } window.addEventListener("keydown", keydown); return () => window.removeEventListener("keydown", keydown); }, []); return <div className="modal-scrim" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section ref={dialog} tabIndex={-1} className={`modal ${wide ? "wide" : ""} ${composer ? "composer-modal" : ""}`} role="dialog" aria-modal="true" aria-label={title}><header><div><h2>{title}</h2>{subtitle && <p>{subtitle}</p>}</div><button className="icon-button" aria-label="Закрыть окно" title="Закрыть окно" onClick={onClose}><X /></button></header><div className="modal-body">{children}</div></section></div>; }
-
-function SessionRows({ sessions, snapshot, empty }: { sessions: Session[]; snapshot?: Snapshot; empty: string }) { if (!sessions.length) return <Empty icon={<MessageSquareText />} title="Активных сессий нет" detail={empty} />; return <div className="session-rows">{sessions.map((session) => <div key={session.id}><span className="session-icon"><MessageSquareText size={16} /></span><span><strong>{session.title ?? "Сессия без названия"}</strong><small>{session.agent ?? "по умолчанию"} · {modelOf(session)}</small></span><span><Status value={sessionStatus(snapshot, session)} /><small>{relativeTime(session.time?.updated)}</small></span></div>)}</div>; }
 
 function useResource<T>(url: string, dependency: unknown, interval?: number) {
   const [data, setData] = useState<T | null>(null); const [error, setError] = useState<string | null>(null); const [nonce, setNonce] = useState(0);

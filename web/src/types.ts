@@ -46,6 +46,44 @@ export type Session = {
   control_task?: { id: string; title: string; status?: string };
 };
 
+export type UsageTokens = {
+  input: number;
+  output: number;
+  reasoning: number;
+  cache_read: number;
+  cache_write: number;
+};
+
+export type UsageRow = {
+  id: string;
+  name?: string;
+  tokens: UsageTokens;
+  tokens_total: number;
+  cost: number;
+  messages: number;
+  sessions: number;
+};
+
+export type DashboardUsage = {
+  scope: "project" | "global";
+  period: "today" | "7d" | "30d" | "all";
+  timezone: string;
+  generated_at: string;
+  partial: boolean;
+  unavailable_projects: Array<{ id: string; name: string; error: string }>;
+  totals: UsageRow & { active: number; mcp_connected: number; mcp_total: number };
+  projects: UsageRow[];
+  models: UsageRow[];
+  providers: UsageRow[];
+  agents: UsageRow[];
+  daily: UsageRow[];
+  recent_sessions: Array<Session & {
+    project_id: string;
+    project_name: string;
+    status: string;
+  }>;
+};
+
 export type Agent = {
   name: string;
   description?: string;
