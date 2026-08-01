@@ -19,6 +19,7 @@ import {
   Gauge,
   GitBranch,
   GitCommitHorizontal,
+  Globe2,
   KeyRound,
   Menu,
   MessageSquareText,
@@ -144,7 +145,7 @@ export function App() {
 }
 
 function ControlApp() {
-  const { locale, setLocale, t } = useI18n();
+  const { t } = useI18n();
   const [projects, setProjects] = useState<Project[]>([]);
   const [activeId, setActiveId] = useState(() => window.localStorage.getItem("control-project"));
   const [view, setView] = useState<View>(() => viewFromPath(location.pathname));
@@ -243,14 +244,6 @@ function ControlApp() {
         </nav>
 
         <div className="sidebar-foot">
-          <button
-            className="locale-switch"
-            onClick={() => setLocale(locale === "ru" ? "en" : "ru")}
-            aria-label={t(locale === "ru" ? "locale.switchToEn" : "locale.switchToRu")}
-            title={t(locale === "ru" ? "locale.switchToEn" : "locale.switchToRu")}
-          >
-            {locale === "ru" ? "EN" : "RU"}
-          </button>
           <button className="theme-toggle" onClick={() => setThemeOpen(true)}>
             <Palette size={16} />
             {t("app.theme", { theme: themes.find((item) => item.id === theme)?.name ?? "OpenCode" })}
@@ -264,6 +257,7 @@ function ControlApp() {
           <button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label={t("app.openNavigation")} title={t("app.openNavigation")}><Menu /></button>
           <div className="breadcrumbs"><span>{project?.name ?? t("app.workspace")}</span><b>/</b><strong>{labelFor(view, t)}</strong></div>
           <div className="topbar-actions">
+            <LanguageMenu />
             {project && <ServerControl project={project} onChange={() => setRefreshKey((value) => value + 1)} />}
             <button className="icon-button" onClick={() => setRefreshKey((value) => value + 1)} aria-label={t("app.refresh")} title={t("app.refresh")}><RefreshCw size={17} /></button>
           </div>
@@ -1434,6 +1428,26 @@ function ThemeDialog({ value, onChange, onClose }: { value: string; onChange: (v
   const [query, setQuery] = useState("");
   const filtered = themes.filter((theme) => theme.name.toLowerCase().includes(query.trim().toLowerCase()) || theme.id.includes(query.trim().toLowerCase()));
   return <Modal title={translate("residual.471")} subtitle={translate("residual.472")} onClose={onClose}><div className="theme-search"><Search size={16} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={translate("residual.473")} /></div><div className="theme-list" role="listbox">{filtered.map((theme) => <button type="button" role="option" aria-selected={theme.id === value} className={theme.id === value ? "selected" : ""} key={theme.id} onClick={() => onChange(theme.id)}><span className="theme-swatches">{theme.colors.slice(0, 3).map((color) => <i key={color} style={{ background: color }} />)}</span><span><strong>{theme.name}</strong><small>{theme.id}</small></span>{theme.id === value && <Check size={16} />}</button>)}{filtered.length === 0 && <p className="picker-empty">{translate("residual.474")}</p>}</div></Modal>;
+}
+
+function LanguageMenu() {
+  const { locale, setLocale, t } = useI18n();
+  const details = useRef<HTMLDetailsElement>(null);
+  const currentLabel = t(locale === "ru" ? "locale.ru" : "locale.en");
+
+  function select(next: "ru" | "en") {
+    setLocale(next);
+    if (details.current) details.current.open = false;
+  }
+
+  return <details ref={details} className="language-menu" onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget)) event.currentTarget.open = false; }}>
+    <summary aria-label={`${t("locale.switch")}: ${currentLabel}`} title={t("locale.switch")}><Globe2 size={16} /><span>{currentLabel}</span><ChevronDown size={13} /></summary>
+    <div className="language-popover">
+      <p>{t("locale.switch")}</p>
+      <button className={locale === "ru" ? "selected" : ""} aria-pressed={locale === "ru"} onClick={() => select("ru")}><span className="language-flag" aria-hidden="true">🇷🇺</span><span>{t("locale.ru")}</span>{locale === "ru" && <Check size={17} />}</button>
+      <button className={locale === "en" ? "selected" : ""} aria-pressed={locale === "en"} onClick={() => select("en")}><span className="language-flag" aria-hidden="true">🇬🇧</span><span>{t("locale.en")}</span>{locale === "en" && <Check size={17} />}</button>
+    </div>
+  </details>;
 }
 
 function Welcome({ onAdd }: { onAdd: () => void }) { return <div className="welcome"><div className="welcome-art"><div className="orbit one" /><div className="orbit two" /><SquareTerminal /></div><p className="eyebrow">{translate("residual.475")}</p><h1>{translate("residual.476")}<br />{translate("residual.477")}</h1><p>{translate("residual.478")}</p><button className="primary-button large-button" onClick={onAdd}><FolderGit2 size={18} />  {translate("residual.479")}</button><div className="welcome-features"><span><Bot />  {translate("residual.480")}</span><span><Network />  {translate("residual.481")}</span><span><Braces />  {translate("residual.482")}</span></div></div>; }

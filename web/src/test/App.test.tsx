@@ -111,14 +111,15 @@ describe("OpenCode Control", () => {
   it("persists an English switch and updates the UI without reload", async () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Дашборд" });
-    expect(screen.getByRole("button", { name: "Переключить интерфейс на английский" })).toHaveTextContent("EN");
-    fireEvent.click(screen.getByRole("button", { name: "Переключить интерфейс на английский" }));
+    expect(screen.getByLabelText("Язык интерфейса: Русский")).toHaveTextContent("Русский");
+    fireEvent.click(screen.getByLabelText("Язык интерфейса: Русский"));
+    fireEvent.click(screen.getByRole("button", { name: "English" }));
     expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Tasks" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sessions" })).toBeInTheDocument();
     expect(screen.getByText("Tokens · today")).toBeInTheDocument();
     expect(window.localStorage.getItem("control-locale")).toBe("en");
-    expect(screen.getByRole("button", { name: "Switch interface to Russian" })).toHaveTextContent("RU");
+    expect(screen.getByLabelText("Interface language: English")).toHaveTextContent("English");
     expect(document.documentElement.lang).toBe("en");
   });
 
@@ -129,11 +130,13 @@ describe("OpenCode Control", () => {
     fireEvent.click(screen.getByRole("button", { name: "Secrets" }));
     expect(await screen.findByRole("button", { name: "Copy" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Switch interface to Russian" }));
+    fireEvent.click(screen.getByLabelText("Interface language: English"));
+    fireEvent.click(screen.getByRole("button", { name: "Русский" }));
     fireEvent.click(screen.getByRole("button", { name: "Копировать" }));
     expect(await screen.findByRole("button", { name: "Скопировано" })).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "Переключить интерфейс на английский" }));
+    fireEvent.click(screen.getByLabelText("Язык интерфейса: Русский"));
+    fireEvent.click(screen.getByRole("button", { name: "English" }));
     expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
