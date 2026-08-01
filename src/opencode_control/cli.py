@@ -23,7 +23,6 @@ import uvicorn
 from opencode_control.app import create_app
 from opencode_control.config import ControlConfig
 from opencode_control.log_rotation import LogRotationError, rotate_log
-from opencode_control.migration import MigrationError, prepare_control_data_dir
 from opencode_control.store import ControlStore
 
 
@@ -46,13 +45,8 @@ def main(argv: list[str] | None = None) -> None:
         parser.error("OpenCode Control only binds to loopback addresses")
     config = ControlConfig.from_environment()
     pid_path, log_path = _runtime_paths(config)
-    legacy_pid_path = (
-        None
-        if os.environ.get("OPENCODE_CONTROL_HOME")
-        else Path.home() / ".opencode-studio/studio.pid"
-    )
     if arguments.action == "status":
-        _status(pid_path, legacy_pid_path)
+        _status(pid_path)
         return
     if arguments.action == "logs":
         if arguments.lines < 1:
@@ -60,36 +54,15 @@ def main(argv: list[str] | None = None) -> None:
         _show_logs(log_path, arguments.lines, arguments.follow)
         return
     if arguments.action == "uninstall":
-        _uninstall(config, pid_path, legacy_pid_path, arguments.yes, arguments.purge_data)
+        _uninstall(config, pid_path, arguments.yes, arguments.purge_data)
         return
     if arguments.action == "stop":
         stopped = _stop(pid_path, "OpenCode Control", "opencode_control.cli", quiet=True)
-        if legacy_pid_path:
-            stopped = (
-                _stop(
-                    legacy_pid_path,
-                    "legacy OpenCode Studio",
-                    "opencode_studio.cli",
-                    quiet=True,
-                )
-                or stopped
-            )
         print("OpenCode Control stopped" if stopped else "OpenCode Control is not running")
         return
     if arguments.action == "restart":
         _remember_running_servers(config, arguments.host, arguments.port)
         _stop(pid_path, "OpenCode Control", "opencode_control.cli", quiet=True)
-        if legacy_pid_path:
-            _stop(
-                legacy_pid_path,
-                "legacy OpenCode Studio",
-                "opencode_studio.cli",
-                quiet=True,
-            )
-    else:
-        legacy_pid = _read_pid(legacy_pid_path) if legacy_pid_path else None
-        if legacy_pid and _is_managed_process(legacy_pid, "opencode_studio.cli"):
-            raise SystemExit("Legacy OpenCode Studio is running; use opencode-control restart")
     _prepare_data(config)
     _start_background(
         arguments.host,
@@ -128,13 +101,10 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _status(pid_path: Path, legacy_pid_path: Path | None) -> None:
+def _status(pid_path: Path) -> None:
     pid = _read_pid(pid_path)
-    legacy_pid = _read_pid(legacy_pid_path) if legacy_pid_path else None
     if pid and _is_managed_process(pid, "opencode_control.cli"):
         print(f"running (PID {pid})")
-    elif legacy_pid and _is_managed_process(legacy_pid, "opencode_studio.cli"):
-        print(f"legacy runtime running (PID {legacy_pid}); use opencode-control restart")
     else:
         print("stopped")
 
@@ -199,7 +169,6 @@ def _safe_log_info(path: Path) -> os.stat_result | None:
 def _uninstall(
     config: ControlConfig,
     pid_path: Path,
-    legacy_pid_path: Path | None,
     assume_yes: bool,
     purge_data: bool,
 ) -> None:
@@ -218,13 +187,6 @@ def _uninstall(
     data_path = _configured_data_path()
     purge_files, purge_directories = _control_data_purge_plan(data_path) if purge_data else ([], [])
     _stop(pid_path, "OpenCode Control", "opencode_control.cli", quiet=True)
-    if legacy_pid_path:
-        _stop(
-            legacy_pid_path,
-            "legacy OpenCode Studio",
-            "opencode_studio.cli",
-            quiet=True,
-        )
     uv = shutil.which("uv")
     if uv is None:
         raise SystemExit("uv is required to uninstall OpenCode Control")
@@ -260,7 +222,6 @@ def _control_data_purge_plan(path: Path) -> tuple[list[Path], list[Path]]:
         "control.pid.tmp",
         "control.lock",
         "control.start.lock",
-        "migration.json",
         "control.log",
         "control.log.1",
         "control.log.2",
@@ -350,19 +311,24 @@ def _remember_running_servers(config: ControlConfig, host: str, port: int) -> No
 
 
 def _prepare_data(config: ControlConfig) -> None:
-    if os.environ.get("OPENCODE_CONTROL_HOME"):
-        config.data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
-        os.chmod(config.data_dir, 0o700)
-        return
+    path = Path(os.path.abspath(config.data_dir.expanduser()))
+    with suppress(FileExistsError):
+        path.mkdir(parents=True, mode=0o700)
     try:
-        result = prepare_control_data_dir(
-            config.data_dir, Path.home() / ".opencode-studio"
+        descriptor = os.open(
+            path,
+            os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
         )
-    except MigrationError as error:
-        raise SystemExit(f"OpenCode Control data migration failed: {error}") from error
-    if result.migrated:
-        counts = ", ".join(f"{name}={count}" for name, count in result.counts.items())
-        print(f"Migrated OpenCode Studio data to {result.target} ({counts})")
+    except OSError as error:
+        raise SystemExit(
+            f"Control data path is not a safe directory: {path}"
+        ) from error
+    try:
+        if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            raise SystemExit(f"Control data path is not a safe directory: {path}")
+        os.fchmod(descriptor, 0o700)
+    finally:
+        os.close(descriptor)
 
 
 def _read_pid(path: Path) -> int | None:
@@ -396,7 +362,7 @@ def _stop(pid_path: Path, label: str, expected_module: str, *, quiet: bool = Fal
     while _is_running(pid) and time.monotonic() < deadline:
         time.sleep(0.1)
     if _is_managed_process(pid, expected_module):
-        raise SystemExit(f"{label} did not stop cleanly; migration was not started")
+        raise SystemExit(f"{label} did not stop cleanly")
     with suppress(FileNotFoundError):
         pid_path.unlink()
     if not quiet:

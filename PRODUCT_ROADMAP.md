@@ -4,7 +4,7 @@
 только оставшуюся работу. Реализованные этапы приведены кратко, без старых checklist
 и вариантов реализации.
 
-Обновлено: 29 июля 2026.
+Обновлено: 30 июля 2026.
 
 ## Принципы
 
@@ -25,7 +25,6 @@
 - Provider auth и file-backed secrets без возврата значений в браузер.
 - Git status, diff, stage, commit, revert и защищённый reset.
 - Backend redaction известных secret-полей и command arguments.
-- Полное переименование в OpenCode Control и безопасная миграция данных Studio.
 - Локальная alpha-установка через `install.sh`, wheel и `uv tool`.
 - CLI `start`, `restart`, `stop`, `status`, `logs` и безопасный `uninstall`.
 - Ротация логов, timestamps и диагностика runtime.

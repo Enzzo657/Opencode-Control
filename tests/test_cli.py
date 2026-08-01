@@ -28,10 +28,33 @@ def test_public_cli_has_only_operational_commands() -> None:
     assert parser.parse_args(["logs", "--lines", "25", "--follow"]).follow is True
     assert parser.parse_args(["uninstall", "--yes"]).yes is True
     assert parser.parse_args(["uninstall", "--purge-data"]).purge_data is True
-
     with pytest.raises(SystemExit):
         parser.parse_args(["run"])
 
+
+def test_prepare_data_creates_private_control_directory(tmp_path: Path) -> None:
+    data_dir = tmp_path / "nested/control"
+
+    cli_module._prepare_data(ControlConfig(data_dir=data_dir))
+
+    assert data_dir.is_dir()
+    assert data_dir.stat().st_mode & 0o777 == 0o700
+
+
+@pytest.mark.parametrize("unsafe_kind", ["file", "symlink"])
+def test_prepare_data_rejects_unsafe_target(
+    tmp_path: Path, unsafe_kind: str
+) -> None:
+    data_dir = tmp_path / "control"
+    if unsafe_kind == "file":
+        data_dir.write_text("unsafe")
+    else:
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        data_dir.symlink_to(outside, target_is_directory=True)
+
+    with pytest.raises(SystemExit, match="not a safe directory"):
+        cli_module._prepare_data(ControlConfig(data_dir=data_dir))
 
 def test_status_uses_custom_control_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -89,9 +112,6 @@ def test_uninstall_purges_only_control_data(
     (data_dir / "control.sqlite").write_text("database")
     (data_dir / "control.log").write_text("runtime")
     (logs / "prj_123.log.1").write_text("project")
-    legacy = tmp_path / ".opencode-studio"
-    legacy.mkdir()
-    (legacy / "keep").write_text("legacy")
     monkeypatch.setenv("OPENCODE_CONTROL_HOME", str(data_dir))
     monkeypatch.setattr(cli_module, "_stop", lambda *args, **kwargs: False)
     monkeypatch.setattr(cli_module.shutil, "which", lambda command: "/usr/bin/uv")
@@ -104,7 +124,6 @@ def test_uninstall_purges_only_control_data(
     main(["uninstall", "--yes", "--purge-data"])
 
     assert not data_dir.exists()
-    assert (legacy / "keep").read_text() == "legacy"
     assert f"Data deleted from {data_dir}" in capsys.readouterr().out
 
 

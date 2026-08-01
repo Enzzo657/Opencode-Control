@@ -17,6 +17,5 @@ src/opencode_control/static/*
 !src/opencode_control/static/.gitkeep
 .opencode
 .opencode-control/
-.opencode-studio/
 AGENTS.md
 opencode.json

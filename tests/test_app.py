@@ -95,7 +95,6 @@ def test_control_branding_and_browser_session_cookie(tmp_path: Path) -> None:
         session = client.get("/api/v1/session")
         assert session.json()["product"] == "OpenCode Control"
         assert "control_session=" in session.headers["set-cookie"]
-        assert "studio_session=" not in session.headers["set-cookie"]
 
 
 def test_upstream_not_found_stays_not_found(tmp_path: Path) -> None:
@@ -2030,8 +2029,8 @@ def test_git_status_diff_and_commit_are_scoped_to_project(tmp_path: Path) -> Non
         subprocess.run(["git", "-C", str(root), *arguments], check=True, capture_output=True)
 
     git("init", "-q")
-    git("config", "user.name", "Studio Test")
-    git("config", "user.email", "studio@example.test")
+    git("config", "user.name", "Control Test")
+    git("config", "user.email", "control@example.test")
 
     with _client(tmp_path) as client:
         project_id = _project(client, root)["id"]

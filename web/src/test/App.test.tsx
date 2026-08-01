@@ -21,7 +21,7 @@ function response(value: unknown, status = 200): Response {
 
 function dashboardUsage(scope: "project" | "global" = "project") {
   return {
-    scope, period: "7d", timezone: "UTC", generated_at: "2026-01-01T00:00:00Z", partial: false, unavailable_projects: [],
+    scope, period: "today", timezone: "UTC", generated_at: "2026-01-01T00:00:00Z", partial: false, unavailable_projects: [],
     totals: { id: "total", tokens: { input: 10, output: 4, reasoning: 2, cache_read: 3, cache_write: 1 }, tokens_total: 16, cost: 0.5, messages: 1, sessions: 1, active: 0, mcp_connected: 1, mcp_total: 2 },
     projects: [{ id: project.id, name: project.name, tokens: { input: 10, output: 4, reasoning: 2, cache_read: 3, cache_write: 1 }, tokens_total: 16, cost: 0.5, messages: 1, sessions: 1 }],
     models: [{ id: "openai/gpt-test", tokens: { input: 10, output: 4, reasoning: 2, cache_read: 3, cache_write: 1 }, tokens_total: 16, cost: 0.5, messages: 1, sessions: 1 }],
@@ -91,7 +91,7 @@ describe("OpenCode Control", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Дашборд" })).toBeInTheDocument();
     expect(await screen.findByText("openai/gpt-test")).toBeInTheDocument();
-    expect(screen.getByText("Токены · за 7 дней")).toBeInTheDocument();
+    expect(screen.getByText("Токены · сегодня")).toBeInTheDocument();
     expect(screen.getByText("Повторно из cache")).toBeInTheDocument();
     expect(screen.getByText(/Cache виден здесь, но не входит в основной total/)).toBeInTheDocument();
     const usageHeading = screen.getByRole("heading", { name: "Динамика использования" });
@@ -100,8 +100,9 @@ describe("OpenCode Control", () => {
     fireEvent.click(screen.getByRole("button", { name: "Все проекты" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/dashboard?scope=global"))).toBe(true));
     expect(screen.getByText("Использование OpenCode по всем проектам.")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Сегодня" }));
-    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("period=today"))).toBe(true));
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("period=today"))).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "7 дней" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("period=7d"))).toBe(true));
   });
 
   it("edits project and global OpenCode configurations separately", async () => {
@@ -1209,23 +1210,6 @@ describe("OpenCode Control", () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/tasks/task_1/sessions") && init?.method === "POST")).toBe(true));
   });
 
-  it("migrates legacy Studio browser preferences to Control keys", async () => {
-    window.localStorage.setItem("studio-project", project.id);
-    window.localStorage.setItem("studio-theme", "aura");
-    window.localStorage.setItem(`studio-agent:${project.id}`, "plan");
-    window.localStorage.setItem(`studio-session-selection:${project.id}:ses_1`, JSON.stringify({ agent: "plan", model: "openai/gpt-other" }));
-    window.localStorage.setItem("studio-session-drawer-width", "880");
-
-    render(<App />);
-    await screen.findByRole("heading", { name: "Дашборд" });
-
-    expect(window.localStorage.getItem("control-project")).toBe(project.id);
-    expect(window.localStorage.getItem("control-theme")).toBe("aura");
-    expect(window.localStorage.getItem(`control-agent:${project.id}`)).toBe("plan");
-    expect(window.localStorage.getItem(`control-session-selection:${project.id}:ses_1`)).toBe(JSON.stringify({ agent: "plan", model: "openai/gpt-other" }));
-    expect(window.localStorage.getItem("control-session-drawer-width")).toBe("880");
-    expect(Object.keys(window.localStorage).some((key) => key.startsWith("studio-"))).toBe(false);
-  });
 
   it("selects and persists an OpenCode-style theme", async () => {
     render(<App />);

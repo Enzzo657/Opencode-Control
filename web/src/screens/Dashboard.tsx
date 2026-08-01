@@ -24,7 +24,7 @@ const t = createTranslator("ru");
 
 export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: DashboardProps) {
   const [scope, setScope] = useState<"project" | "global">("project");
-  const [period, setPeriod] = useState<"today" | "7d" | "30d" | "all">("7d");
+  const [period, setPeriod] = useState<"today" | "7d" | "30d" | "all">("today");
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const usageUrl = `/api/v1/dashboard?scope=${scope}&project_id=${encodeURIComponent(project.id)}&period=${period}&timezone=${encodeURIComponent(timezone)}`;
   const usage = useDashboardResource<DashboardUsage>(usageUrl, refreshKey, 30000);
