@@ -47,6 +47,7 @@ describe("OpenCode Control", () => {
     window.localStorage.setItem("control-locale", "ru");
     window.history.replaceState({}, "", "/");
     vi.stubGlobal("confirm", vi.fn(() => true));
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: vi.fn(async () => undefined) } });
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/api/v1/projects")) return response([project]);
@@ -71,6 +72,7 @@ describe("OpenCode Control", () => {
         });
       }
       if (path.includes("/mcp/global")) return response({ context7: { type: "remote", url: "https://example.test/mcp", enabled: true } });
+      if (path.endsWith("/api/v1/secrets") && (!init?.method || init.method === "GET")) return response([{ name: "context7_api_key", path: "/home/dev/.config/opencode/secrets/context7_api_key", reference: "{file:~/.config/opencode/secrets/context7_api_key}" }]);
       if (path.endsWith("/api/v1/session")) return response({ csrf_token: "csrf" });
       return response([]);
     }));
@@ -109,13 +111,30 @@ describe("OpenCode Control", () => {
   it("persists an English switch and updates the UI without reload", async () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Дашборд" });
-    fireEvent.click(screen.getByRole("button", { name: "English" }));
+    expect(screen.getByRole("button", { name: "Переключить интерфейс на английский" })).toHaveTextContent("EN");
+    fireEvent.click(screen.getByRole("button", { name: "Переключить интерфейс на английский" }));
     expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Tasks" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sessions" })).toBeInTheDocument();
     expect(screen.getByText("Tokens · today")).toBeInTheDocument();
     expect(window.localStorage.getItem("control-locale")).toBe("en");
+    expect(screen.getByRole("button", { name: "Switch interface to Russian" })).toHaveTextContent("RU");
     expect(document.documentElement.lang).toBe("en");
+  });
+
+  it("localizes both states of the secret copy action", async () => {
+    window.localStorage.setItem("control-locale", "en");
+    render(<App />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+    fireEvent.click(screen.getByRole("button", { name: "Secrets" }));
+    expect(await screen.findByRole("button", { name: "Copy" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Switch interface to Russian" }));
+    fireEvent.click(screen.getByRole("button", { name: "Копировать" }));
+    expect(await screen.findByRole("button", { name: "Скопировано" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Переключить интерфейс на английский" }));
+    expect(screen.getByRole("button", { name: "Copied" })).toBeInTheDocument();
   });
 
   it("renders the main navigation and Dashboard in persisted English", async () => {

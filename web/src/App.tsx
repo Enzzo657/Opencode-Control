@@ -243,10 +243,14 @@ function ControlApp() {
         </nav>
 
         <div className="sidebar-foot">
-          <div className="locale-switch" role="group" aria-label={t("locale.switch")}>
-            <button className={locale === "ru" ? "active" : ""} onClick={() => setLocale("ru")} aria-pressed={locale === "ru"}>{t("locale.ru")}</button>
-            <button className={locale === "en" ? "active" : ""} onClick={() => setLocale("en")} aria-pressed={locale === "en"}>{t("locale.en")}</button>
-          </div>
+          <button
+            className="locale-switch"
+            onClick={() => setLocale(locale === "ru" ? "en" : "ru")}
+            aria-label={t(locale === "ru" ? "locale.switchToEn" : "locale.switchToRu")}
+            title={t(locale === "ru" ? "locale.switchToEn" : "locale.switchToRu")}
+          >
+            {locale === "ru" ? "EN" : "RU"}
+          </button>
           <button className="theme-toggle" onClick={() => setThemeOpen(true)}>
             <Palette size={16} />
             {t("app.theme", { theme: themes.find((item) => item.id === theme)?.name ?? "OpenCode" })}
@@ -537,7 +541,7 @@ function SecretsManager() {
           <span className="secret-identity"><strong>{secret.name}</strong><small>{secret.path}</small></span>
           <code className="secret-mask">••••••••••••</code>
           <code className="secret-reference">{secret.reference}</code>
-          <span className="secret-actions"><button className="secondary-button compact-button" onClick={() => void copyReference(secret)}><Copy size={13} /> {copied === secret.name ? t("secrets.copied") : "Reference"}</button><button className="secondary-button compact-button" onClick={() => setSelected(secret)}>{t("common.replace")}</button><button className="icon-button" aria-label={t("secrets.deleteNamed", { name: secret.name })} title={t("secrets.deleteNamed", { name: secret.name })} onClick={() => void remove(secret)}><Trash2 size={14} /></button></span>
+          <span className="secret-actions"><button className="secondary-button compact-button" onClick={() => void copyReference(secret)}><Copy size={13} /> {copied === secret.name ? t("secrets.copied") : t("secrets.copy")}</button><button className="secondary-button compact-button" onClick={() => setSelected(secret)}>{t("common.replace")}</button><button className="icon-button" aria-label={t("secrets.deleteNamed", { name: secret.name })} title={t("secrets.deleteNamed", { name: secret.name })} onClick={() => void remove(secret)}><Trash2 size={14} /></button></span>
         </article>)}
         {resource.data?.length === 0 && <Empty icon={<KeyRound />} title={t("secrets.empty")} detail={t("secrets.emptyDetail")} />}
       </div>
