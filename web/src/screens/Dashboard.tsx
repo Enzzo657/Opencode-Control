@@ -10,7 +10,7 @@ import {
   SquareTerminal,
 } from "lucide-react";
 import { ApiError, api } from "../api";
-import { createTranslator } from "../i18n";
+import { createTranslator, intlLocale, localizedStatus, translate, useI18n, type Locale } from "../i18n";
 import type { DashboardUsage, Project, Session, Snapshot, UsageRow } from "../types";
 
 type DashboardProps = {
@@ -20,9 +20,8 @@ type DashboardProps = {
   onOpenSessions: () => void;
 };
 
-const t = createTranslator("ru");
-
 export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: DashboardProps) {
+  const { locale, t } = useI18n();
   const [scope, setScope] = useState<"project" | "global">("project");
   const [period, setPeriod] = useState<"today" | "7d" | "30d" | "all">("today");
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
@@ -44,11 +43,11 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
   );
   const tokenParts = totals
     ? [
-        { id: "input", label: "Ввод", value: totals.tokens.input, color: "var(--blue)" },
-        { id: "output", label: "Вывод", value: totals.tokens.output, color: "var(--green)" },
+        { id: "input", label: t("dashboard.input"), value: totals.tokens.input, color: "var(--blue)" },
+        { id: "output", label: t("dashboard.output"), value: totals.tokens.output, color: "var(--green)" },
         {
           id: "reasoning",
-          label: "Рассуждения",
+          label: t("dashboard.reasoning"),
           value: totals.tokens.reasoning,
           color: "var(--accent)",
         },
@@ -77,12 +76,12 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
       : 0;
   const periodLabel =
     period === "today"
-      ? "сегодня"
+      ? t("dashboard.period.today")
       : period === "7d"
-        ? "за 7 дней"
+        ? t("dashboard.period.7d")
         : period === "30d"
-          ? "за 30 дней"
-          : "за всё время";
+          ? t("dashboard.period.30d")
+          : t("dashboard.period.all");
   const recentSessions =
     usage.data?.recent_sessions ??
     (scope === "project"
@@ -111,7 +110,7 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
       }
     >
       <div className="dashboard-toolbar">
-        <div className="dashboard-segment" aria-label="Область аналитики">
+        <div className="dashboard-segment" aria-label={t("dashboard.scopeLabel")}>
           <button
             className={scope === "project" ? "active" : ""}
             onClick={() => setScope("project")}
@@ -125,7 +124,7 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
             {t("dashboard.globalScope")}
           </button>
         </div>
-        <div className="dashboard-segment compact" aria-label="Период аналитики">
+        <div className="dashboard-segment compact" aria-label={t("dashboard.periodLabel")}>
           {(["today", "7d", "30d", "all"] as const).map((value) => (
             <button
               key={value}
@@ -133,71 +132,70 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
               onClick={() => setPeriod(value)}
             >
               {value === "today"
-                ? "Сегодня"
+                ? t("dashboard.today")
                 : value === "7d"
-                  ? "7 дней"
+                  ? t("dashboard.7d")
                   : value === "30d"
-                    ? "30 дней"
-                    : "Всё время"}
+                    ? t("dashboard.30d")
+                    : t("dashboard.all")}
             </button>
           ))}
         </div>
       </div>
       {usage.error && (
-        <DashboardBanner tone="danger">Не удалось собрать аналитику: {usage.error}</DashboardBanner>
+        <DashboardBanner tone="danger">{t("dashboard.analyticsError", { error: usage.error })}</DashboardBanner>
       )}
       {usage.data?.partial && (
         <DashboardBanner tone="notice">
-          Показаны доступные данные OpenCode. {usage.data.unavailable_projects.length
-            ? `Не удалось прочитать проектов: ${usage.data.unavailable_projects.map((item) => item.name).join(", ")}.`
-            : "Часть истории Sessions недоступна."}
+          {t("dashboard.partial")} {usage.data.unavailable_projects.length
+            ? t("dashboard.unavailableProjects", { projects: usage.data.unavailable_projects.map((item) => item.name).join(", ") })
+            : t("dashboard.sessionsUnavailable")}
         </DashboardBanner>
       )}
       {scope === "project" && runtime.data?.state === "stopped" && (
         <DashboardBanner tone="notice">
-          Запустите сервер OpenCode, чтобы загрузить usage, Sessions и состояние Runtime.
+          {t("dashboard.startServer")}
         </DashboardBanner>
       )}
       <section className="metric-grid">
         <DashboardMetric
           icon={<Cpu />}
-          label={`Токены · ${periodLabel}`}
-          value={totals ? compactNumber(totals.tokens_total) : "—"}
-          detail={`${compactNumber(totals?.tokens.input ?? 0)} ввод · ${compactNumber(totals?.tokens.output ?? 0)} вывод · ${compactNumber(totals?.tokens.reasoning ?? 0)} reasoning`}
+          label={t("dashboard.tokens", { period: periodLabel })}
+          value={totals ? compactNumber(totals.tokens_total, locale) : "—"}
+          detail={t("dashboard.tokenDetail", { input: compactNumber(totals?.tokens.input ?? 0, locale), output: compactNumber(totals?.tokens.output ?? 0, locale), reasoning: compactNumber(totals?.tokens.reasoning ?? 0, locale) })}
           accent="blue"
         />
         <DashboardMetric
           icon={<CircleDollarSign />}
-          label={`Расходы · ${periodLabel}`}
+          label={t("dashboard.cost", { period: periodLabel })}
           value={totals ? `$${totals.cost.toFixed(3)}` : "—"}
-          detail="по данным сообщений OpenCode"
+          detail={t("dashboard.costDetail")}
           accent="green"
         />
         <DashboardMetric
           icon={<MessageSquareText />}
-          label="Сессии"
+          label={t("dashboard.sessions")}
           value={totals ? String(totals.sessions) : "—"}
-          detail={`${totals?.active ?? 0} активных · ${totals?.messages ?? 0} ответов`}
+          detail={t("dashboard.sessionDetail", { active: totals?.active ?? 0, messages: totals?.messages ?? 0 })}
           accent="orange"
         />
         <DashboardMetric
           icon={<Activity />}
-          label="Повторно из cache"
-          value={totals ? compactNumber(totals.tokens.cache_read) : "—"}
-          detail={`${cacheReuse}% входного контекста · ${compactNumber(totals?.tokens.cache_write ?? 0)} записано`}
+          label={t("dashboard.cacheReuse")}
+          value={totals ? compactNumber(totals.tokens.cache_read, locale) : "—"}
+          detail={t("dashboard.cacheDetail", { percent: cacheReuse, written: compactNumber(totals?.tokens.cache_write ?? 0, locale) })}
           accent="purple"
         />
       </section>
       <div className="dashboard-analytics-grid">
         <DashboardPanel
           className="usage-chart-panel"
-          title="Динамика использования"
+          title={t("dashboard.usageTrend")}
           icon={<Activity size={17} />}
           action={<span className="panel-caption">timezone · {timezone}</span>}
         >
           <p className="usage-composition-note">
-            Распределение обычных токенов и кешированного контекста. Cache виден здесь, но не
-            входит в основной total и рейтинг моделей.
+            {t("dashboard.composition")}
           </p>
           <div className="usage-composition">
             <div className="usage-composition-bar">
@@ -218,12 +216,12 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
                 <span key={item.id}>
                   <i style={{ background: item.color }} />
                   <small>{item.label}</small>
-                  <strong>{compactNumber(item.value)}</strong>
+                  <strong>{compactNumber(item.value, locale)}</strong>
                 </span>
               ))}
             </div>
           </div>
-          <div className="usage-bars" aria-label="Использование токенов по дням">
+          <div className="usage-bars" aria-label={t("dashboard.dailyUsage")}>
             {(usage.data?.daily ?? []).map((row) => (
               <div key={row.id}>
                 <span className="usage-bar-track">
@@ -233,9 +231,9 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
                     }}
                   />
                 </span>
-                <strong>{compactNumber(row.tokens_total)}</strong>
+                <strong>{compactNumber(row.tokens_total, locale)}</strong>
                 <small>
-                  {new Intl.DateTimeFormat("ru-RU", {
+                  {new Intl.DateTimeFormat(intlLocale(locale), {
                     day: "2-digit",
                     month: "short",
                   }).format(new Date(`${row.id}T12:00:00`))}
@@ -243,31 +241,32 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
               </div>
             ))}
             {usage.data && (usage.data.daily ?? []).length === 0 && (
-              <div className="usage-chart-empty">За выбранный период usage не найден.</div>
+              <div className="usage-chart-empty">{t("dashboard.noUsage")}</div>
             )}
           </div>
         </DashboardPanel>
         <DashboardPanel
           className="usage-ranking-panel"
-          title="Модели"
+          title={t("dashboard.models")}
           icon={<BrainCircuit size={17} />}
-          action={<span className="panel-caption">токены · стоимость</span>}
+          action={<span className="panel-caption">{t("dashboard.tokensCost")}</span>}
         >
           <UsageRanking
             rows={usage.data?.models ?? []}
             maxTokens={maxModelTokens}
-            empty="Нет данных по моделям за этот период."
+            empty={t("dashboard.noModels")}
+            locale={locale}
           />
         </DashboardPanel>
       </div>
       <div className="overview-grid dashboard-bottom-grid">
         <DashboardPanel
-          title={scope === "project" ? "Последние сессии проекта" : "Последние сессии всех проектов"}
+          title={scope === "project" ? t("dashboard.recentProject") : t("dashboard.recentGlobal")}
           icon={<MessageSquareText size={17} />}
           action={
             scope === "project" ? (
               <button className="text-button" onClick={onOpenSessions}>
-                Показать все
+                {t("dashboard.showAll")}
               </button>
             ) : undefined
           }
@@ -279,34 +278,34 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
                   <MessageSquareText size={16} />
                 </span>
                 <span>
-                  <strong>{session.title ?? "Сессия без названия"}</strong>
+                  <strong>{session.title ?? t("common.unnamedSession")}</strong>
                   <small>
                     {scope === "global" ? `${session.project_name} · ` : ""}
-                    {session.agent ?? "default"} · {dashboardModel(session)}
+                    {session.agent ?? t("common.default")} · {dashboardModel(session, locale)}
                   </small>
                 </span>
                 <span>
-                  <DashboardStatus value={session.status} />
-                  <small>{relativeTime(session.time?.updated)}</small>
+                  <DashboardStatus value={session.status} locale={locale} />
+                  <small>{relativeTime(session.time?.updated, locale)}</small>
                 </span>
               </div>
             ))}
             {usage.data && recentSessions.length === 0 && (
               <DashboardEmpty
                 icon={<MessageSquareText />}
-                title="Сессий за период нет"
-                detail="Измените период или запустите новую задачу."
+                title={t("dashboard.noSessions")}
+                detail={t("dashboard.noSessionsDetail")}
               />
             )}
           </div>
         </DashboardPanel>
         {scope === "project" ? (
-          <DashboardPanel title="Runtime проекта" icon={<SquareTerminal size={17} />}>
+          <DashboardPanel title={t("dashboard.projectRuntime")} icon={<SquareTerminal size={17} />}>
             <dl className="runtime-list">
               <div>
-                <dt>Сервер</dt>
+                <dt>{t("dashboard.server")}</dt>
                 <dd>
-                  <DashboardStatus
+                  <DashboardStatus locale={locale}
                     value={
                       runtime.data?.server.state === "running"
                         ? "connected"
@@ -316,21 +315,21 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
                 </dd>
               </div>
               <div>
-                <dt>Адрес</dt>
-                <dd className="mono">{runtime.data?.server.endpoint ?? "не запущен"}</dd>
+                <dt>{t("dashboard.address")}</dt>
+                <dd className="mono">{runtime.data?.server.endpoint ?? t("common.notRunning")}</dd>
               </div>
               <div>
                 <dt>OpenCode</dt>
-                <dd>{runtime.data?.health?.version ?? "неизвестно"}</dd>
+                <dd>{runtime.data?.health?.version ?? t("common.unknown")}</dd>
               </div>
               <div>
                 <dt>MCP</dt>
                 <dd>
-                  {totals?.mcp_connected ?? 0}/{totals?.mcp_total ?? 0} подключено
+                  {t("common.connectedCount", { connected: totals?.mcp_connected ?? 0, total: totals?.mcp_total ?? 0 })}
                 </dd>
               </div>
               <div>
-                <dt>Папка</dt>
+                <dt>{t("dashboard.folder")}</dt>
                 <dd className="mono truncate" title={project.root}>
                   {project.root}
                 </dd>
@@ -339,9 +338,9 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
           </DashboardPanel>
         ) : (
           <DashboardPanel
-            title="Проекты"
+            title={t("dashboard.projects")}
             icon={<FolderGit2 size={17} />}
-            action={<span className="panel-caption">usage за период</span>}
+            action={<span className="panel-caption">{t("dashboard.usagePeriod")}</span>}
           >
             <UsageRanking
               rows={usage.data?.projects ?? []}
@@ -349,7 +348,8 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
                 1,
                 ...(usage.data?.projects ?? []).map((row) => row.tokens_total),
               )}
-              empty="Нет доступных данных по проектам."
+              empty={t("dashboard.noProjects")}
+              locale={locale}
             />
           </DashboardPanel>
         )}
@@ -358,7 +358,7 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
   );
 }
 
-function UsageRanking({ rows, maxTokens, empty }: { rows: UsageRow[]; maxTokens: number; empty: string }) {
+function UsageRanking({ rows, maxTokens, empty, locale }: { rows: UsageRow[]; maxTokens: number; empty: string; locale: Locale }) {
   if (!rows.length) return <div className="usage-ranking-empty">{empty}</div>;
   return (
     <div className="usage-ranking">
@@ -372,9 +372,9 @@ function UsageRanking({ rows, maxTokens, empty }: { rows: UsageRow[]; maxTokens:
             </i>
           </span>
           <span>
-            <strong>{compactNumber(row.tokens_total)}</strong>
+            <strong>{compactNumber(row.tokens_total, locale)}</strong>
             <small>
-              ${row.cost.toFixed(3)} · {row.sessions} сесс.
+              ${row.cost.toFixed(3)} · {createSessionCount(row.sessions, locale)}
             </small>
           </span>
         </div>
@@ -399,8 +399,8 @@ function DashboardBanner({ tone, children }: { tone: "danger" | "notice"; childr
   return <div className={`banner ${tone}`}>{children}</div>;
 }
 
-function DashboardStatus({ value }: { value: string }) {
-  return <span className="status" data-status={value}><i />{statusLabel(value)}</span>;
+function DashboardStatus({ value, locale }: { value: string; locale: Locale }) {
+  return <span className="status" data-status={value}><i />{localizedStatus(value, locale)}</span>;
 }
 
 function DashboardEmpty({ icon, title, detail }: { icon: ReactNode; title: string; detail: string }) {
@@ -427,7 +427,7 @@ function useDashboardResource<T>(url: string, dependency: unknown, interval?: nu
       } catch (reason) {
         if (reason instanceof ApiError && reason.status === 404) polling = false;
         if (active && request === sequence) {
-          setError(reason instanceof Error ? reason.message : "Непредвиденная ошибка");
+          setError(reason instanceof Error ? reason.message : createFallbackError());
         }
       }
     }
@@ -445,8 +445,8 @@ function useDashboardResource<T>(url: string, dependency: unknown, interval?: nu
   return { data, error };
 }
 
-function compactNumber(value: number) {
-  return new Intl.NumberFormat("ru-RU", {
+function compactNumber(value: number, locale: Locale) {
+  return new Intl.NumberFormat(intlLocale(locale), {
     notation: value > 9999 ? "compact" : "standard",
     maximumFractionDigits: 1,
   }).format(value);
@@ -459,40 +459,25 @@ function dashboardSessionStatus(snapshot: Snapshot | null | undefined, session: 
   return status?.type ?? status?.status ?? "idle";
 }
 
-function dashboardModel(session: Session) {
+function dashboardModel(session: Session, locale: Locale) {
   const id = session.model?.modelID ?? session.model?.id;
-  return id ? `${session.model?.providerID ? `${session.model.providerID}/` : ""}${id}` : "модель по умолчанию";
+  return id ? `${session.model?.providerID ? `${session.model.providerID}/` : ""}${id}` : createTranslator(locale)("common.defaultModel");
 }
 
-function relativeTime(value?: number) {
-  if (!value) return "время неизвестно";
+function relativeTime(value: number | undefined, locale: Locale) {
+  if (!value) return createTranslator(locale)("common.timeUnknown");
   const milliseconds = value > 100_000_000_000 ? value : value * 1000;
   const minutes = Math.max(0, Math.floor((Date.now() - milliseconds) / 60000));
-  if (minutes < 1) return "только что";
-  if (minutes < 60) return new Intl.RelativeTimeFormat("ru", { numeric: "auto" }).format(-minutes, "minute");
-  if (minutes < 1440) return new Intl.RelativeTimeFormat("ru", { numeric: "auto" }).format(-Math.floor(minutes / 60), "hour");
-  return new Intl.RelativeTimeFormat("ru", { numeric: "auto" }).format(-Math.floor(minutes / 1440), "day");
+  if (minutes < 1) return createTranslator(locale)("common.justNow");
+  if (minutes < 60) return new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(-minutes, "minute");
+  if (minutes < 1440) return new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(-Math.floor(minutes / 60), "hour");
+  return new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(-Math.floor(minutes / 1440), "day");
 }
 
-function statusLabel(value: string) {
-  const labels: Record<string, string> = {
-    running: "Выполняется",
-    connected: "Подключен",
-    completed: "Завершена",
-    busy: "Выполняется",
-    queued: "В очереди",
-    failed: "Ошибка",
-    aborted: "Остановлено",
-    dispatching: "Запускается",
-    scheduled: "По расписанию",
-    paused: "Приостановлено",
-    stopped: "Остановлен",
-    external: "Внешний",
-    idle: "Завершена",
-    pending: "Ожидает",
-    retry: "Повторная попытка",
-    error: "Ошибка",
-    disabled: "Отключен",
-  };
-  return labels[value] ?? "Неизвестно";
+function createSessionCount(count: number, locale: Locale) {
+  return createTranslator(locale)("common.sessionsShort", { count });
+}
+
+function createFallbackError() {
+  return translate("common.unknownError");
 }

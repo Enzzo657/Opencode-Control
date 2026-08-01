@@ -1,3 +1,5 @@
+import { translate } from "./i18n";
+
 let csrfToken: string | null = null;
 
 export class ApiError extends Error {
@@ -10,7 +12,7 @@ export class ApiError extends Error {
 async function ensureSession(): Promise<string> {
   if (csrfToken) return csrfToken;
   const response = await fetch("/api/v1/session", { credentials: "same-origin" });
-  if (!response.ok) throw new Error("Не удалось инициализировать сессию браузера");
+  if (!response.ok) throw new Error(translate("api.sessionInit"));
   const payload = (await response.json()) as { csrf_token: string };
   csrfToken = payload.csrf_token;
   return csrfToken;
@@ -42,15 +44,15 @@ function formatError(detail: unknown, status: number): string {
   if (Array.isArray(detail)) {
     const issues = detail.filter((item): item is { loc?: unknown[]; msg?: string; type?: string } => typeof item === "object" && item !== null);
     const staleScheduleFields = issues.some((item) => item.type === "extra_forbidden" && item.loc?.some((part) => part === "cron" || part === "timezone"));
-    if (staleScheduleFields) return "Backend OpenCode Control ещё не обновлён. Выполните opencode-control restart.";
+    if (staleScheduleFields) return translate("api.staleSchedule");
     const staleMentions = issues.some((item) => item.type === "extra_forbidden" && item.loc?.includes("mentions"));
-    if (staleMentions) return "Backend OpenCode Control ещё не поддерживает @-подагентов. Перезапустите Control: opencode-control restart.";
-    const messages = issues.map((item) => { const field = item.loc?.filter((part) => part !== "body").join(" → "); return `${field ? `${field}: ` : ""}${item.msg ?? "Некорректное значение"}`; });
+    if (staleMentions) return translate("api.staleMentions");
+    const messages = issues.map((item) => { const field = item.loc?.filter((part) => part !== "body").join(" → "); return `${field ? `${field}: ` : ""}${item.msg ?? translate("api.invalidValue")}`; });
     if (messages.length) return messages.join(". ");
   }
   if (typeof detail === "object" && detail !== null) {
     const value = detail as { message?: unknown; preflight?: unknown; diagnostic?: unknown };
-    const base = typeof value.message === "string" ? value.message : `Запрос не выполнен (${status})`;
+    const base = typeof value.message === "string" ? value.message : translate("api.requestFailed", { status });
     if (typeof value.preflight === "object" && value.preflight !== null) {
       const errors = Object.values(value.preflight as Record<string, unknown>).flatMap((entry) => typeof entry === "object" && entry !== null && typeof (entry as { error?: unknown }).error === "string" ? [(entry as { error: string }).error] : []);
       if (errors.length) return `${base}: ${Array.from(new Set(errors)).join("; ")}`;
@@ -58,7 +60,7 @@ function formatError(detail: unknown, status: number): string {
     if (typeof value.diagnostic === "object" && value.diagnostic !== null && typeof (value.diagnostic as { detail?: unknown }).detail === "string") return `${base}: ${(value.diagnostic as { detail: string }).detail}`;
     return base;
   }
-  return `Запрос не выполнен (${status})`;
+  return translate("api.requestFailed", { status });
 }
 
 export function jsonBody(value: unknown): Pick<RequestInit, "body"> {

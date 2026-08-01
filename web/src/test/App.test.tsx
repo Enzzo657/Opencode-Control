@@ -44,6 +44,7 @@ function contrastRatio(left: string, right: string) {
 describe("OpenCode Control", () => {
   beforeEach(() => {
     window.localStorage.clear();
+    window.localStorage.setItem("control-locale", "ru");
     window.history.replaceState({}, "", "/");
     vi.stubGlobal("confirm", vi.fn(() => true));
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -103,6 +104,65 @@ describe("OpenCode Control", () => {
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("period=today"))).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "7 дней" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("period=7d"))).toBe(true));
+  });
+
+  it("persists an English switch and updates the UI without reload", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(screen.getByRole("button", { name: "English" }));
+    expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Tasks" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Sessions" })).toBeInTheDocument();
+    expect(screen.getByText("Tokens · today")).toBeInTheDocument();
+    expect(window.localStorage.getItem("control-locale")).toBe("en");
+    expect(document.documentElement.lang).toBe("en");
+  });
+
+  it("renders the main navigation and Dashboard in persisted English", async () => {
+    window.localStorage.setItem("control-locale", "en");
+    render(<App />);
+    expect(await screen.findByRole("heading", { name: "Dashboard" })).toBeInTheDocument();
+    expect(screen.getByText("Work")).toBeInTheDocument();
+    expect(screen.getByText("Settings")).toBeInTheDocument();
+    expect(screen.getByText("Project runtime")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Project settings" }));
+    expect(await screen.findByRole("heading", { name: "Project settings" })).toBeInTheDocument();
+    expect(screen.getByText("Project details")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Save shared config" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove project" })).toBeInTheDocument();
+  });
+
+  it("renders every primary screen in English", async () => {
+    window.localStorage.setItem("control-locale", "en");
+    render(<App />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+    for (const [navigation, heading] of [
+      ["Sessions", "Sessions"],
+      ["Tasks", "Tasks"],
+      ["Agents", "Agents"],
+      ["Skills", "Skills"],
+      ["Commands", "Commands"],
+      ["Providers", "Providers"],
+      ["Secrets", "Secrets"],
+      ["MCP servers", "MCP servers"],
+      ["AGENTS.md", "Shared instructions (AGENTS.md)"],
+      ["Project settings", "Project settings"],
+    ]) {
+      fireEvent.click(screen.getByRole("button", { name: navigation }));
+      expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
+    }
+  });
+
+  it("creates English resource templates when English is active", async () => {
+    window.localStorage.setItem("control-locale", "en");
+    render(<App />);
+    await screen.findByRole("heading", { name: "Dashboard" });
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create skill" }));
+    const markdown = screen.getByLabelText("Markdown skill") as HTMLTextAreaElement;
+    expect(markdown.value).toContain("# Workflow");
+    expect(markdown.value).toContain("report in English");
+    expect(markdown.value).not.toMatch(/[А-Яа-яЁё]/);
   });
 
   it("edits project and global OpenCode configurations separately", async () => {

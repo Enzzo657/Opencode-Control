@@ -77,6 +77,9 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .sidebar-foot > span { display: block; margin: 10px 3px 0; color: var(--faint); font-size: 9px; }
 .theme-toggle { display: flex; align-items: center; gap: 9px; width: 100%; padding: 8px; color: #858c96; font-size: 11px; background: transparent; border: 0; border-radius: 6px; cursor: pointer; }
 .theme-toggle:hover { color: var(--text); background: var(--surface-2); }
+.locale-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; margin: 0 8px 5px; padding: 3px; background: var(--surface-2); border: 1px solid var(--line); border-radius: 7px; }
+.locale-switch button { min-height: 28px; color: var(--muted); font: inherit; font-size: 10px; background: transparent; border: 0; border-radius: 5px; cursor: pointer; }
+.locale-switch button.active { color: var(--text); background: var(--surface); box-shadow: 0 1px 4px rgb(0 0 0 / 18%); }
 
 .workspace { grid-column: 2; min-width: 0; }
 .topbar { position: sticky; top: 0; z-index: 12; height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 20px; padding: 0 30px; background: color-mix(in srgb, var(--bg) 88%, transparent); border-bottom: 1px solid var(--line); backdrop-filter: blur(18px); }
