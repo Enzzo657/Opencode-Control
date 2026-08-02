@@ -1885,6 +1885,77 @@ def test_dashboard_aggregates_message_usage_for_project_and_global_scope(
         ).status_code == 422
 
 
+def test_search_indexes_changed_sessions_across_projects(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    roots = [tmp_path / "one", tmp_path / "two"]
+    for root in roots:
+        root.mkdir()
+    message_calls: list[tuple[str, str]] = []
+
+    class FakeOpenCodeClient:
+        def __init__(self, endpoint: str, directory: str, **kwargs: Any) -> None:
+            self.directory = directory
+
+        def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            return {"worktree": self.directory}
+
+        def sessions(self) -> list[dict[str, Any]]:
+            name = Path(self.directory).name
+            return [
+                {
+                    "id": f"ses_{name}",
+                    "title": f"Deploy {name}",
+                    "time": {"updated": 1000},
+                }
+            ]
+
+        def session_messages(self, session_id: str) -> list[dict[str, Any]]:
+            message_calls.append((self.directory, session_id))
+            return [
+                {
+                    "info": {
+                        "id": f"msg_{session_id}",
+                        "role": "user",
+                        "time": {"created": 1100},
+                    },
+                    "parts": [
+                        {"type": "text", "text": f"Rotate deployment token for {session_id}"},
+                        {
+                            "type": "tool",
+                            "state": {"output": "private tool output"},
+                        },
+                    ],
+                }
+            ]
+
+    monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
+    with _client(tmp_path) as client:
+        first = _project(client, roots[0], endpoint="http://127.0.0.1:4096")
+        _project(client, roots[1], endpoint="http://127.0.0.1:4097")
+
+        response = client.get("/api/v1/search", params={"q": "deployment", "scope": "global"})
+        repeated = client.get("/api/v1/search", params={"q": "deployment", "scope": "global"})
+        project_title = client.get(
+            "/api/v1/search",
+            params={"q": "Deploy one", "scope": "project", "project_id": first["id"]},
+        )
+        private_output = client.get(
+            "/api/v1/search", params={"q": "private tool", "scope": "global"}
+        )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["partial"] is False
+    assert response.json()["indexed_sessions"] == 2
+    assert len(response.json()["results"]) == 2
+    assert {item["kind"] for item in response.json()["results"]} == {"message"}
+    assert all("deployment" in item["snippet"].lower() for item in response.json()["results"])
+    assert repeated.json()["indexed_sessions"] == 0
+    assert len(message_calls) == 2
+    assert [item["kind"] for item in project_title.json()["results"]] == ["session"]
+    assert private_output.json()["results"] == []
+
+
 def test_scheduled_task_uses_a_fresh_session_by_default(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

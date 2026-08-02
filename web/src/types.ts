@@ -84,6 +84,28 @@ export type DashboardUsage = {
   }>;
 };
 
+export type SearchResult = {
+  kind: "session" | "message";
+  project_id: string;
+  project_name: string;
+  session_id: string;
+  session_title: string;
+  message_id: string | null;
+  role: string | null;
+  created_at: number | null;
+  snippet: string;
+};
+
+export type SearchResponse = {
+  query: string;
+  scope: "project" | "global";
+  partial: boolean;
+  unavailable_projects: Array<{ id: string; name: string; error: string }>;
+  indexed_sessions: number;
+  has_more: boolean;
+  results: SearchResult[];
+};
+
 export type Agent = {
   name: string;
   description?: string;

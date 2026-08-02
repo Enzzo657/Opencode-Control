@@ -11,26 +11,17 @@ import {
   Palette,
   Plug,
   RefreshCw,
+  Search as SearchIcon,
   Settings,
   Sparkles,
   SquareTerminal,
   X,
   Zap,
 } from "lucide-react";
-import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
+import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
 import { api } from "./api";
 import { AgentCoreMark } from "./AgentCoreMark";
 import { I18nProvider, translate, useI18n, type TranslationKey } from "./i18n";
-import { AgentsSkills } from "./screens/AgentsSkills";
-import { Commands } from "./screens/Commands";
-import { Dashboard } from "./screens/Dashboard";
-import { Instructions } from "./screens/Instructions";
-import { Mcp } from "./screens/Mcp";
-import { ProjectSettings } from "./screens/ProjectSettings";
-import { Providers } from "./screens/Providers";
-import { Secrets } from "./screens/Secrets";
-import { Sessions } from "./screens/Sessions";
-import { Tasks } from "./screens/Tasks";
 import { FullState, LanguageMenu, ProjectDialog, ServerControl, ThemeDialog, Welcome } from "./ShellComponents";
 import { applyTheme, normalizeTheme, themes } from "./theme";
 import type { Project } from "./types";
@@ -38,9 +29,22 @@ import { message, useResource } from "./useResource";
 
 export { contrastText, themes } from "./theme";
 
+const AgentsSkills = lazy(() => import("./screens/AgentsSkills").then((module) => ({ default: module.AgentsSkills })));
+const Commands = lazy(() => import("./screens/Commands").then((module) => ({ default: module.Commands })));
+const Dashboard = lazy(() => import("./screens/Dashboard").then((module) => ({ default: module.Dashboard })));
+const Instructions = lazy(() => import("./screens/Instructions").then((module) => ({ default: module.Instructions })));
+const Mcp = lazy(() => import("./screens/Mcp").then((module) => ({ default: module.Mcp })));
+const ProjectSettings = lazy(() => import("./screens/ProjectSettings").then((module) => ({ default: module.ProjectSettings })));
+const Providers = lazy(() => import("./screens/Providers").then((module) => ({ default: module.Providers })));
+const Secrets = lazy(() => import("./screens/Secrets").then((module) => ({ default: module.Secrets })));
+const SearchScreen = lazy(() => import("./screens/Search").then((module) => ({ default: module.Search })));
+const Sessions = lazy(() => import("./screens/Sessions").then((module) => ({ default: module.Sessions })));
+const Tasks = lazy(() => import("./screens/Tasks").then((module) => ({ default: module.Tasks })));
+
 type View =
   | "overview"
   | "sessions"
+  | "search"
   | "tasks"
   | "agents"
   | "skills"
@@ -57,6 +61,7 @@ const nav: Array<{ group: TranslationKey; items: Array<{ id: View; label: Transl
     items: [
       { id: "overview", label: "nav.overview", icon: Gauge },
       { id: "sessions", label: "nav.sessions", icon: MessageSquareText },
+      { id: "search", label: "nav.search", icon: SearchIcon },
       { id: "tasks", label: "nav.tasks", icon: Zap },
     ],
   },
@@ -91,6 +96,7 @@ function ControlApp() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [theme, setTheme] = useState(() => normalizeTheme(window.localStorage.getItem("control-theme")));
   const [refreshKey, setRefreshKey] = useState(0);
+  const [sessionTarget, setSessionTarget] = useState<{ projectId: string; sessionId: string; messageId: string | null; query: string } | null>(null);
   const controlHealth = useResource<{ healthy: boolean; version: string }>(
     "/api/v1/health",
     refreshKey,
@@ -140,6 +146,12 @@ function ControlApp() {
     setView(next);
     history.pushState({}, "", next === "overview" ? "/" : `/${next}`);
     setMobileOpen(false);
+  }
+
+  function openSearchSession(projectId: string, sessionId: string, messageId: string | null, query: string) {
+    setActiveId(projectId);
+    setSessionTarget({ projectId, sessionId, messageId, query });
+    navigate("sessions");
   }
 
   const project = projects.find((item) => item.id === activeId) ?? null;
@@ -203,7 +215,7 @@ function ControlApp() {
           {!project ? (
             <Welcome onAdd={() => setAddOpen(true)} />
           ) : (
-            <ViewErrorBoundary key={`${project.id}:${view}`}><ViewContent view={view} project={project} refreshKey={refreshKey} onProjectChange={() => setRefreshKey((value) => value + 1)} navigate={navigate} /></ViewErrorBoundary>
+            <ViewErrorBoundary key={`${project.id}:${view}`}><Suspense fallback={<ScreenLoading />}><ViewContent view={view} project={project} refreshKey={refreshKey} sessionTarget={sessionTarget?.projectId === project.id ? sessionTarget : null} onSessionTargetHandled={() => setSessionTarget(null)} onOpenSearchSession={openSearchSession} onProjectChange={() => setRefreshKey((value) => value + 1)} navigate={navigate} /></Suspense></ViewErrorBoundary>
           )}
         </div>
       </main>
@@ -213,6 +225,11 @@ function ControlApp() {
       {themeOpen && <ThemeDialog value={theme} onChange={(next) => { setTheme(next); setThemeOpen(false); }} onClose={() => setThemeOpen(false)} />}
     </div>
   );
+}
+
+function ScreenLoading() {
+  const { t } = useI18n();
+  return <div className="screen-loading" role="status"><RefreshCw className="spin" /><span>{t("app.loadingView")}</span></div>;
 }
 
 class ViewErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
@@ -225,9 +242,10 @@ class ViewErrorBoundary extends Component<{ children: ReactNode }, { error: stri
   }
 }
 
-function ViewContent({ view, project, refreshKey, onProjectChange, navigate }: { view: View; project: Project; refreshKey: number; onProjectChange: () => void; navigate: (view: View) => void }) {
+function ViewContent({ view, project, refreshKey, sessionTarget, onSessionTargetHandled, onOpenSearchSession, onProjectChange, navigate }: { view: View; project: Project; refreshKey: number; sessionTarget: { sessionId: string; messageId: string | null; query: string } | null; onSessionTargetHandled: () => void; onOpenSearchSession: (projectId: string, sessionId: string, messageId: string | null, query: string) => void; onProjectChange: () => void; navigate: (view: View) => void }) {
   if (view === "overview") return <Dashboard project={project} refreshKey={refreshKey} onOpenTasks={() => navigate("tasks")} onOpenSessions={() => navigate("sessions")} />;
-  if (view === "sessions") return <Sessions project={project} refreshKey={refreshKey} />;
+  if (view === "sessions") return <Sessions project={project} refreshKey={refreshKey} initialSearchTarget={sessionTarget} onInitialSessionHandled={onSessionTargetHandled} />;
+  if (view === "search") return <SearchScreen project={project} onOpenSession={onOpenSearchSession} />;
   if (view === "tasks") return <Tasks project={project} refreshKey={refreshKey} />;
   if (view === "agents") return <AgentsSkills project={project} kind="agents" refreshKey={refreshKey} />;
   if (view === "skills") return <AgentsSkills project={project} kind="skills" />;

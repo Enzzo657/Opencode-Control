@@ -232,6 +232,10 @@ class OpenCodeClient:
             raise OpenCodeError("OpenCode returned an invalid session")
         return value
 
+    def sessions(self) -> list[dict[str, Any]]:
+        value = self.request("GET", "/session", query={"limit": 500})
+        return _sessions(value, self.directory)
+
     def provider_auth_catalog(self) -> list[dict[str, Any]]:
         providers = self.request("GET", "/provider")
         methods = self.request("GET", "/provider/auth")

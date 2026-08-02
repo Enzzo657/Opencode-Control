@@ -179,6 +179,49 @@ def test_ambiguous_dispatch_is_preserved_for_reconciliation(tmp_path: Path) -> N
     store.close()
 
 
+def test_search_index_replaces_messages_and_treats_wildcards_literally(tmp_path: Path) -> None:
+    store = ControlStore(tmp_path / "data")
+    root = tmp_path / "project"
+    root.mkdir()
+    project = store.create_project(name="Search", root=root, endpoint=None)
+    project_id = str(project["id"])
+    store.replace_search_session(
+        project_id,
+        session_id="ses_one",
+        title="Deploy 100% safely",
+        parent_id=None,
+        updated_at=10,
+        messages=[
+            {
+                "id": "msg_one",
+                "role": "user",
+                "created_at": 11,
+                "content": "Keep value_name unchanged",
+            }
+        ],
+    )
+
+    assert [item["kind"] for item in store.search_history("100%", [project_id], limit=10)] == [
+        "session"
+    ]
+    message_matches = store.search_history("value_", [project_id], limit=10)
+    assert [item["message_id"] for item in message_matches] == ["msg_one"]
+    assert store.search_history("valueX", [project_id], limit=10) == []
+
+    store.replace_search_session(
+        project_id,
+        session_id="ses_one",
+        title="Deploy safely",
+        parent_id=None,
+        updated_at=12,
+        messages=[],
+    )
+    assert store.search_history("value_name", [project_id], limit=10) == []
+    store.prune_search_sessions(project_id, set())
+    assert store.search_session_versions(project_id) == {}
+    store.close()
+
+
 def test_overlap_skip_does_not_overwrite_active_task_status(tmp_path: Path) -> None:
     store = ControlStore(tmp_path / "data")
     project_id, task_id = _scheduled_task(store, tmp_path)

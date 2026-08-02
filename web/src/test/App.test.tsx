@@ -53,6 +53,7 @@ describe("OpenCode Control", () => {
       if (path.endsWith("/api/v1/projects")) return response([project]);
       if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.1.0", projects: 1 });
       if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
+      if (path.includes("/api/v1/search")) return response({ query: "deploy", scope: path.includes("scope=global") ? "global" : "project", partial: false, unavailable_projects: [], indexed_sessions: 1, has_more: false, results: [{ kind: "message", project_id: project.id, project_name: project.name, session_id: "ses_1", session_title: "Fix checkout", message_id: "msg_1", role: "user", created_at: Date.now(), snippet: "Rotate deployment token" }] });
       if (path.endsWith("/tasks") && (!init?.method || init.method === "GET")) return response([{ id: "task_1", project_id: project.id, title: "Fix checkout task", prompt: "Fix it", agent: "build", model: "openai/gpt-test", status: "completed", session_id: "ses_1", session_ids: ["ses_1"], error: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }]);
       if (path.includes("/snapshot")) {
         return response({
@@ -71,6 +72,7 @@ describe("OpenCode Control", () => {
           server: project.server,
         });
       }
+      if (path.includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_1", role: "assistant", time: { created: Date.now(), completed: Date.now() } }, parts: [{ type: "text", text: "Rotate deployment token" }] }]);
       if (path.includes("/mcp/global")) return response({ context7: { type: "remote", url: "https://example.test/mcp", enabled: true } });
       if (path.endsWith("/api/v1/secrets") && (!init?.method || init.method === "GET")) return response([{ name: "context7_api_key", path: "/home/dev/.config/opencode/secrets/context7_api_key", reference: "{file:~/.config/opencode/secrets/context7_api_key}" }]);
       if (path.endsWith("/api/v1/session")) return response({ csrf_token: "csrf" });
@@ -169,6 +171,7 @@ describe("OpenCode Control", () => {
     await screen.findByRole("heading", { name: "Dashboard" });
     for (const [navigation, heading] of [
       ["Sessions", "Sessions"],
+      ["Search", "Search"],
       ["Tasks", "Tasks"],
       ["Agents", "Agents"],
       ["Skills", "Skills"],
@@ -182,6 +185,25 @@ describe("OpenCode Control", () => {
       fireEvent.click(screen.getByRole("button", { name: navigation }));
       expect(await screen.findByRole("heading", { name: heading })).toBeInTheDocument();
     }
+  });
+
+  it("searches all projects and opens the matching session", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(screen.getByRole("button", { name: "Поиск" }));
+    expect(await screen.findByRole("heading", { name: "Поиск" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "Поиск по сессиям и сообщениям" }), { target: { value: "deploy" } });
+    await waitFor(() => expect(document.querySelector(".search-snippet")).toHaveTextContent("Rotate deployment token"));
+    expect(screen.getByText("Локальный индекс обновлён: 1 сесс.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Все проекты" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/api/v1/search?") && String(input).includes("scope=global"))).toBe(true));
+    fireEvent.click(document.querySelector(".search-result")!);
+
+    expect(await screen.findByRole("heading", { name: "Сессии" })).toBeInTheDocument();
+    expect(await screen.findByRole("dialog")).toHaveAccessibleName(/Fix checkout/);
+    expect(await screen.findByText("Найдено в сообщении:")).toBeInTheDocument();
+    expect(document.querySelector('[data-message-id="msg_1"]')).toHaveClass("search-target");
   });
 
   it("creates English resource templates when English is active", async () => {

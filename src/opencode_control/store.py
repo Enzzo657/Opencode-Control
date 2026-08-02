@@ -91,6 +91,32 @@ class ControlStore:
                     ON scheduled_runs(status, lease_expires_at, scheduled_for);
                 CREATE INDEX IF NOT EXISTS scheduled_runs_task_history
                     ON scheduled_runs(project_id, task_id, scheduled_for DESC);
+                CREATE TABLE IF NOT EXISTS search_sessions (
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    session_id TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    title_search TEXT NOT NULL,
+                    parent_id TEXT,
+                    updated_at REAL,
+                    indexed_at TEXT NOT NULL,
+                    PRIMARY KEY (project_id, session_id)
+                );
+                CREATE TABLE IF NOT EXISTS search_messages (
+                    project_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    role TEXT,
+                    created_at REAL,
+                    content TEXT NOT NULL,
+                    content_search TEXT NOT NULL,
+                    PRIMARY KEY (project_id, session_id, message_id),
+                    FOREIGN KEY (project_id, session_id)
+                        REFERENCES search_sessions(project_id, session_id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS search_sessions_updated
+                    ON search_sessions(project_id, updated_at DESC);
+                CREATE INDEX IF NOT EXISTS search_messages_created
+                    ON search_messages(project_id, created_at DESC);
                 INSERT INTO task_sessions (project_id, task_id, session_id, created_at)
                 SELECT project_id, id, session_id, created_at FROM tasks
                 WHERE session_id IS NOT NULL
@@ -232,6 +258,117 @@ class ControlStore:
                 "UPDATE projects SET starter_commands_version = ?, updated_at = ? WHERE id = ?",
                 (version, _now(), project_id),
             )
+
+    def search_session_versions(self, project_id: str) -> dict[str, tuple[float | None, str]]:
+        with self._lock:
+            rows = self._connection.execute(
+                "SELECT session_id, updated_at, title FROM search_sessions WHERE project_id = ?",
+                (project_id,),
+            ).fetchall()
+        return {
+            str(row["session_id"]): (
+                float(row["updated_at"]) if row["updated_at"] is not None else None,
+                str(row["title"]),
+            )
+            for row in rows
+        }
+
+    def replace_search_session(
+        self,
+        project_id: str,
+        *,
+        session_id: str,
+        title: str,
+        parent_id: str | None,
+        updated_at: float | None,
+        messages: list[dict[str, Any]],
+    ) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                INSERT INTO search_sessions
+                    (project_id, session_id, title, title_search, parent_id, updated_at, indexed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(project_id, session_id) DO UPDATE SET
+                    title = excluded.title,
+                    title_search = excluded.title_search,
+                    parent_id = excluded.parent_id,
+                    updated_at = excluded.updated_at,
+                    indexed_at = excluded.indexed_at
+                """,
+                (project_id, session_id, title, title.casefold(), parent_id, updated_at, _now()),
+            )
+            self._connection.execute(
+                "DELETE FROM search_messages WHERE project_id = ? AND session_id = ?",
+                (project_id, session_id),
+            )
+            self._connection.executemany(
+                """
+                INSERT INTO search_messages
+                    (project_id, session_id, message_id, role, created_at, content, content_search)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        project_id,
+                        session_id,
+                        str(message["id"]),
+                        message.get("role"),
+                        message.get("created_at"),
+                        str(message["content"]),
+                        str(message["content"]).casefold(),
+                    )
+                    for message in messages
+                ],
+            )
+
+    def prune_search_sessions(self, project_id: str, session_ids: set[str]) -> None:
+        with self._lock, self._connection:
+            if not session_ids:
+                self._connection.execute(
+                    "DELETE FROM search_sessions WHERE project_id = ?", (project_id,)
+                )
+                return
+            placeholders = ", ".join("?" for _ in session_ids)
+            self._connection.execute(
+                f"DELETE FROM search_sessions WHERE project_id = ? "
+                f"AND session_id NOT IN ({placeholders})",
+                (project_id, *sorted(session_ids)),
+            )
+
+    def search_history(
+        self, query: str, project_ids: list[str], *, limit: int
+    ) -> list[dict[str, Any]]:
+        if not project_ids:
+            return []
+        placeholders = ", ".join("?" for _ in project_ids)
+        escaped = query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        needle = f"%{escaped}%"
+        sql = f"""
+            SELECT * FROM (
+                SELECT 'session' AS kind, project_id, session_id, NULL AS message_id,
+                    NULL AS role, title AS content, updated_at AS occurred_at, title
+                FROM search_sessions
+                WHERE project_id IN ({placeholders}) AND title_search LIKE ? ESCAPE '\\'
+                UNION ALL
+                SELECT 'message' AS kind, messages.project_id, messages.session_id,
+                    messages.message_id, messages.role, messages.content,
+                    messages.created_at AS occurred_at, sessions.title
+                FROM search_messages AS messages
+                JOIN search_sessions AS sessions
+                    ON sessions.project_id = messages.project_id
+                    AND sessions.session_id = messages.session_id
+                WHERE messages.project_id IN ({placeholders})
+                    AND messages.content_search LIKE ? ESCAPE '\\'
+            )
+            ORDER BY occurred_at DESC, session_id, message_id
+            LIMIT ?
+        """
+        with self._lock:
+            rows = self._connection.execute(
+                sql, (*project_ids, needle, *project_ids, needle, limit)
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def create_task(
         self,

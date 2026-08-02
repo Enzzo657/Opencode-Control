@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, Bot, Check, CircleDollarSign, CircleHelp, CircleStop, Cpu, File, FileCode2, GitBranch, GitCommitHorizontal, Maximize2, MessageSquareText, Minimize2, Minus, Network, Plus, RefreshCw, SquareTerminal, Trash2, X } from "lucide-react";
+import { Activity, ArrowDown, Bot, Check, CircleDollarSign, CircleHelp, CircleStop, Cpu, File, FileCode2, GitBranch, GitCommitHorizontal, Maximize2, MessageSquareText, Minimize2, Minus, Network, Plus, RefreshCw, Search, SquareTerminal, Trash2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { api, jsonBody } from "../api";
 import { intlLocale, localizedStatus, translate, useI18n } from "../i18n";
@@ -9,7 +9,9 @@ import type { Agent, Attachment, CommandItem, GitState, Project, ProviderSummary
 import { Banner, Empty, Field, Modal, Page, Panel, ScopeGuide, Status } from "../ui";
 import { message, useResource } from "../useResource";
 
-export function Sessions({ project, refreshKey }: { project: Project; refreshKey: number }) {
+type SessionSearchTarget = { sessionId: string; messageId: string | null; query: string };
+
+export function Sessions({ project, refreshKey, initialSearchTarget = null, onInitialSessionHandled }: { project: Project; refreshKey: number; initialSearchTarget?: SessionSearchTarget | null; onInitialSessionHandled?: () => void }) {
   const { t } = useI18n();
   const resource = useResource<Snapshot>(`/api/v1/projects/${project.id}/snapshot`, refreshKey, 3000);
   const commands = useResource<CommandItem[]>(`/api/v1/projects/${project.id}/commands`, refreshKey);
@@ -17,6 +19,13 @@ export function Sessions({ project, refreshKey }: { project: Project; refreshKey
   const [composer, setComposer] = useState(false);
   const [showChildren, setShowChildren] = useState(false);
   const [notice, setNotice] = useState<{ tone: "success" | "danger"; text: string } | null>(null);
+  const [drawerSearchTarget, setDrawerSearchTarget] = useState<SessionSearchTarget | null>(null);
+  useEffect(() => {
+    if (!initialSearchTarget || !resource.data?.sessions.some((session) => session.id === initialSearchTarget.sessionId)) return;
+    setDrawerSearchTarget(initialSearchTarget);
+    setSelectedSessionId(initialSearchTarget.sessionId);
+    onInitialSessionHandled?.();
+  }, [initialSearchTarget, onInitialSessionHandled, resource.data]);
 
   async function abort(session: Session) {
     try {
@@ -63,7 +72,7 @@ export function Sessions({ project, refreshKey }: { project: Project; refreshKey
         {sessions.length === 0 && <Empty icon={<MessageSquareText />} title={t("sessions.empty")} detail={t("sessions.emptyDetail")} />}
       </Panel>
       {composer && <SessionComposer project={project} agents={resource.data?.agents ?? []} commands={commands.data ?? []} providers={resource.data?.providers?.available ?? []} config={resource.data?.config} defaultModel={selectedDefaultModel(resource.data)} onClose={() => setComposer(false)} onCreated={() => { setComposer(false); resource.reload(); }} />}
-      {selected && <SessionDrawer project={project} session={selected} status={sessionStatus(resource.data, selected)} taskStatus={selected.control_task?.status} agents={resource.data?.agents ?? []} providers={resource.data?.providers?.available ?? []} mcp={resource.data?.mcp ?? {}} config={resource.data?.config} initialModel={modelIdOf(selected) || resource.data?.config?.model || ""} onDelete={() => void remove(selected)} onClose={() => setSelectedSessionId(null)} />}
+      {selected && <SessionDrawer project={project} session={selected} status={sessionStatus(resource.data, selected)} taskStatus={selected.control_task?.status} agents={resource.data?.agents ?? []} providers={resource.data?.providers?.available ?? []} mcp={resource.data?.mcp ?? {}} config={resource.data?.config} initialModel={modelIdOf(selected) || resource.data?.config?.model || ""} searchTarget={drawerSearchTarget?.sessionId === selected.id ? drawerSearchTarget : null} onDelete={() => void remove(selected)} onClose={() => { setSelectedSessionId(null); setDrawerSearchTarget(null); }} />}
     </Page>
   );
 }
@@ -233,7 +242,7 @@ function SessionGitPanel({ project, state, onReload, onClose }: { project: Proje
   </aside>;
 }
 
-export function SessionDrawer({ project, session, status, taskStatus, agents, providers, mcp, config, initialAgent = "", initialModel, onDelete, onClose }: { project: Project; session: Session; status: string; taskStatus?: string; agents: Agent[]; providers: ProviderSummary[]; mcp: Record<string, { status?: string; error?: string }>; config?: RuntimeConfig; initialAgent?: string; initialModel: string; onDelete?: () => void; onClose: () => void }) {
+export function SessionDrawer({ project, session, status, taskStatus, agents, providers, mcp, config, initialAgent = "", initialModel, searchTarget = null, onDelete, onClose }: { project: Project; session: Session; status: string; taskStatus?: string; agents: Agent[]; providers: ProviderSummary[]; mcp: Record<string, { status?: string; error?: string }>; config?: RuntimeConfig; initialAgent?: string; initialModel: string; searchTarget?: SessionSearchTarget | null; onDelete?: () => void; onClose: () => void }) {
   const messageResource = useResource<SessionMessage[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/messages`, session.id, 3000);
   // The message article is also the container for provider errors, including errors without parts.
   const messages = { ...messageResource, data: messageResource.data?.map((entry) => entry.info?.error && !entry.parts?.length ? { ...entry, parts: [{ type: "text", text: "" }] } : entry) ?? null };
@@ -248,6 +257,8 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
   const initialScroll = useRef(true);
   const stickToBottom = useRef(true);
   const scrollingToBottom = useRef(false);
+  const positionedSearchTarget = useRef("");
+  useEffect(() => () => clearSearchHighlight(), []);
   const messageCount = messages.data?.length ?? 0;
   const lastMessage = messages.data?.[messageCount - 1];
   const contextTokens = latestContextTokens(messages.data ?? []);
@@ -276,7 +287,31 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
     if (changed && lastMessage.info?.role === "assistant" && messageFinished(lastMessage)) setPendingFrom(null);
   }, [lastMessage, messageCount, pendingFrom]);
   useLayoutEffect(() => {
+    const messageId = searchTarget?.messageId;
+    const stream = streamRef.current;
+    if (!messageId || !searchTarget || messages.data === null || !stream) return;
+    const targetKey = `${messageId}:${searchTarget.query}`;
+    if (positionedSearchTarget.current === targetKey) return;
+    const target = Array.from(stream.querySelectorAll<HTMLElement>("[data-message-id]"))
+      .find((item) => item.dataset.messageId === messageId);
+    if (!target) return;
+    initialScroll.current = false;
+    stickToBottom.current = false;
+    let frame = requestAnimationFrame(() => {
+      frame = requestAnimationFrame(() => {
+        positionedSearchTarget.current = targetKey;
+        const top = Math.max(0, target.offsetTop - stream.clientHeight / 3);
+        if (typeof stream.scrollTo === "function") stream.scrollTo({ top, behavior: "auto" });
+        else stream.scrollTop = top;
+        setShowScrollToBottom(!scrollAtBottom(stream));
+        highlightSearchText(target, searchTarget.query);
+      });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [messages.data, searchTarget]);
+  useLayoutEffect(() => {
     if (messages.data === null) return;
+    if (searchTarget?.messageId) return;
     let frame = 0;
     let settlingFrames = initialScroll.current ? 4 : 1;
     const alignToLatest = () => {
@@ -294,7 +329,7 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
     };
     frame = requestAnimationFrame(alignToLatest);
     return () => cancelAnimationFrame(frame);
-  }, [messages.data]);
+  }, [messages.data, searchTarget?.messageId]);
   useEffect(() => {
     const stream = streamRef.current;
     if (!stream) return;
@@ -377,7 +412,7 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
     <aside className={`drawer drawer-with-composer resizable-drawer${gitVisible ? " git-visible" : ""}`} style={{ "--drawer-width": `${drawerWidth}px` } as CSSProperties} role="dialog" aria-modal="true" aria-label={translate("session.drawer.ariaLabel", { value0: session.title ?? session.id })} onClick={(event) => event.stopPropagation()}><div className="drawer-resize-handle" role="separator" aria-label={translate("session.drawer.resize")} aria-orientation="vertical" tabIndex={0} onPointerDown={startResize} onDoubleClick={() => resizeDrawer(960)} onKeyDown={(event) => { if (event.key === "ArrowLeft") resizeDrawer(drawerWidth + 40); if (event.key === "ArrowRight") resizeDrawer(drawerWidth - 40); }} />
       <header><div className="drawer-title"><div className="drawer-title-row"><Status value={effectiveStatus} /><h2>{session.control_task?.title ?? session.title ?? translate("session.drawer.untitled")}</h2></div></div><div className="drawer-header-actions">{git.data?.available && !gitVisible && <button className="icon-button" title={translate("session.drawer.showGitPanel")} aria-label={translate("session.drawer.showGitPanel")} onClick={() => setGitVisibility("shown")}><GitBranch size={15} /></button>}{onDelete && <button className="icon-button danger" title={translate("session.drawer.delete")} aria-label={translate("session.drawer.delete")} onClick={onDelete}><Trash2 size={15} /></button>}<button className="icon-button" title={translate("session.drawer.close")} aria-label={translate("session.drawer.close")} onClick={onClose}><X /></button></div></header>
       <div className="drawer-metrics"><span><i><Activity size={16} /></i><span><small>{translate("session.drawer.context")}</small><b>{contextTokens === null ? "—" : new Intl.NumberFormat(intlLocale()).format(contextTokens)}</b></span></span><span><i><CircleDollarSign size={16} /></i><span><small>{translate("session.drawer.cost")}</small><b>${(session.cost ?? 0).toFixed(4)}</b></span></span><span><i><Bot size={16} /></i><span><small>{translate("session.drawer.agent")}</small><b>{agent || translate("common.default")}</b></span></span><span><i><Cpu size={16} /></i><span><small>{translate("session.drawer.model")}</small><b>{model || translate("common.default")}</b></span></span></div>
-       <div className={`session-workspace ${gitVisible ? "with-git" : ""}`}>{git.data?.available && gitVisible && <SessionGitPanel project={project} state={git.data} onReload={() => { setGitVisibility("shown"); git.reload(); }} onClose={() => setGitVisibility("hidden")} />}<div className="session-conversation"><div className="session-chat-content"><div className="message-stream-wrap"><div className="message-stream" ref={streamRef} onScroll={(event) => setShowScrollToBottom(!scrollAtBottom(event.currentTarget))}>{messages.error && <Banner tone="danger">{translate("session.drawer.previewError")} {messages.error}</Banner>}{(messages.data ?? []).map((entry, index) => entry.parts?.length ? <article className={`message ${entry.info?.role ?? "assistant"}`} key={entry.info?.id ?? index}><small className="message-meta"><span>{entry.info?.role === "user" ? translate("session.drawer.you") : entry.info?.agent ?? "OpenCode"}{entry.info?.role !== "user" && (entry.info?.providerID || entry.info?.modelID) ? ` · ${[entry.info.providerID, entry.info.modelID].filter(Boolean).join("/")}` : ""}</span><span className="message-turn-stats">{entry.info?.tokens?.output !== undefined && translate("session.drawer.tokens", { value0: compact(entry.info.tokens.output) })}{entry.info?.cost !== undefined && ` · $${entry.info.cost.toFixed(4)}`}{entry.info?.time?.created !== undefined && <time> · {formatDuration((entry.info.time.completed ?? now) - entry.info.time.created)}</time>}</span></small>{entry.info?.error && <div className="message-error"><CircleStop size={13} /> {entry.info.error}</div>}{entry.parts.map((part, partIndex) => <SessionPartView part={part} index={partIndex} now={now} key={`${part.type}-${partIndex}`} />)}</article> : null)}{messages.data?.length === 0 && !messages.error && <Empty icon={<MessageSquareText />} title={translate("session.drawer.noMessages")} detail={translate("session.drawer.noMessagesDetail")} />}</div>{showScrollToBottom && <button type="button" className="chat-scroll-bottom" aria-label={translate("session.drawer.latestMessage")} title={translate("session.drawer.latestMessage")} onClick={scrollToBottom}><ArrowDown size={18} /></button>}</div>
+       <div className={`session-workspace ${gitVisible ? "with-git" : ""}`}>{git.data?.available && gitVisible && <SessionGitPanel project={project} state={git.data} onReload={() => { setGitVisibility("shown"); git.reload(); }} onClose={() => setGitVisibility("hidden")} />}<div className="session-conversation"><div className="session-chat-content"><div className="message-stream-wrap"><div className="message-stream" ref={streamRef} onScroll={(event) => setShowScrollToBottom(!scrollAtBottom(event.currentTarget))}>{messages.error && <Banner tone="danger">{translate("session.drawer.previewError")} {messages.error}</Banner>}{(messages.data ?? []).map((entry, index) => entry.parts?.length ? <article className={`message ${entry.info?.role ?? "assistant"}${entry.info?.id === searchTarget?.messageId ? " search-target" : ""}`} data-message-id={entry.info?.id} key={entry.info?.id ?? index}>{entry.info?.id === searchTarget?.messageId && <div className="search-match-label"><Search size={13} /> {translate("search.matchInMessage")} <mark>{searchTarget?.query}</mark></div>}<small className="message-meta"><span>{entry.info?.role === "user" ? translate("session.drawer.you") : entry.info?.agent ?? "OpenCode"}{entry.info?.role !== "user" && (entry.info?.providerID || entry.info?.modelID) ? ` · ${[entry.info.providerID, entry.info.modelID].filter(Boolean).join("/")}` : ""}</span><span className="message-turn-stats">{entry.info?.tokens?.output !== undefined && translate("session.drawer.tokens", { value0: compact(entry.info.tokens.output) })}{entry.info?.cost !== undefined && ` · $${entry.info.cost.toFixed(4)}`}{entry.info?.time?.created !== undefined && <time> · {formatDuration((entry.info.time.completed ?? now) - entry.info.time.created)}</time>}</span></small>{entry.info?.error && <div className="message-error"><CircleStop size={13} /> {entry.info.error}</div>}{entry.parts.map((part, partIndex) => <SessionPartView part={part} index={partIndex} now={now} key={`${part.type}-${partIndex}`} />)}</article> : null)}{messages.data?.length === 0 && !messages.error && <Empty icon={<MessageSquareText />} title={translate("session.drawer.noMessages")} detail={translate("session.drawer.noMessagesDetail")} />}</div>{showScrollToBottom && <button type="button" className="chat-scroll-bottom" aria-label={translate("session.drawer.latestMessage")} title={translate("session.drawer.latestMessage")} onClick={scrollToBottom}><ArrowDown size={18} /></button>}</div>
         <aside className="session-inspector">
           <section><header><Network size={14} /><strong>{translate("session.inspector.mcpRuntime")}</strong><span>{mcpEntries.length}</span></header><div className="runtime-list-compact">{mcpEntries.map(([name, value]) => <div key={name}><i data-status={value.status} /><span>{name}</span><small>{statusLabel(value.status ?? "unknown")}</small></div>)}{mcpEntries.length === 0 && <p>{translate("session.inspector.noMcpConnected")}</p>}</div></section>
           {activeTodos.length > 0 && <section><header><Check size={14} /><strong>{translate("session.inspector.workPlan")}</strong><span>{activeTodos.length}</span></header><div className="todo-list">{activeTodos.map((todo, index) => <div className={todo.status} key={`${todo.content}-${index}`}><span className="todo-index">{index + 1}</span><span><strong>{todo.content}</strong><small>{todo.status === "in_progress" ? translate("session.inspector.todoInProgress") : translate("session.inspector.todoWaiting")} · {priorityLabel(todo.priority)}</small></span></div>)}</div></section>}
@@ -401,6 +436,44 @@ function SessionReplyComposer({ error, permissionsError, agent, onAgentChange, m
 }
 
 function latestContextTokens(messages: SessionMessage[]) { for (let index = messages.length - 1; index >= 0; index -= 1) { const message = messages[index]; const tokens = message.info?.role === "assistant" ? message.info.tokens : undefined; if (!tokens) continue; const total = (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.reasoning ?? 0) + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0); if (total > 0) return total; } return null; }
+
+type SearchHighlightRegistry = { set: (name: string, highlight: unknown) => void; delete: (name: string) => void };
+
+function highlightSearchText(container: HTMLElement, query: string) {
+  if (typeof CSS === "undefined") return;
+  const registry = (CSS as unknown as { highlights?: SearchHighlightRegistry }).highlights;
+  const HighlightConstructor = (window as unknown as { Highlight?: new (...ranges: Range[]) => unknown }).Highlight;
+  if (!registry || !HighlightConstructor || !query) return;
+  if (!document.getElementById("session-search-highlight-style")) {
+    const style = document.createElement("style");
+    style.id = "session-search-highlight-style";
+    style.textContent = "::highlight(session-search-hit){color:var(--text);background:color-mix(in srgb,var(--accent) 48%,transparent)}";
+    document.head.append(style);
+  }
+  const ranges: Range[] = [];
+  const needle = query.toLocaleLowerCase();
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  let node = walker.nextNode();
+  while (node) {
+    const value = node.textContent ?? "";
+    const normalized = value.toLocaleLowerCase();
+    let offset = normalized.indexOf(needle);
+    while (offset >= 0) {
+      const range = new Range();
+      range.setStart(node, offset);
+      range.setEnd(node, offset + query.length);
+      ranges.push(range);
+      offset = normalized.indexOf(needle, offset + query.length);
+    }
+    node = walker.nextNode();
+  }
+  registry.set("session-search-hit", new HighlightConstructor(...ranges));
+}
+
+function clearSearchHighlight() {
+  if (typeof CSS === "undefined") return;
+  (CSS as unknown as { highlights?: SearchHighlightRegistry }).highlights?.delete("session-search-hit");
+}
 function messageFinished(message: SessionMessage) { return message.info?.time?.completed !== undefined || Boolean(message.info?.error) || Boolean(message.parts?.some((part) => part.type === "step-finish")); }
 function runtimeStatus(messages: SessionMessage[], now: number) { for (let index = messages.length - 1; index >= 0; index -= 1) { const entry = messages[index]; if (entry.info?.error) return "failed"; const unfinished = entry.info?.role === "user" || (entry.info?.role === "assistant" && !messageFinished(entry)); if (!unfinished) { if (entry.info?.role === "assistant") return null; continue; } const created = entry.info?.time?.created; return created !== undefined && now > 0 && now - created > 15 * 60 * 1000 ? null : "busy"; } return null; }
 function latestUserSelection(messages: SessionMessage[]) { for (let index = messages.length - 1; index >= 0; index -= 1) { const info = messages[index].info; if (info?.role !== "user") continue; return { agent: info.agent, model: info.providerID && info.modelID ? `${info.providerID}/${info.modelID}` : undefined, variant: info.variant }; } return null; }

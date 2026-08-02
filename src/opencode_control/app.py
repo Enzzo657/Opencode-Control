@@ -7,6 +7,7 @@ import hashlib
 import ipaddress
 import json
 import logging
+import math
 import re
 import secrets
 import sqlite3
@@ -20,7 +21,7 @@ from typing import Annotated, Any, Literal, cast
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from croniter import croniter
-from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
@@ -1635,6 +1636,94 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             _project_view(item, managed_server_status(str(item["id"])))
             for item in state.store.list_projects()
         ]
+
+    def sync_search_project(project: dict[str, Any]) -> int:
+        project_id = str(project["id"])
+        client = client_for(project_id)
+        sessions = client.sessions()
+        versions = state.store.search_session_versions(project_id)
+        session_ids = {str(session["id"]) for session in sessions}
+        indexed = 0
+        for session in sessions:
+            session_id = str(session["id"])
+            title = str(session.get("title") or "")[:200]
+            raw_time = session.get("time")
+            raw_updated = raw_time.get("updated") if isinstance(raw_time, dict) else None
+            updated_at = (
+                float(raw_updated)
+                if isinstance(raw_updated, (int, float)) and math.isfinite(raw_updated)
+                else None
+            )
+            if updated_at is not None and versions.get(session_id) == (updated_at, title):
+                continue
+            messages = client.session_messages(session_id)
+            state.store.replace_search_session(
+                project_id,
+                session_id=session_id,
+                title=title,
+                parent_id=str(session["parentID"])
+                if isinstance(session.get("parentID"), str)
+                else None,
+                updated_at=updated_at,
+                messages=_search_message_entries(messages),
+            )
+            indexed += 1
+        state.store.prune_search_sessions(project_id, session_ids)
+        return indexed
+
+    @app.get("/api/v1/search")
+    def search_history(
+        q: Annotated[str, Query(min_length=2, max_length=200)],
+        scope: Literal["project", "global"] = "project",
+        project_id: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    ) -> dict[str, Any]:
+        query = q.strip()
+        if len(query) < 2:
+            raise HTTPException(status_code=422, detail="search query is too short")
+        if scope == "project":
+            selected_projects = [project_or_404(project_id or "")]
+        else:
+            selected_projects = state.store.list_projects()
+        unavailable: list[dict[str, str]] = []
+        indexed_sessions = 0
+        for project in selected_projects:
+            try:
+                indexed_sessions += sync_search_project(project)
+            except (HTTPException, OpenCodeError, ProcessError, WorkspaceError) as error:
+                detail = error.detail if isinstance(error, HTTPException) else str(error)
+                unavailable.append(
+                    {
+                        "id": str(project["id"]),
+                        "name": str(project["name"]),
+                        "error": str(detail),
+                    }
+                )
+        selected_ids = [str(project["id"]) for project in selected_projects]
+        rows = state.store.search_history(query, selected_ids, limit=limit + 1)
+        project_names = {str(project["id"]): str(project["name"]) for project in selected_projects}
+        return {
+            "query": query,
+            "scope": scope,
+            "partial": bool(unavailable),
+            "unavailable_projects": unavailable,
+            "indexed_sessions": indexed_sessions,
+            "has_more": len(rows) > limit,
+            "results": [
+                {
+                    "kind": row["kind"],
+                    "project_id": row["project_id"],
+                    "project_name": project_names.get(str(row["project_id"]), ""),
+                    "session_id": row["session_id"],
+                    "session_title": row["title"],
+                    "message_id": row["message_id"],
+                    "role": row["role"],
+                    "created_at": row["occurred_at"],
+                    "snippet": _search_snippet(str(row["content"]), query),
+                }
+                for row in rows[:limit]
+            ],
+        }
 
     def invalidate_dashboard_cache(project_id: str) -> None:
         with state.dashboard_lock:
@@ -3455,6 +3544,48 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         return FileResponse(index, media_type="text/html")
 
     return app
+
+
+def _search_message_entries(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for index, message in enumerate(messages):
+        info = message.get("info")
+        parts = message.get("parts")
+        if not isinstance(info, dict) or not isinstance(parts, list):
+            continue
+        text = "\n\n".join(
+            str(part["text"])
+            for part in parts
+            if isinstance(part, dict)
+            and part.get("type") == "text"
+            and isinstance(part.get("text"), str)
+            and part["text"]
+        )[:500_000]
+        if not text:
+            continue
+        raw_time = info.get("time")
+        raw_created = raw_time.get("created") if isinstance(raw_time, dict) else None
+        entries.append(
+            {
+                "id": str(info.get("id") or f"message-{index}"),
+                "role": str(info["role"])[:32] if isinstance(info.get("role"), str) else None,
+                "created_at": float(raw_created)
+                if isinstance(raw_created, (int, float)) and math.isfinite(raw_created)
+                else None,
+                "content": text,
+            }
+        )
+    return entries
+
+
+def _search_snippet(content: str, query: str, *, radius: int = 120) -> str:
+    compact = re.sub(r"\s+", " ", content).strip()
+    match = re.search(re.escape(query), compact, re.IGNORECASE)
+    if match is None:
+        return compact[: radius * 2]
+    start = max(0, match.start() - radius)
+    end = min(len(compact), match.end() + radius)
+    return f"{'…' if start else ''}{compact[start:end]}{'…' if end < len(compact) else ''}"
 
 
 def _project_view(project: dict[str, Any], server: dict[str, object]) -> dict[str, Any]:

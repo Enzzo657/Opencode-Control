@@ -4,7 +4,7 @@
 только оставшуюся работу. Реализованные этапы приведены кратко, без старых checklist
 и вариантов реализации.
 
-Обновлено: 30 июля 2026.
+Обновлено: 2 августа 2026.
 
 ## Принципы
 
@@ -40,7 +40,7 @@
   preflight, exact temporary backup, crash recovery, rollback и global isolation.
 - Structured process diagnostics, per-project lifecycle locks и проверка совместимости
   OpenCode.
-- Lazy Markdown chunk; production bundle остаётся ниже warning threshold Vite.
+- Lazy Markdown и screen chunks; initial bundle остаётся ниже warning threshold Vite.
 - Безопасный импорт Skills по HTTPS: pinned public IP, redirect revalidation, bounded
   UTF-8 Markdown и полные GitHub directory bundles, commit pinning, manifest preview,
   project/global scope и конфликты `skip`/`overwrite`/`rename`.
@@ -51,6 +51,8 @@
   моделям, providers, agents и cache.
 - Dashboard вынесен из монолитного `App.tsx` в самостоятельный screen module; добавлен
   typed RU/EN translation catalog как основа постепенной локализации.
+- Локальный поиск по названиям Sessions и тексту user/assistant messages для текущего
+  проекта и global scope с incremental SQLite index и partial results.
 
 ## Текущие ограничения
 
