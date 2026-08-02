@@ -47,7 +47,8 @@
 - Native Skills можно переименовывать и переносить между project/global scope вместе
   со всеми scripts, references, data, templates и другими sidecar-файлами.
 - Project/global Dashboard с периодами, message-level usage, дедупликацией,
-  локальной timezone и breakdown по моделям, providers, agents и cache.
+  локальной timezone, adaptive day/week/month buckets, читаемой шкалой и breakdown по
+  моделям, providers, agents и cache.
 - Dashboard вынесен из монолитного `App.tsx` в самостоятельный screen module; добавлен
   typed RU/EN translation catalog как основа постепенной локализации.
 

@@ -19,6 +19,7 @@ import {
 } from "lucide-react";
 import { Component, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
 import { api } from "./api";
+import { AgentCoreMark } from "./AgentCoreMark";
 import { I18nProvider, translate, useI18n, type TranslationKey } from "./i18n";
 import { AgentsSkills } from "./screens/AgentsSkills";
 import { Commands } from "./screens/Commands";
@@ -150,7 +151,7 @@ function ControlApp() {
     <div className="control-shell">
       <aside className={`sidebar ${mobileOpen ? "mobile-open" : ""}`}>
         <div className="brand">
-          <div className="brand-mark"><SquareTerminal size={19} /></div>
+          <div className="brand-mark"><AgentCoreMark /></div>
           <div><strong>OpenCode</strong><span>Control</span></div>
           <button className="icon-button mobile-close" onClick={() => setMobileOpen(false)} aria-label={t("app.closeNavigation")} title={t("app.closeNavigation")}><X /></button>
         </div>

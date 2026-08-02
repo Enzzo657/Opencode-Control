@@ -94,9 +94,14 @@ describe("OpenCode Control", () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Дашборд" })).toBeInTheDocument();
     expect(await screen.findByText("openai/gpt-test")).toBeInTheDocument();
+    expect(document.querySelector(".brand-mark .agent-core-mark")).not.toBeNull();
     expect(screen.getByText("Токены · сегодня")).toBeInTheDocument();
     expect(screen.getByText("Повторно из cache")).toBeInTheDocument();
-    expect(screen.getByText(/Cache виден здесь, но не входит в основной total/)).toBeInTheDocument();
+    expect(screen.getByText(/Cache read показан отдельно/)).toBeInTheDocument();
+    expect(screen.queryByText("Cache read")).not.toBeInTheDocument();
+    expect(screen.queryByText("Cache write")).not.toBeInTheDocument();
+    expect(screen.queryByText(/записано$/)).not.toBeInTheDocument();
+    expect(document.querySelectorAll(".usage-composition-bar i")).toHaveLength(3);
     const usageHeading = screen.getByRole("heading", { name: "Динамика использования" });
     expect(usageHeading.querySelector("svg")).not.toBeNull();
     expect(usageHeading.parentElement?.classList.contains("panel-heading")).toBe(true);
@@ -106,6 +111,10 @@ describe("OpenCode Control", () => {
     expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("period=today"))).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "7 дней" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("period=7d"))).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Всё время" }));
+    expect(await screen.findByRole("group", { name: "Масштаб графика" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Недели" }));
+    expect(screen.getByRole("button", { name: "Недели" })).toHaveClass("active");
   });
 
   it("persists an English switch and updates the UI without reload", async () => {

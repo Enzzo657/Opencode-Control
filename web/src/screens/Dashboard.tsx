@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import {
   Activity,
   BrainCircuit,
@@ -10,6 +10,7 @@ import {
   SquareTerminal,
 } from "lucide-react";
 import { ApiError, api } from "../api";
+import { buildUsageBuckets, niceScale, resolveGranularity, type ChartGranularity, type ResolvedGranularity, type UsageBucket } from "../dashboardChart";
 import { createTranslator, intlLocale, localizedStatus, translate, useI18n, type Locale } from "../i18n";
 import type { DashboardUsage, Project, Session, Snapshot, UsageRow } from "../types";
 
@@ -24,6 +25,9 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
   const { locale, t } = useI18n();
   const [scope, setScope] = useState<"project" | "global">("project");
   const [period, setPeriod] = useState<"today" | "7d" | "30d" | "all">("today");
+  const [chartGranularity, setChartGranularity] = useState<ChartGranularity>("auto");
+  const [activeBucket, setActiveBucket] = useState<UsageBucket | null>(null);
+  const chartScroller = useRef<HTMLDivElement>(null);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const usageUrl = `/api/v1/dashboard?scope=${scope}&project_id=${encodeURIComponent(project.id)}&period=${period}&timezone=${encodeURIComponent(timezone)}`;
   const usage = useDashboardResource<DashboardUsage>(usageUrl, refreshKey, 30000);
@@ -37,10 +41,10 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
     1,
     ...(usage.data?.models ?? []).map((row) => row.tokens_total),
   );
-  const maxDailyTokens = Math.max(
-    1,
-    ...(usage.data?.daily ?? []).map((row) => row.tokens_total),
-  );
+  const dailyRows = usage.data?.daily ?? [];
+  const resolvedGranularity = period === "all" ? resolveGranularity(dailyRows, chartGranularity) : "day";
+  const chartBuckets = buildUsageBuckets(dailyRows, resolvedGranularity);
+  const chartScale = niceScale(chartBuckets.map((row) => row.tokens_total));
   const tokenParts = totals
     ? [
         { id: "input", label: t("dashboard.input"), value: totals.tokens.input, color: "var(--blue)" },
@@ -51,25 +55,11 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
           value: totals.tokens.reasoning,
           color: "var(--accent)",
         },
-        {
-          id: "cache",
-          label: "Cache read",
-          value: totals.tokens.cache_read,
-          color: "var(--purple)",
-        },
-        {
-          id: "cache-write",
-          label: "Cache write",
-          value: totals.tokens.cache_write,
-          color: "var(--faint)",
-        },
       ]
     : [];
-  const tokenPartTotal = tokenParts.reduce((sum, item) => sum + item.value, 0) || 1;
   const inputContext =
     (totals?.tokens.input ?? 0) +
-    (totals?.tokens.cache_read ?? 0) +
-    (totals?.tokens.cache_write ?? 0);
+    (totals?.tokens.cache_read ?? 0);
   const cacheReuse =
     inputContext > 0
       ? Math.round(((totals?.tokens.cache_read ?? 0) / inputContext) * 100)
@@ -94,6 +84,12 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
             status: dashboardSessionStatus(runtime.data, session),
           }))
       : []);
+
+  useLayoutEffect(() => {
+    const scroller = chartScroller.current;
+    if (!scroller) return;
+    scroller.scrollLeft = scroller.scrollWidth;
+  }, [scope, period, chartGranularity, chartBuckets.length]);
 
   return (
     <DashboardPage
@@ -183,7 +179,7 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
           icon={<Activity />}
           label={t("dashboard.cacheReuse")}
           value={totals ? compactNumber(totals.tokens.cache_read, locale) : "—"}
-          detail={t("dashboard.cacheDetail", { percent: cacheReuse, written: compactNumber(totals?.tokens.cache_write ?? 0, locale) })}
+          detail={t("dashboard.cacheDetail", { percent: cacheReuse })}
           accent="purple"
         />
       </section>
@@ -205,7 +201,7 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
                   <i
                     key={item.id}
                     style={{
-                      width: `${Math.max(1.5, (item.value / tokenPartTotal) * 100)}%`,
+                      flexGrow: item.value,
                       background: item.color,
                     }}
                   />
@@ -221,28 +217,64 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
               ))}
             </div>
           </div>
-          <div className="usage-bars" aria-label={t("dashboard.dailyUsage")}>
-            {(usage.data?.daily ?? []).map((row) => (
-              <div key={row.id}>
-                <span className="usage-bar-track">
-                  <i
-                    style={{
-                      height: `${Math.max(3, (row.tokens_total / maxDailyTokens) * 100)}%`,
-                    }}
-                  />
-                </span>
-                <strong>{compactNumber(row.tokens_total, locale)}</strong>
-                <small>
-                  {new Intl.DateTimeFormat(intlLocale(locale), {
-                    day: "2-digit",
-                    month: "short",
-                  }).format(new Date(`${row.id}T12:00:00`))}
-                </small>
+          {period === "all" && (
+            <div className="usage-chart-controls">
+              <div className="usage-granularity" role="group" aria-label={t("dashboard.granularityLabel")}>
+                {(["auto", "day", "week", "month"] as const).map((value) => (
+                  <button
+                    key={value}
+                    className={chartGranularity === value ? "active" : ""}
+                    onClick={() => setChartGranularity(value)}
+                  >
+                    {t(`dashboard.granularity.${value}`)}
+                  </button>
+                ))}
               </div>
-            ))}
-            {usage.data && (usage.data.daily ?? []).length === 0 && (
-              <div className="usage-chart-empty">{t("dashboard.noUsage")}</div>
-            )}
+            </div>
+          )}
+          <div className="usage-chart-layout">
+            <div className="usage-y-axis" aria-hidden="true">
+              {[...chartScale.ticks].reverse().map((tick) => <span key={tick}>{compactNumber(tick, locale)}</span>)}
+            </div>
+            <div className="usage-plot">
+              <div className="usage-grid" aria-hidden="true">
+                {chartScale.ticks.map((tick) => <i key={tick} />)}
+              </div>
+              {activeBucket && (
+                <div className="usage-tooltip" role="tooltip">
+                  <small>{formatBucketRange(activeBucket, locale)}</small>
+                  <strong>{compactNumber(activeBucket.tokens_total, locale)} {t("dashboard.tooltip.tokens")}</strong>
+                  <span>{t("dashboard.input")}: {compactNumber(activeBucket.tokens.input, locale)}</span>
+                  <span>{t("dashboard.output")}: {compactNumber(activeBucket.tokens.output, locale)}</span>
+                  <span>{t("dashboard.reasoning")}: {compactNumber(activeBucket.tokens.reasoning, locale)}</span>
+                  <span>{t("dashboard.tooltip.meta", { cost: activeBucket.cost.toFixed(3), sessions: activeBucket.sessions, messages: activeBucket.messages })}</span>
+                </div>
+              )}
+              <div ref={chartScroller} className="usage-bars" aria-label={t("dashboard.dailyUsage")}>
+                {chartBuckets.map((row) => (
+                  <div
+                    key={row.id}
+                    className="usage-bar-bucket"
+                    role="img"
+                    tabIndex={0}
+                    aria-label={t("dashboard.bucketAria", { date: formatBucketRange(row, locale), tokens: compactNumber(row.tokens_total, locale) })}
+                    onMouseEnter={() => setActiveBucket(row)}
+                    onMouseLeave={() => setActiveBucket((current) => current?.id === row.id ? null : current)}
+                    onFocus={() => setActiveBucket(row)}
+                    onBlur={() => setActiveBucket((current) => current?.id === row.id ? null : current)}
+                  >
+                    <span className="usage-bar-track">
+                      <i style={{ height: `${Math.max(3, (row.tokens_total / chartScale.maximum) * 100)}%` }} />
+                    </span>
+                    <strong>{compactNumber(row.tokens_total, locale)}</strong>
+                    <small>{formatBucketLabel(row, resolvedGranularity, locale)}</small>
+                  </div>
+                ))}
+                {usage.data && chartBuckets.length === 0 && (
+                  <div className="usage-chart-empty">{t("dashboard.noUsage")}</div>
+                )}
+              </div>
+            </div>
           </div>
         </DashboardPanel>
         <DashboardPanel
@@ -384,7 +416,7 @@ function UsageRanking({ rows, maxTokens, empty, locale }: { rows: UsageRow[]; ma
 }
 
 function DashboardPage({ title, description, action, children }: { title: string; description: string; action?: ReactNode; children: ReactNode }) {
-  return <div className="page"><header className="page-heading"><div><p className="eyebrow">OpenCode Control</p><h1>{title}</h1><p>{description}</p></div>{action}</header>{children}</div>;
+  return <div className="page dashboard-page"><header className="page-heading"><div><p className="eyebrow">OpenCode Control</p><h1>{title}</h1><p>{description}</p></div>{action}</header>{children}</div>;
 }
 
 function DashboardPanel({ title, icon, action, className = "", children }: { title: string; icon?: ReactNode; action?: ReactNode; className?: string; children: ReactNode }) {
@@ -393,6 +425,26 @@ function DashboardPanel({ title, icon, action, className = "", children }: { tit
 
 function DashboardMetric({ icon, label, value, detail, accent }: { icon: ReactNode; label: string; value: string; detail: string; accent: string }) {
   return <article className={`metric ${accent}`}><div className="metric-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{detail}</small></article>;
+}
+
+function formatBucketLabel(bucket: UsageBucket, granularity: ResolvedGranularity, locale: Locale) {
+  const start = new Date(`${bucket.startId}T12:00:00`);
+  if (granularity === "month") {
+    return new Intl.DateTimeFormat(intlLocale(locale), { month: "short", year: "2-digit" }).format(start);
+  }
+  if (granularity === "week") {
+    const end = new Date(`${bucket.endId}T12:00:00`);
+    const formatter = new Intl.DateTimeFormat(intlLocale(locale), { day: "2-digit", month: "short" });
+    return `${formatter.format(start)}–${formatter.format(end)}`;
+  }
+  return new Intl.DateTimeFormat(intlLocale(locale), { day: "2-digit", month: "short" }).format(start);
+}
+
+function formatBucketRange(bucket: UsageBucket, locale: Locale) {
+  const formatter = new Intl.DateTimeFormat(intlLocale(locale), { day: "2-digit", month: "short", year: "numeric" });
+  const start = formatter.format(new Date(`${bucket.startId}T12:00:00`));
+  if (bucket.startId === bucket.endId) return start;
+  return `${start} – ${formatter.format(new Date(`${bucket.endId}T12:00:00`))}`;
 }
 
 function DashboardBanner({ tone, children }: { tone: "danger" | "notice"; children: ReactNode }) {
