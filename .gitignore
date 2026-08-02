@@ -19,3 +19,5 @@ src/opencode_control/static/*
 .opencode-control/
 AGENTS.md
 opencode.json
+dashboards.pen
+logotip.pen

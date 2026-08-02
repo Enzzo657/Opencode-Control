@@ -24,7 +24,8 @@ export function ServerControl({ project, onChange }: { project: Project; onChang
     finally { setBusy(false); }
   }
   const title = error ?? (lastError ? `${lastError.summary}\n${lastError.log_path}` : compatibility?.message ?? server.endpoint ?? undefined);
-  return <button title={title} aria-label={running ? translate("server.stop") : external ? translate("server.externalAria") : translate("server.startAria")} className={`server-control ${running || external ? "online" : ""} compatibility-${compatibility?.state ?? "unknown"}`} onClick={() => void toggle()} disabled={busy || external}><span className="status-dot" />{error || lastError ? translate("server.error") : busy ? translate("server.working") : running ? translate("server.running") : external ? translate("server.external") : translate("server.start")}{compatibility?.version && <small>{compatibility.version}</small>}{running ? <CircleStop size={14} /> : <Play size={14} />}</button>;
+  const label = error || lastError ? "error" : busy ? "working" : running ? "running" : external ? "external" : "start";
+  return <button title={title} aria-label={running ? translate("server.stop") : external ? translate("server.externalAria") : translate("server.startAria")} className={`server-control ${running || external ? "online" : ""} compatibility-${compatibility?.state ?? "unknown"}`} onClick={() => void toggle()} disabled={busy || external}><span className="status-dot" /><span className="server-label-full">{translate(`server.${label}`)}</span><span className="server-label-short">{translate(`server.${label}Short`)}</span>{compatibility?.version && <small>{compatibility.version}</small>}{running ? <CircleStop size={14} /> : <Play size={14} />}</button>;
 }
 
 export function ProjectDialog({ projects, onClose, onCreated, onSelect }: { projects: Project[]; onClose: () => void; onCreated: (project: Project) => void; onSelect: (id: string) => void }) {
