@@ -66,6 +66,15 @@ def test_health_uses_package_version(tmp_path: Path) -> None:
     assert response.json()["version"] == __version__
 
 
+def test_favicon_is_served_as_svg(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        response = client.get("/favicon.svg")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("image/svg+xml")
+    assert "#ff8a4c" in response.text
+
+
 def _project(client: TestClient, root: Path, *, endpoint: str | None = None) -> dict[str, Any]:
     response = client.post(
         "/api/v1/projects",
