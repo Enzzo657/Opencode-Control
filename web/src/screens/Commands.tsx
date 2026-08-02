@@ -1,0 +1,69 @@
+import { Plus, SquareTerminal, Trash2 } from "lucide-react";
+import { useState } from "react";
+import { api, jsonBody } from "../api";
+import { commandDisplayDescription } from "../commands";
+import { translate, useI18n } from "../i18n";
+import { AgentPicker, ModelPicker } from "../Pickers";
+import type { Agent, CommandItem, Project, ProviderSummary, RuntimeConfig, Snapshot } from "../types";
+import { Banner, Empty, Field, Modal, Page } from "../ui";
+import { message, useResource } from "../useResource";
+import { agentModel, scopeLabel } from "../workspace";
+
+export function Commands({ project, refreshKey }: { project: Project; refreshKey: number }) {
+  const { t } = useI18n();
+  const resource = useResource<CommandItem[]>(`/api/v1/projects/${project.id}/commands`, refreshKey);
+  const runtime = useResource<Snapshot>(`/api/v1/projects/${project.id}/snapshot`, refreshKey);
+  const [editing, setEditing] = useState<CommandItem | "new" | null>(null);
+  const items = resource.data ?? [];
+  const commandItems = items.filter((item) => item.kind !== "skill");
+  const runtimeSkills = items.filter((item) => item.kind === "skill");
+  return <Page title={t("commands.title")} description={t("commands.description")} action={<button className="primary-button" onClick={() => setEditing("new")}><Plus size={16} /> {t("commands.create")}</button>}>
+    {resource.error && <Banner tone="danger">{resource.error}</Banner>}
+    <div className="context-summary command-context-summary"><div><small>{translate("commands.callLabel")}</small><strong><code>{translate("commands.callExample")}</code></strong><span>{translate("commands.callHint")}</span></div><div><small>{translate("workspace.region")}</small><strong>{translate("commands.scopeValue")}</strong><span>{translate("workspace.projectPrecedence")}</span></div><div><small>{translate("commands.argumentsLabel")}</small><strong><code>$ARGUMENTS</code>, <code>$1</code>, <code>$2</code></strong><span>{translate("commands.argumentsHint")}</span></div><div><small>Shell</small><strong><code>{"!`command`"}</code></strong><span>{translate("commands.shellHint")}</span></div></div>
+    <details className="task-help creation-guide command-guide"><summary>{translate("commandHelp.guideTitle")}</summary><ol><li>{translate("commandHelp.storagePrefix")} <code>{translate("commandHelp.projectPath")}</code>  {translate("commandHelp.globalStoragePrefix")} <code>~/.config/opencode/commands/</code>.</li><li>{translate("commandHelp.enterPrefix")} <code>{translate("commandHelp.callSyntax")}</code>  {translate("commandHelp.enterDetail")}</li><li><code>$ARGUMENTS</code>  {translate("commandHelp.allArgumentsDetail")} <code>$1</code>, <code>$2</code>  {translate("commandHelp.positionalArgumentsDetail")}</li><li>{translate("commandHelp.frontmatterDetail")}</li><li>{translate("commandHelp.shellSyntaxPrefix")} <code>{"!`shell`"}</code>  {translate("commandHelp.shellExecutionDetail")}</li></ol></details>
+    <section className="command-section"><header><div><p className="eyebrow">{translate("commands.configurationEyebrow")}</p><h2>{translate("commands.availableTitle")}</h2><span>{translate("commands.availableDetail")}</span></div></header><div className="command-grid">{commandItems.map((item) => <article className="command-card" key={`${item.scope}-${item.id}`}><button className="command-card-main" onClick={() => item.editable !== false && setEditing(item)} disabled={item.editable === false}><span className="command-slash">/{item.id}</span><h3>{commandDisplayDescription(item)}</h3><p>{commandPurpose(item.id)}</p></button><div className="resource-tags"><span className={`scope-${item.scope ?? "project"}`}>{scopeLabel(item.scope)}</span>{item.agent && <span>{item.agent}</span>}{item.model && <span>{item.model}</span>}{item.subtask && <span>subtask</span>}{item.has_arguments && <span>{translate("commands.argumentsTag")}</span>}{item.has_shell && <span className="command-shell-tag">Shell</span>}{item.editable === false && <span>{translate("commands.systemTag")}</span>}</div></article>)}{commandItems.length === 0 && <Empty icon={<SquareTerminal />} title={translate("commands.emptyTitle")} detail={translate("commands.emptyDetail")} />}</div></section>
+    {runtimeSkills.length > 0 && <details className="task-help command-runtime-skills"><summary>{translate("commands.runtimeSkillsLabel")} {runtimeSkills.length}</summary><div>{runtimeSkills.map((item) => <span key={item.id}><code>/{item.id}</code><small>{commandDisplayDescription(item)}</small></span>)}</div></details>}
+    {editing && <CommandEditor project={project} item={editing} agents={runtime.data?.agents ?? []} providers={runtime.data?.providers?.available ?? []} config={runtime.data?.config} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); resource.reload(); }} />}
+  </Page>;
+}
+
+function CommandEditor({ project, item, agents, providers, config, onClose, onSaved }: { project: Project; item: CommandItem | "new"; agents: Agent[]; providers: ProviderSummary[]; config?: RuntimeConfig; onClose: () => void; onSaved: () => void }) {
+  const initialContent = item === "new" ? commandTemplate() : item.content;
+  const initialMetadata = commandMetadata(initialContent);
+  const [id, setId] = useState(item === "new" ? "" : item.id);
+  const [scope, setScope] = useState<"project" | "global">(item === "new" ? "project" : item.scope === "global" ? "global" : "project");
+  const [description, setDescription] = useState(initialMetadata.description ?? "");
+  const [agent, setAgent] = useState(initialMetadata.agent ?? "");
+  const [model, setModel] = useState(initialMetadata.model ?? "");
+  const [variant, setVariant] = useState(initialMetadata.variant ?? "");
+  const [subtask, setSubtask] = useState(initialMetadata.subtask);
+  const [body, setBody] = useState(commandBody(initialContent));
+  const [error, setError] = useState<string | null>(null);
+  const content = commandDocument({ description, agent, model, variant, subtask, body });
+  const shell = commandShell(body);
+  const effectiveAgent = agents.find((candidate) => candidate.name === (agent || config?.default_agent));
+  const effectiveModel = model || agentModel(effectiveAgent) || config?.model || "";
+  const variants = providers.flatMap((provider) => provider.model_variants?.[effectiveModel] ?? []);
+  function changeAgent(value: string) { setAgent(value); setSubtask(agents.find((candidate) => candidate.name === value)?.mode === "subagent"); if (!model) setVariant(""); }
+  function changeModel(value: string) { setModel(value); setVariant(""); }
+  async function save() { try { await api(`/api/v1/projects/${project.id}/commands/${encodeURIComponent(id)}`, { method: "PUT", ...jsonBody({ content, scope }) }); onSaved(); } catch (reason) { setError(message(reason)); } }
+  async function remove() { if (item === "new" || !confirm(translate("commandEditor.deleteConfirm", { value0: id }))) return; try { await api(`/api/v1/projects/${project.id}/commands/${encodeURIComponent(id)}?scope=${scope}`, { method: "DELETE" }); onSaved(); } catch (reason) { setError(message(reason)); } }
+  const location = scope === "global" ? translate("commandEditor.globalPath", { value0: id || `<${translate("secrets.referenceName")}>` }) : translate("commandEditor.projectPath", { value0: project.root, value1: id || `<${translate("secrets.referenceName")}>` });
+  return <Modal wide title={item === "new" ? translate("commandEditor.createTitle") : translate("commandEditor.editTitle", { value0: id })} subtitle={translate("common.valueLocation", { value0: scope === "global" ? translate("common.globalScope") : translate("skills.globalTitle", { value0: project.name }), value1: location })} onClose={onClose}>
+    {error && <Banner tone="danger">{error}</Banner>}
+    <div className="form-row command-editor-fields"><Field label={translate("commandEditor.nameLabel")} hint={translate("commandEditor.nameHint")}><div className="command-name-input"><span>/</span><input className="mono" value={id} onChange={(event) => setId(event.target.value)} disabled={item !== "new"} placeholder="review" /></div></Field><Field label={translate("workspace.scope")}><select value={scope} onChange={(event) => setScope(event.target.value as "project" | "global")} disabled={item !== "new"}><option value="project">{translate("workspace.projectOnly")} {project.name}</option><option value="global">{translate("workspace.allProjects")}</option></select></Field></div>
+    <Field label={translate("commandEditor.descriptionLabel")} hint={translate("commandEditor.descriptionHint")}><input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={translate("commandEditor.descriptionPlaceholder")} /></Field>
+    <div className={`command-options${variants.length ? " with-variants" : ""}`}><div className="command-agent-options"><AgentPicker agents={agents} value={agent} onChange={changeAgent} includeSubagents /><label className="command-subtask"><input type="checkbox" checked={subtask} onChange={(event) => setSubtask(event.target.checked)} /><strong>{translate("commandEditor.subtaskLabel")}</strong></label></div><ModelPicker providers={providers} configuredProviders={config?.configured_providers ?? []} value={model} onChange={changeModel} />{variants.length > 0 && <Field label={translate("commandEditor.reasoningModeLabel")}><select value={variants.includes(variant) ? variant : ""} onChange={(event) => setVariant(event.target.value)}><option value="">{translate("commandEditor.defaultOption")}</option>{variants.map((name) => <option value={name} key={name}>{name}</option>)}</select></Field>}</div>
+    <Field label={translate("commandEditor.instructionLabel")}><textarea aria-label={translate("commandEditor.instructionAriaLabel")} className="code-editor modal-editor command-editor" value={body} onChange={(event) => setBody(event.target.value)} placeholder={translate("commandEditor.instructionPlaceholder")} spellCheck={false} /></Field>
+    <details className="task-help command-arguments-help"><summary>{translate("commandHelp.argumentsTitle")}</summary><div className="command-argument-grid"><section><header><code>$ARGUMENTS</code><span>{translate("commandHelp.allArgumentsLabel")}</span></header><dl><div><dt>{translate("commandHelp.exampleTemplateLabel")}</dt><dd><code>{translate("commandHelp.allArgumentsTemplate")}</code></dd></div><div><dt>{translate("commandHelp.exampleInputLabel")}</dt><dd><code>{translate("commandHelp.allArgumentsInput")}</code></dd></div><div><dt>{translate("commandHelp.exampleResultLabel")}</dt><dd><code>{translate("commandHelp.allArgumentsResult")}</code></dd></div></dl></section><section><header><code>$1, $2, …</code><span>{translate("commandHelp.positionalArgumentsLabel")}</span></header><dl><div><dt>{translate("commandHelp.exampleTemplateLabel")}</dt><dd><code>{translate("commandHelp.positionalArgumentsTemplate")}</code></dd></div><div><dt>{translate("commandHelp.exampleInputLabel")}</dt><dd><code>{translate("commandHelp.positionalArgumentsInput")}</code></dd></div><div><dt>{translate("commandHelp.exampleResultLabel")}</dt><dd><code>{translate("commandHelp.positionalArgumentsResult")}</code></dd></div></dl></section><p className="command-argument-note"><strong>{translate("commandHelp.tipLabel")}</strong>  {translate("commandHelp.tipDetail")}</p></div></details>
+    {shell.length > 0 && <Banner tone="notice">{translate("commandEditor.shellNotice")} {shell.map((command) => <code key={command}>{command}</code>)}</Banner>}
+    <div className="modal-actions">{item !== "new" && <button className="danger-button" onClick={() => void remove()}><Trash2 size={15} />  {translate("common.delete")}</button>}<span /><button className="secondary-button" onClick={onClose}>{translate("common.cancel")}</button><button className="primary-button" onClick={() => void save()} disabled={!id.trim() || !body.trim()}>{translate("commandEditor.savePrefix")}{id || "command"}</button></div>
+  </Modal>;
+}
+
+function commandPurpose(id: string) { const purposes: Record<string, string> = { init: translate("commands.initPurpose"), review: translate("commands.reviewPurpose"), fix: translate("commands.fixPurpose"), test: translate("commands.testPurpose"), plan: translate("commands.planPurpose"), explain: translate("commands.explainPurpose"), "commit-check": translate("commands.commitCheckPurpose") }; return purposes[id] ?? translate("commands.customPurpose"); }
+function commandTemplate() { return translate("template.command"); }
+function commandMetadata(content: string) { const header = content.startsWith("---\n") ? content.slice(4, content.indexOf("\n---\n", 4) < 0 ? 4 : content.indexOf("\n---\n", 4)) : ""; const values: Record<string, string> = {}; header.split("\n").forEach((line) => { const index = line.indexOf(":"); if (index > 0) values[line.slice(0, index).trim()] = line.slice(index + 1).trim().replace(/^["']|["']$/g, ""); }); return { description: values.description, agent: values.agent, model: values.model, variant: values.variant, subtask: values.subtask === "true" }; }
+function commandBody(content: string) { if (!content.startsWith("---\n")) return content; const end = content.indexOf("\n---\n", 4); return end < 0 ? content : content.slice(end + 5).trimStart(); }
+function commandDocument({ description, agent, model, variant, subtask, body }: { description: string; agent: string; model: string; variant: string; subtask: boolean; body: string }) { const fields = [["description", description], ["agent", agent], ["model", model], ["variant", variant]].filter((entry) => entry[1]).map(([key, value]) => `${key}: ${JSON.stringify(value)}`); fields.push(`subtask: ${subtask}`); return `---\n${fields.join("\n")}\n---\n\n${body.trim()}\n`; }
+function commandShell(content: string) { return [...content.matchAll(/!`([^`]+)`/g)].map((match) => match[1]); }
