@@ -3,27 +3,27 @@ type AgentCoreMarkProps = {
   size?: number;
 };
 
-export function AgentCoreMark({ className = "", size = 24 }: AgentCoreMarkProps) {
+export function AgentCoreMark({ className = "", size = 32 }: AgentCoreMarkProps) {
   return (
     <svg
       aria-hidden="true"
       className={`agent-core-mark ${className}`}
       width={size}
       height={size}
-      viewBox="0 0 38 38"
+      viewBox="5 0 90 90"
       fill="none"
     >
       <path
-        d="M19.5 11V8M13 23L9 29.5M25 23L29 29.5"
+        d="M50 36V27M38 57L32 65M62 57L68 65"
         stroke="currentColor"
-        strokeWidth="3.6"
+        strokeWidth="6"
         strokeLinecap="round"
         strokeLinejoin="round"
       />
-      <polygon points="19,11 26,15 26,23 19,27 12,23 12,15" fill="currentColor" />
-      <circle cx="19.5" cy="4.5" r="3.5" fill="currentColor" />
-      <circle cx="5.5" cy="30.5" r="3.5" fill="currentColor" />
-      <circle cx="32.5" cy="30.5" r="3.5" fill="currentColor" />
+      <polygon points="50,35 64,43 64,57 50,65 36,57 36,43" fill="currentColor" />
+      <circle cx="50" cy="20" r="7" fill="currentColor" />
+      <circle cx="25" cy="68" r="7" fill="currentColor" />
+      <circle cx="75" cy="68" r="7" fill="currentColor" />
     </svg>
   );
 }

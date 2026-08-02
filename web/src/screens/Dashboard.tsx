@@ -26,8 +26,9 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
   const [scope, setScope] = useState<"project" | "global">("project");
   const [period, setPeriod] = useState<"today" | "7d" | "30d" | "all">("today");
   const [chartGranularity, setChartGranularity] = useState<ChartGranularity>("auto");
-  const [activeBucket, setActiveBucket] = useState<UsageBucket | null>(null);
+  const [activeBucket, setActiveBucket] = useState<{ bucket: UsageBucket; left: number; top: number } | null>(null);
   const chartScroller = useRef<HTMLDivElement>(null);
+  const usagePlot = useRef<HTMLDivElement>(null);
   const timezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
   const usageUrl = `/api/v1/dashboard?scope=${scope}&project_id=${encodeURIComponent(project.id)}&period=${period}&timezone=${encodeURIComponent(timezone)}`;
   const usage = useDashboardResource<DashboardUsage>(usageUrl, refreshKey, 30000);
@@ -90,6 +91,21 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
     if (!scroller) return;
     scroller.scrollLeft = scroller.scrollWidth;
   }, [scope, period, chartGranularity, chartBuckets.length]);
+
+  function showBucket(bucket: UsageBucket, element: HTMLElement) {
+    const plot = usagePlot.current;
+    const bar = element.querySelector<HTMLElement>(".usage-bar-track i");
+    if (!plot || !bar) return;
+    const plotRect = plot.getBoundingClientRect();
+    const barRect = bar.getBoundingClientRect();
+    const tooltipWidth = Math.min(270, plotRect.width - 20);
+    const center = barRect.left - plotRect.left + barRect.width / 2;
+    let left = center + 14;
+    if (left + tooltipWidth > plotRect.width - 10) left = center - tooltipWidth - 14;
+    left = Math.max(10, Math.min(left, plotRect.width - tooltipWidth - 10));
+    const top = Math.max(8, Math.min(barRect.top - plotRect.top - 12, plotRect.height - 150));
+    setActiveBucket({ bucket, left, top });
+  }
 
   return (
     <DashboardPage
@@ -236,21 +252,21 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
             <div className="usage-y-axis" aria-hidden="true">
               {[...chartScale.ticks].reverse().map((tick) => <span key={tick}>{compactNumber(tick, locale)}</span>)}
             </div>
-            <div className="usage-plot">
+            <div ref={usagePlot} className="usage-plot">
               <div className="usage-grid" aria-hidden="true">
                 {chartScale.ticks.map((tick) => <i key={tick} />)}
               </div>
               {activeBucket && (
-                <div className="usage-tooltip" role="tooltip">
-                  <small>{formatBucketRange(activeBucket, locale)}</small>
-                  <strong>{compactNumber(activeBucket.tokens_total, locale)} {t("dashboard.tooltip.tokens")}</strong>
-                  <span>{t("dashboard.input")}: {compactNumber(activeBucket.tokens.input, locale)}</span>
-                  <span>{t("dashboard.output")}: {compactNumber(activeBucket.tokens.output, locale)}</span>
-                  <span>{t("dashboard.reasoning")}: {compactNumber(activeBucket.tokens.reasoning, locale)}</span>
-                  <span>{t("dashboard.tooltip.meta", { cost: activeBucket.cost.toFixed(3), sessions: activeBucket.sessions, messages: activeBucket.messages })}</span>
+                <div className="usage-tooltip" role="tooltip" style={{ left: activeBucket.left, top: activeBucket.top }}>
+                  <small>{formatBucketRange(activeBucket.bucket, locale)}</small>
+                  <strong>{compactNumber(activeBucket.bucket.tokens_total, locale)} {t("dashboard.tooltip.tokens")}</strong>
+                  <span>{t("dashboard.input")}: {compactNumber(activeBucket.bucket.tokens.input, locale)}</span>
+                  <span>{t("dashboard.output")}: {compactNumber(activeBucket.bucket.tokens.output, locale)}</span>
+                  <span>{t("dashboard.reasoning")}: {compactNumber(activeBucket.bucket.tokens.reasoning, locale)}</span>
+                  <span>{t("dashboard.tooltip.meta", { cost: activeBucket.bucket.cost.toFixed(3), sessions: activeBucket.bucket.sessions, messages: activeBucket.bucket.messages })}</span>
                 </div>
               )}
-              <div ref={chartScroller} className="usage-bars" aria-label={t("dashboard.dailyUsage")}>
+              <div ref={chartScroller} className="usage-bars" aria-label={t("dashboard.dailyUsage")} onScroll={() => setActiveBucket(null)}>
                 {chartBuckets.map((row) => (
                   <div
                     key={row.id}
@@ -258,10 +274,10 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
                     role="img"
                     tabIndex={0}
                     aria-label={t("dashboard.bucketAria", { date: formatBucketRange(row, locale), tokens: compactNumber(row.tokens_total, locale) })}
-                    onMouseEnter={() => setActiveBucket(row)}
-                    onMouseLeave={() => setActiveBucket((current) => current?.id === row.id ? null : current)}
-                    onFocus={() => setActiveBucket(row)}
-                    onBlur={() => setActiveBucket((current) => current?.id === row.id ? null : current)}
+                    onMouseEnter={(event) => showBucket(row, event.currentTarget)}
+                    onMouseLeave={() => setActiveBucket((current) => current?.bucket.id === row.id ? null : current)}
+                    onFocus={(event) => showBucket(row, event.currentTarget)}
+                    onBlur={() => setActiveBucket((current) => current?.bucket.id === row.id ? null : current)}
                   >
                     <span className="usage-bar-track">
                       <i style={{ height: `${Math.max(3, (row.tokens_total / chartScale.maximum) * 100)}%` }} />
