@@ -8,6 +8,7 @@ import ipaddress
 import json
 import logging
 import math
+import mimetypes
 import re
 import secrets
 import sqlite3
@@ -1636,6 +1637,28 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             _project_view(item, managed_server_status(str(item["id"])))
             for item in state.store.list_projects()
         ]
+
+    @app.get("/api/v1/projects/{project_id}/media")
+    def project_media(
+        project_id: str,
+        path: Annotated[str, Query(min_length=1, max_length=4096)],
+        download: bool = False,
+    ) -> FileResponse:
+        project = project_or_404(project_id)
+        media_path, stat_result = _safe_project_media(Path(str(project["root"])), path)
+        media_type = mimetypes.guess_type(media_path.name)[0] or "application/octet-stream"
+        return FileResponse(
+            media_path,
+            media_type=media_type,
+            filename=media_path.name,
+            stat_result=stat_result,
+            content_disposition_type="attachment" if download else "inline",
+            headers={
+                "Cache-Control": "private, max-age=3600",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
 
     def sync_search_project(project: dict[str, Any]) -> int:
         project_id = str(project["id"])
@@ -3578,6 +3601,58 @@ def _search_message_entries(messages: list[dict[str, Any]]) -> list[dict[str, An
             }
         )
     return entries
+
+
+def _safe_project_media(root: Path, raw_path: str) -> tuple[Path, Any]:
+    if "\x00" in raw_path:
+        raise HTTPException(status_code=400, detail="media path is invalid")
+    try:
+        resolved_root = root.resolve(strict=True)
+        requested = Path(raw_path).expanduser()
+        candidate = requested if requested.is_absolute() else resolved_root / requested
+        resolved = candidate.resolve(strict=True)
+        relative = resolved.relative_to(resolved_root)
+    except (OSError, RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=404, detail="project media was not found") from error
+    try:
+        lexical_relative = candidate.relative_to(resolved_root)
+    except ValueError:
+        lexical_relative = relative
+    current = resolved_root
+    for part in lexical_relative.parts:
+        if part == "..":
+            raise HTTPException(status_code=403, detail="media path leaves the project root")
+        current /= part
+        if current.is_symlink():
+            raise HTTPException(status_code=403, detail="symlinked project media is not allowed")
+    stat_result = resolved.stat()
+    if not resolved.is_file() or stat_result.st_nlink != 1:
+        raise HTTPException(status_code=403, detail="project media must be a regular file")
+    if stat_result.st_size > 50 * 1024 * 1024:
+        raise HTTPException(status_code=413, detail="project media is larger than 50 MB")
+    with resolved.open("rb") as handle:
+        signature = handle.read(16)
+    if not _is_safe_raster_image(signature):
+        raise HTTPException(
+            status_code=415,
+            detail="only PNG, JPEG, GIF, WebP, AVIF and ICO are supported",
+        )
+    return resolved, stat_result
+
+
+def _is_safe_raster_image(signature: bytes) -> bool:
+    return (
+        signature.startswith(b"\x89PNG\r\n\x1a\n")
+        or signature.startswith(b"\xff\xd8\xff")
+        or signature.startswith((b"GIF87a", b"GIF89a"))
+        or (signature.startswith(b"RIFF") and signature[8:12] == b"WEBP")
+        or (
+            len(signature) >= 12
+            and signature[4:8] == b"ftyp"
+            and signature[8:12] in {b"avif", b"avis"}
+        )
+        or signature.startswith(b"\x00\x00\x01\x00")
+    )
 
 
 def _search_snippet(content: str, query: str, *, radius: int = 120) -> str:

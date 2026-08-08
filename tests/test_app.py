@@ -85,6 +85,44 @@ def _project(client: TestClient, root: Path, *, endpoint: str | None = None) -> 
     return response.json()
 
 
+def test_project_media_is_streamed_inline_and_rejects_unsafe_files(tmp_path: Path) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    png = b"\x89PNG\r\n\x1a\n" + b"test-image"
+    image = root / "result.png"
+    image.write_bytes(png)
+    (root / "notes.png").write_text("<script>alert(1)</script>")
+    (root / "linked.png").symlink_to(image)
+    hardlink_source = root / "hardlink-source.png"
+    hardlink_source.write_bytes(png)
+    os.link(hardlink_source, root / "hardlink.png")
+    outside = tmp_path / "outside.png"
+    outside.write_bytes(png)
+
+    with _client(tmp_path) as client:
+        project = _project(client, root)
+        endpoint = f"/api/v1/projects/{project['id']}/media"
+        inline = client.get(endpoint, params={"path": "result.png"})
+        absolute = client.get(endpoint, params={"path": str(image)})
+        download = client.get(endpoint, params={"path": "result.png", "download": "true"})
+        disguised = client.get(endpoint, params={"path": "notes.png"})
+        traversal = client.get(endpoint, params={"path": str(outside)})
+        symlink = client.get(endpoint, params={"path": "linked.png"})
+        hardlink = client.get(endpoint, params={"path": "hardlink.png"})
+
+    assert inline.status_code == 200
+    assert inline.content == png
+    assert inline.headers["content-type"].startswith("image/png")
+    assert inline.headers["content-disposition"].startswith("inline;")
+    assert inline.headers["x-content-type-options"] == "nosniff"
+    assert absolute.status_code == 200
+    assert download.headers["content-disposition"].startswith("attachment;")
+    assert disguised.status_code == 415
+    assert traversal.status_code == 404
+    assert symlink.status_code == 403
+    assert hardlink.status_code == 403
+
+
 def _downloaded_skill(name: str = "https-import-test") -> DownloadedSkill:
     content = (
         f"---\nname: {name}\ndescription: Imported test skill\n---\n\n"

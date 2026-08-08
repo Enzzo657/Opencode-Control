@@ -722,6 +722,26 @@ describe("OpenCode Control", () => {
     expect(document.querySelector("script")).toBeNull();
   });
 
+  it("shows local project images inline with open and download actions", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_image", role: "assistant" }, parts: [{ type: "text", text: "Создан [рисунок](output.png)\n\n![вложенный](images/preview.webp)\n\n![remote](https://example.test/image.png)" }] }]);
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(await screen.findByText("Fix checkout"));
+
+    const images = await screen.findAllByRole("img");
+    expect(images).toHaveLength(2);
+    expect(images[0]).toHaveAttribute("src", expect.stringContaining(`/api/v1/projects/${project.id}/media?path=output.png`));
+    expect(screen.getByText("/code/checkout/output.png")).toBeInTheDocument();
+    expect(screen.getByText("/code/checkout/images/preview.webp")).toBeInTheDocument();
+    expect(screen.getAllByRole("link", { name: /Скачать/ })).toHaveLength(2);
+    expect(screen.getByText("Изображение: remote")).toBeInTheDocument();
+  });
+
   it("shows provider errors without message parts", async () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input);
