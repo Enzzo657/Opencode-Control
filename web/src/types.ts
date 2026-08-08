@@ -102,6 +102,7 @@ export type SearchResponse = {
   partial: boolean;
   unavailable_projects: Array<{ id: string; name: string; error: string }>;
   indexed_sessions: number;
+  offset: number;
   has_more: boolean;
   results: SearchResult[];
 };

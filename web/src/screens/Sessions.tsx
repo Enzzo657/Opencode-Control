@@ -1,4 +1,4 @@
-import { Activity, ArrowDown, Bot, Check, CircleDollarSign, CircleHelp, CircleStop, Cpu, File, FileCode2, GitBranch, GitCommitHorizontal, Maximize2, MessageSquareText, Minimize2, Minus, Network, Plus, RefreshCw, Search, SquareTerminal, Trash2, X } from "lucide-react";
+import { Activity, ArrowDown, ArrowUp, Bot, Check, CircleDollarSign, CircleHelp, CircleStop, Cpu, File, FileCode2, GitBranch, GitCommitHorizontal, Maximize2, MessageSquareText, Minimize2, Minus, Network, Plus, RefreshCw, Search, SquareTerminal, Trash2, X } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { api, jsonBody } from "../api";
 import { intlLocale, localizedStatus, translate, useI18n } from "../i18n";
@@ -258,9 +258,13 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
   const stickToBottom = useRef(true);
   const scrollingToBottom = useRef(false);
   const positionedSearchTarget = useRef("");
+  const [activeSearchMessageId, setActiveSearchMessageId] = useState(searchTarget?.messageId ?? null);
   useEffect(() => () => clearSearchHighlight(), []);
+  useEffect(() => { setActiveSearchMessageId(searchTarget?.messageId ?? null); }, [searchTarget?.messageId]);
   const messageCount = messages.data?.length ?? 0;
   const lastMessage = messages.data?.[messageCount - 1];
+  const matchingSearchMessageIds = searchTarget?.query ? (messages.data ?? []).flatMap((entry) => entry.info?.id && sessionMessageSearchText(entry).toLocaleLowerCase().includes(searchTarget.query.toLocaleLowerCase()) ? [entry.info.id] : []) : [];
+  const activeSearchIndex = activeSearchMessageId ? matchingSearchMessageIds.indexOf(activeSearchMessageId) : -1;
   const contextTokens = latestContextTokens(messages.data ?? []);
   const activeTodos = (todos.data ?? []).filter((todo) => todo.status !== "completed" && todo.status !== "cancelled");
   const mcpEntries = Object.entries(mcp).filter(([, value]) => value.status === "connected").sort(([left], [right]) => left.localeCompare(right));
@@ -287,7 +291,7 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
     if (changed && lastMessage.info?.role === "assistant" && messageFinished(lastMessage)) setPendingFrom(null);
   }, [lastMessage, messageCount, pendingFrom]);
   useLayoutEffect(() => {
-    const messageId = searchTarget?.messageId;
+    const messageId = activeSearchMessageId;
     const stream = streamRef.current;
     if (!messageId || !searchTarget || messages.data === null || !stream) return;
     const targetKey = `${messageId}:${searchTarget.query}`;
@@ -308,10 +312,10 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
       });
     });
     return () => cancelAnimationFrame(frame);
-  }, [messages.data, searchTarget]);
+  }, [activeSearchMessageId, messages.data, searchTarget]);
   useLayoutEffect(() => {
     if (messages.data === null) return;
-    if (searchTarget?.messageId) return;
+    if (activeSearchMessageId) return;
     let frame = 0;
     let settlingFrames = initialScroll.current ? 4 : 1;
     const alignToLatest = () => {
@@ -329,7 +333,7 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
     };
     frame = requestAnimationFrame(alignToLatest);
     return () => cancelAnimationFrame(frame);
-  }, [messages.data, searchTarget?.messageId]);
+  }, [activeSearchMessageId, messages.data]);
   useEffect(() => {
     const stream = streamRef.current;
     if (!stream) return;
@@ -390,6 +394,15 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
     stream.scrollTo({ top: stream.scrollHeight, behavior: "smooth" });
     setShowScrollToBottom(false);
   }
+  function moveSearchMatch(direction: -1 | 1) {
+    if (matchingSearchMessageIds.length < 2) return;
+    const current = activeSearchIndex >= 0 ? activeSearchIndex : 0;
+    const nextId = matchingSearchMessageIds[(current + direction + matchingSearchMessageIds.length) % matchingSearchMessageIds.length];
+    setActiveSearchMessageId(nextId);
+    const parameters = new URLSearchParams(location.search);
+    parameters.set("message", nextId);
+    history.replaceState({}, "", `/sessions?${parameters}`);
+  }
   async function replyPermission(permissionId: string, reply: "once" | "always" | "reject") {
     try {
       await api(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/permissions/${encodeURIComponent(permissionId)}/reply`, { method: "POST", ...jsonBody({ reply }) });
@@ -412,7 +425,7 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
     <aside className={`drawer drawer-with-composer resizable-drawer${gitVisible ? " git-visible" : ""}`} style={{ "--drawer-width": `${drawerWidth}px` } as CSSProperties} role="dialog" aria-modal="true" aria-label={translate("session.drawer.ariaLabel", { value0: session.title ?? session.id })} onClick={(event) => event.stopPropagation()}><div className="drawer-resize-handle" role="separator" aria-label={translate("session.drawer.resize")} aria-orientation="vertical" tabIndex={0} onPointerDown={startResize} onDoubleClick={() => resizeDrawer(960)} onKeyDown={(event) => { if (event.key === "ArrowLeft") resizeDrawer(drawerWidth + 40); if (event.key === "ArrowRight") resizeDrawer(drawerWidth - 40); }} />
       <header><div className="drawer-title"><div className="drawer-title-row"><Status value={effectiveStatus} /><h2>{session.control_task?.title ?? session.title ?? translate("session.drawer.untitled")}</h2></div></div><div className="drawer-header-actions">{git.data?.available && !gitVisible && <button className="icon-button" title={translate("session.drawer.showGitPanel")} aria-label={translate("session.drawer.showGitPanel")} onClick={() => setGitVisibility("shown")}><GitBranch size={15} /></button>}{onDelete && <button className="icon-button danger" title={translate("session.drawer.delete")} aria-label={translate("session.drawer.delete")} onClick={onDelete}><Trash2 size={15} /></button>}<button className="icon-button" title={translate("session.drawer.close")} aria-label={translate("session.drawer.close")} onClick={onClose}><X /></button></div></header>
       <div className="drawer-metrics"><span><i><Activity size={16} /></i><span><small>{translate("session.drawer.context")}</small><b>{contextTokens === null ? "—" : new Intl.NumberFormat(intlLocale()).format(contextTokens)}</b></span></span><span><i><CircleDollarSign size={16} /></i><span><small>{translate("session.drawer.cost")}</small><b>${(session.cost ?? 0).toFixed(4)}</b></span></span><span><i><Bot size={16} /></i><span><small>{translate("session.drawer.agent")}</small><b>{agent || translate("common.default")}</b></span></span><span><i><Cpu size={16} /></i><span><small>{translate("session.drawer.model")}</small><b>{model || translate("common.default")}</b></span></span></div>
-       <div className={`session-workspace ${gitVisible ? "with-git" : ""}`}>{git.data?.available && gitVisible && <SessionGitPanel project={project} state={git.data} onReload={() => { setGitVisibility("shown"); git.reload(); }} onClose={() => setGitVisibility("hidden")} />}<div className="session-conversation"><div className="session-chat-content"><div className="message-stream-wrap"><div className="message-stream" ref={streamRef} onScroll={(event) => setShowScrollToBottom(!scrollAtBottom(event.currentTarget))}>{messages.error && <Banner tone="danger">{translate("session.drawer.previewError")} {messages.error}</Banner>}{(messages.data ?? []).map((entry, index) => entry.parts?.length ? <article className={`message ${entry.info?.role ?? "assistant"}${entry.info?.id === searchTarget?.messageId ? " search-target" : ""}`} data-message-id={entry.info?.id} key={entry.info?.id ?? index}>{entry.info?.id === searchTarget?.messageId && <div className="search-match-label"><Search size={13} /> {translate("search.matchInMessage")} <mark>{searchTarget?.query}</mark></div>}<small className="message-meta"><span>{entry.info?.role === "user" ? translate("session.drawer.you") : entry.info?.agent ?? "OpenCode"}{entry.info?.role !== "user" && (entry.info?.providerID || entry.info?.modelID) ? ` · ${[entry.info.providerID, entry.info.modelID].filter(Boolean).join("/")}` : ""}</span><span className="message-turn-stats">{entry.info?.tokens?.output !== undefined && translate("session.drawer.tokens", { value0: compact(entry.info.tokens.output) })}{entry.info?.cost !== undefined && ` · $${entry.info.cost.toFixed(4)}`}{entry.info?.time?.created !== undefined && <time> · {formatDuration((entry.info.time.completed ?? now) - entry.info.time.created)}</time>}</span></small>{entry.info?.error && <div className="message-error"><CircleStop size={13} /> {entry.info.error}</div>}{entry.parts.map((part, partIndex) => <SessionPartView part={part} index={partIndex} now={now} key={`${part.type}-${partIndex}`} />)}</article> : null)}{messages.data?.length === 0 && !messages.error && <Empty icon={<MessageSquareText />} title={translate("session.drawer.noMessages")} detail={translate("session.drawer.noMessagesDetail")} />}</div>{showScrollToBottom && <button type="button" className="chat-scroll-bottom" aria-label={translate("session.drawer.latestMessage")} title={translate("session.drawer.latestMessage")} onClick={scrollToBottom}><ArrowDown size={18} /></button>}</div>
+       <div className={`session-workspace ${gitVisible ? "with-git" : ""}`}>{git.data?.available && gitVisible && <SessionGitPanel project={project} state={git.data} onReload={() => { setGitVisibility("shown"); git.reload(); }} onClose={() => setGitVisibility("hidden")} />}<div className="session-conversation"><div className="session-chat-content"><div className="message-stream-wrap"><div className="message-stream" ref={streamRef} onScroll={(event) => setShowScrollToBottom(!scrollAtBottom(event.currentTarget))}>{messages.error && <Banner tone="danger">{translate("session.drawer.previewError")} {messages.error}</Banner>}{(messages.data ?? []).map((entry, index) => entry.parts?.length ? <article className={`message ${entry.info?.role ?? "assistant"}${entry.info?.id === activeSearchMessageId ? " search-target" : ""}`} data-message-id={entry.info?.id} key={entry.info?.id ?? index}>{entry.info?.id === activeSearchMessageId && <div className="search-match-label"><Search size={13} /> {translate("search.matchInMessage")} <mark>{searchTarget?.query}</mark>{activeSearchIndex >= 0 && <span className="search-match-count">{activeSearchIndex + 1}/{matchingSearchMessageIds.length}</span>}<span className="search-match-actions"><button type="button" disabled={matchingSearchMessageIds.length < 2} onClick={() => moveSearchMatch(-1)} aria-label={translate("search.previousMatch")} title={translate("search.previousMatch")}><ArrowUp size={13} /></button><button type="button" disabled={matchingSearchMessageIds.length < 2} onClick={() => moveSearchMatch(1)} aria-label={translate("search.nextMatch")} title={translate("search.nextMatch")}><ArrowDown size={13} /></button></span></div>}<small className="message-meta"><span>{entry.info?.role === "user" ? translate("session.drawer.you") : entry.info?.agent ?? "OpenCode"}{entry.info?.role !== "user" && (entry.info?.providerID || entry.info?.modelID) ? ` · ${[entry.info.providerID, entry.info.modelID].filter(Boolean).join("/")}` : ""}</span><span className="message-turn-stats">{entry.info?.tokens?.output !== undefined && translate("session.drawer.tokens", { value0: compact(entry.info.tokens.output) })}{entry.info?.cost !== undefined && ` · $${entry.info.cost.toFixed(4)}`}{entry.info?.time?.created !== undefined && <time> · {formatDuration((entry.info.time.completed ?? now) - entry.info.time.created)}</time>}</span></small>{entry.info?.error && <div className="message-error"><CircleStop size={13} /> {entry.info.error}</div>}{entry.parts.map((part, partIndex) => <SessionPartView part={part} index={partIndex} now={now} key={`${part.type}-${partIndex}`} />)}</article> : null)}{messages.data?.length === 0 && !messages.error && <Empty icon={<MessageSquareText />} title={translate("session.drawer.noMessages")} detail={translate("session.drawer.noMessagesDetail")} />}</div>{showScrollToBottom && <button type="button" className="chat-scroll-bottom" aria-label={translate("session.drawer.latestMessage")} title={translate("session.drawer.latestMessage")} onClick={scrollToBottom}><ArrowDown size={18} /></button>}</div>
         <aside className="session-inspector">
           <section><header><Network size={14} /><strong>{translate("session.inspector.mcpRuntime")}</strong><span>{mcpEntries.length}</span></header><div className="runtime-list-compact">{mcpEntries.map(([name, value]) => <div key={name}><i data-status={value.status} /><span>{name}</span><small>{statusLabel(value.status ?? "unknown")}</small></div>)}{mcpEntries.length === 0 && <p>{translate("session.inspector.noMcpConnected")}</p>}</div></section>
           {activeTodos.length > 0 && <section><header><Check size={14} /><strong>{translate("session.inspector.workPlan")}</strong><span>{activeTodos.length}</span></header><div className="todo-list">{activeTodos.map((todo, index) => <div className={todo.status} key={`${todo.content}-${index}`}><span className="todo-index">{index + 1}</span><span><strong>{todo.content}</strong><small>{todo.status === "in_progress" ? translate("session.inspector.todoInProgress") : translate("session.inspector.todoWaiting")} · {priorityLabel(todo.priority)}</small></span></div>)}</div></section>}
@@ -436,6 +449,7 @@ function SessionReplyComposer({ error, permissionsError, agent, onAgentChange, m
 }
 
 function latestContextTokens(messages: SessionMessage[]) { for (let index = messages.length - 1; index >= 0; index -= 1) { const message = messages[index]; const tokens = message.info?.role === "assistant" ? message.info.tokens : undefined; if (!tokens) continue; const total = (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.reasoning ?? 0) + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0); if (total > 0) return total; } return null; }
+function sessionMessageSearchText(message: SessionMessage) { return (message.parts ?? []).flatMap((part) => part.type === "text" && typeof part.text === "string" ? [part.text] : []).join("\n"); }
 
 type SearchHighlightRegistry = { set: (name: string, highlight: unknown) => void; delete: (name: string) => void };
 

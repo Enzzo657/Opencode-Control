@@ -222,6 +222,41 @@ def test_search_index_replaces_messages_and_treats_wildcards_literally(tmp_path:
     store.close()
 
 
+def test_search_index_ranks_titles_and_paginates_stably(tmp_path: Path) -> None:
+    store = ControlStore(tmp_path / "data")
+    root = tmp_path / "project"
+    root.mkdir()
+    project_id = str(store.create_project(name="Search", root=root, endpoint=None)["id"])
+    for session_id, title, updated_at in [
+        ("ses_message", "Other", 30),
+        ("ses_contains", "Using Search today", 20),
+        ("ses_prefix", "Search architecture", 10),
+        ("ses_exact", "Search", 1),
+    ]:
+        store.replace_search_session(
+            project_id,
+            session_id=session_id,
+            title=title,
+            parent_id=None,
+            updated_at=updated_at,
+            messages=[
+                {
+                    "id": f"msg_{session_id}",
+                    "role": "assistant",
+                    "created_at": updated_at,
+                    "content": "Search appears in this message",
+                }
+            ] if session_id == "ses_message" else [],
+        )
+
+    first_page = store.search_history("search", [project_id], limit=2)
+    second_page = store.search_history("search", [project_id], limit=2, offset=2)
+
+    assert [item["session_id"] for item in first_page] == ["ses_exact", "ses_prefix"]
+    assert [item["session_id"] for item in second_page] == ["ses_contains", "ses_message"]
+    store.close()
+
+
 def test_overlap_skip_does_not_overwrite_active_task_status(tmp_path: Path) -> None:
     store = ControlStore(tmp_path / "data")
     project_id, task_id = _scheduled_task(store, tmp_path)

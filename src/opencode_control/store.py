@@ -337,23 +337,26 @@ class ControlStore:
             )
 
     def search_history(
-        self, query: str, project_ids: list[str], *, limit: int
+        self, query: str, project_ids: list[str], *, limit: int, offset: int = 0
     ) -> list[dict[str, Any]]:
         if not project_ids:
             return []
         placeholders = ", ".join("?" for _ in project_ids)
         escaped = query.casefold().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         needle = f"%{escaped}%"
+        prefix = f"{escaped}%"
         sql = f"""
             SELECT * FROM (
                 SELECT 'session' AS kind, project_id, session_id, NULL AS message_id,
-                    NULL AS role, title AS content, updated_at AS occurred_at, title
+                    NULL AS role, title AS content, updated_at AS occurred_at, title,
+                    CASE WHEN title_search = ? THEN 0
+                         WHEN title_search LIKE ? ESCAPE '\\' THEN 1 ELSE 2 END AS match_rank
                 FROM search_sessions
                 WHERE project_id IN ({placeholders}) AND title_search LIKE ? ESCAPE '\\'
                 UNION ALL
                 SELECT 'message' AS kind, messages.project_id, messages.session_id,
                     messages.message_id, messages.role, messages.content,
-                    messages.created_at AS occurred_at, sessions.title
+                    messages.created_at AS occurred_at, sessions.title, 3 AS match_rank
                 FROM search_messages AS messages
                 JOIN search_sessions AS sessions
                     ON sessions.project_id = messages.project_id
@@ -361,12 +364,22 @@ class ControlStore:
                 WHERE messages.project_id IN ({placeholders})
                     AND messages.content_search LIKE ? ESCAPE '\\'
             )
-            ORDER BY occurred_at DESC, session_id, message_id
-            LIMIT ?
+            ORDER BY match_rank, occurred_at DESC, session_id, message_id
+            LIMIT ? OFFSET ?
         """
         with self._lock:
             rows = self._connection.execute(
-                sql, (*project_ids, needle, *project_ids, needle, limit)
+                sql,
+                (
+                    query.casefold(),
+                    prefix,
+                    *project_ids,
+                    needle,
+                    *project_ids,
+                    needle,
+                    limit,
+                    offset,
+                ),
             ).fetchall()
         return [dict(row) for row in rows]
 

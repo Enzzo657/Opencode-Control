@@ -9,18 +9,25 @@ import { message } from "../useResource";
 
 export function Search({ project, onOpenSession }: { project: Project; onOpenSession: (projectId: string, sessionId: string, messageId: string | null, query: string) => void }) {
   const { t } = useI18n();
-  const [query, setQuery] = useState("");
-  const [scope, setScope] = useState<"project" | "global">("project");
+  const [query, setQuery] = useState(() => new URLSearchParams(location.search).get("q") ?? "");
+  const [scope, setScope] = useState<"project" | "global">(() => new URLSearchParams(location.search).get("scope") === "global" ? "global" : "project");
   const [result, setResult] = useState<SearchResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
   const deferredQuery = useDeferredValue(query.trim());
-  const [settledQuery, setSettledQuery] = useState("");
+  const [settledQuery, setSettledQuery] = useState(query.trim());
 
   useEffect(() => {
     const timer = window.setTimeout(() => setSettledQuery(deferredQuery), 250);
     return () => window.clearTimeout(timer);
   }, [deferredQuery]);
+
+  useEffect(() => {
+    const parameters = new URLSearchParams({ scope });
+    if (query) parameters.set("q", query);
+    history.replaceState({}, "", `/search?${parameters}`);
+  }, [query, scope]);
 
   useEffect(() => {
     if (settledQuery.length < 2) {
@@ -40,6 +47,19 @@ export function Search({ project, onOpenSession }: { project: Project; onOpenSes
     return () => controller.abort();
   }, [project.id, scope, settledQuery]);
 
+  async function loadMore() {
+    if (!result?.has_more || loadingMore) return;
+    const parameters = new URLSearchParams({ q: result.query, scope, offset: String(result.results.length) });
+    if (scope === "project") parameters.set("project_id", project.id);
+    setLoadingMore(true);
+    try {
+      const next = await api<SearchResponse>(`/api/v1/search?${parameters}`);
+      startTransition(() => setResult((current) => current && current.query === next.query ? { ...next, results: [...current.results, ...next.results], indexed_sessions: current.indexed_sessions + next.indexed_sessions } : next));
+      setError(null);
+    } catch (reason) { setError(message(reason)); }
+    finally { setLoadingMore(false); }
+  }
+
   return <Page title={t("search.title")} description={t("search.description")}>
     <div className="search-controls">
       <label className="search-input"><SearchIcon size={19} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("search.placeholder")} aria-label={t("search.inputLabel")} />{loading && <span>{t("search.indexing")}</span>}</label>
@@ -55,7 +75,7 @@ export function Search({ project, onOpenSession }: { project: Project; onOpenSes
       {result?.results.map((item) => <SearchResultRow key={`${item.kind}:${item.project_id}:${item.session_id}:${item.message_id ?? "title"}`} item={item} query={result.query} onOpen={() => onOpenSession(item.project_id, item.session_id, item.message_id, result.query)} />)}
       {!result && <Empty icon={<SearchIcon />} title={t("search.startTitle")} detail={t("search.startDetail")} />}
       {result?.results.length === 0 && <Empty icon={<MessageSquareText />} title={t("search.emptyTitle")} detail={t("search.emptyDetail", { query: result.query })} />}
-      {result?.has_more && <p className="search-more">{t("search.moreResults")}</p>}
+      {result?.has_more && <div className="search-load-more"><button className="secondary-button" disabled={loadingMore} onClick={() => void loadMore()}>{loadingMore ? t("search.loadingMore") : t("search.loadMore")}</button></div>}
     </Panel>
   </Page>;
 }

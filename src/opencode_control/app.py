@@ -1677,6 +1677,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         scope: Literal["project", "global"] = "project",
         project_id: str | None = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        offset: Annotated[int, Query(ge=0, le=10_000)] = 0,
     ) -> dict[str, Any]:
         query = q.strip()
         if len(query) < 2:
@@ -1700,7 +1701,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     }
                 )
         selected_ids = [str(project["id"]) for project in selected_projects]
-        rows = state.store.search_history(query, selected_ids, limit=limit + 1)
+        rows = state.store.search_history(query, selected_ids, limit=limit + 1, offset=offset)
         project_names = {str(project["id"]): str(project["name"]) for project in selected_projects}
         return {
             "query": query,
@@ -1708,6 +1709,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             "partial": bool(unavailable),
             "unavailable_projects": unavailable,
             "indexed_sessions": indexed_sessions,
+            "offset": offset,
             "has_more": len(rows) > limit,
             "results": [
                 {

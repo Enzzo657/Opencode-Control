@@ -1935,6 +1935,13 @@ def test_search_indexes_changed_sessions_across_projects(
         _project(client, roots[1], endpoint="http://127.0.0.1:4097")
 
         response = client.get("/api/v1/search", params={"q": "deployment", "scope": "global"})
+        first_page = client.get(
+            "/api/v1/search", params={"q": "deployment", "scope": "global", "limit": 1}
+        )
+        second_page = client.get(
+            "/api/v1/search",
+            params={"q": "deployment", "scope": "global", "limit": 1, "offset": 1},
+        )
         repeated = client.get("/api/v1/search", params={"q": "deployment", "scope": "global"})
         project_title = client.get(
             "/api/v1/search",
@@ -1951,6 +1958,13 @@ def test_search_indexes_changed_sessions_across_projects(
     assert {item["kind"] for item in response.json()["results"]} == {"message"}
     assert all("deployment" in item["snippet"].lower() for item in response.json()["results"])
     assert repeated.json()["indexed_sessions"] == 0
+    assert first_page.json()["has_more"] is True
+    assert first_page.json()["offset"] == 0
+    assert second_page.json()["offset"] == 1
+    assert (
+        first_page.json()["results"][0]["message_id"]
+        != second_page.json()["results"][0]["message_id"]
+    )
     assert len(message_calls) == 2
     assert [item["kind"] for item in project_title.json()["results"]] == ["session"]
     assert private_output.json()["results"] == []

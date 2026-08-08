@@ -52,7 +52,8 @@
 - Dashboard вынесен из монолитного `App.tsx` в самостоятельный screen module; добавлен
   typed RU/EN translation catalog как основа постепенной локализации.
 - Локальный поиск по названиям Sessions и тексту user/assistant messages для текущего
-  проекта и global scope с incremental SQLite index и partial results.
+  проекта и global scope с incremental SQLite index, ranked pagination, permanent
+  message deep links, keyboard shortcut и partial results.
 
 ## Текущие ограничения
 

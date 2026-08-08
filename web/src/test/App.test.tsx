@@ -53,7 +53,7 @@ describe("OpenCode Control", () => {
       if (path.endsWith("/api/v1/projects")) return response([project]);
       if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.1.0", projects: 1 });
       if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
-      if (path.includes("/api/v1/search")) return response({ query: "deploy", scope: path.includes("scope=global") ? "global" : "project", partial: false, unavailable_projects: [], indexed_sessions: 1, has_more: false, results: [{ kind: "message", project_id: project.id, project_name: project.name, session_id: "ses_1", session_title: "Fix checkout", message_id: "msg_1", role: "user", created_at: Date.now(), snippet: "Rotate deployment token" }] });
+      if (path.includes("/api/v1/search")) { const offset = Number(new URL(path, "http://localhost").searchParams.get("offset") ?? 0); return response({ query: "deploy", scope: path.includes("scope=global") ? "global" : "project", partial: false, unavailable_projects: [], indexed_sessions: offset ? 0 : 1, offset, has_more: offset === 0, results: [{ kind: "message", project_id: project.id, project_name: project.name, session_id: "ses_1", session_title: "Fix checkout", message_id: offset ? "msg_2" : "msg_1", role: "user", created_at: Date.now(), snippet: offset ? "Deploy through the release pipeline" : "Rotate deployment token" }] }); }
       if (path.endsWith("/tasks") && (!init?.method || init.method === "GET")) return response([{ id: "task_1", project_id: project.id, title: "Fix checkout task", prompt: "Fix it", agent: "build", model: "openai/gpt-test", status: "completed", session_id: "ses_1", session_ids: ["ses_1"], error: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }]);
       if (path.includes("/snapshot")) {
         return response({
@@ -198,12 +198,49 @@ describe("OpenCode Control", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Все проекты" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/api/v1/search?") && String(input).includes("scope=global"))).toBe(true));
+    fireEvent.click(await screen.findByRole("button", { name: "Показать ещё" }));
+    await waitFor(() => expect(Array.from(document.querySelectorAll(".search-snippet")).some((item) => item.textContent === "Deploy through the release pipeline")).toBe(true));
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("offset=1"))).toBe(true);
     fireEvent.click(document.querySelector(".search-result")!);
 
     expect(await screen.findByRole("heading", { name: "Сессии" })).toBeInTheDocument();
     expect(await screen.findByRole("dialog")).toHaveAccessibleName(/Fix checkout/);
     expect(await screen.findByText("Найдено в сообщении:")).toBeInTheDocument();
     expect(document.querySelector('[data-message-id="msg_1"]')).toHaveClass("search-target");
+    expect(new URLSearchParams(location.search).get("message")).toBe("msg_1");
+    expect(new URLSearchParams(location.search).get("q")).toBe("deploy");
+  });
+
+  it("opens Search with the keyboard and preserves its URL state", async () => {
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.keyDown(window, { key: "k", metaKey: true });
+    expect(await screen.findByRole("heading", { name: "Поиск" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "Поиск по сессиям и сообщениям" }), { target: { value: "deploy" } });
+    fireEvent.click(screen.getByRole("button", { name: "Все проекты" }));
+    await waitFor(() => expect(new URLSearchParams(location.search).get("q")).toBe("deploy"));
+    expect(new URLSearchParams(location.search).get("scope")).toBe("global");
+  });
+
+  it("restores a message deep link and moves between matching messages", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes("/sessions/ses_1/messages")) return response([
+        { info: { id: "msg_1", role: "assistant", time: { created: 1, completed: 2 } }, parts: [{ type: "text", text: "Deploy the first revision" }] },
+        { info: { id: "msg_2", role: "assistant", time: { created: 3, completed: 4 } }, parts: [{ type: "text", text: "Deploy the second revision" }] },
+      ]);
+      return fallback(input, init);
+    });
+    history.replaceState({}, "", `/sessions?project=${project.id}&session=ses_1&message=msg_1&q=deploy`);
+    render(<App />);
+
+    expect(await screen.findByRole("dialog")).toHaveAccessibleName(/Fix checkout/);
+    await waitFor(() => expect(document.querySelector('[data-message-id="msg_1"]')).toHaveClass("search-target"));
+    expect(screen.getByText("1/2")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Следующее совпадение" }));
+    await waitFor(() => expect(document.querySelector('[data-message-id="msg_2"]')).toHaveClass("search-target"));
+    expect(screen.getByText("2/2")).toBeInTheDocument();
+    expect(new URLSearchParams(location.search).get("message")).toBe("msg_2");
   });
 
   it("creates English resource templates when English is active", async () => {

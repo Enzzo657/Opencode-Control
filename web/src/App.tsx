@@ -55,6 +55,8 @@ type View =
   | "instructions"
   | "settings";
 
+type SessionTarget = { projectId: string; sessionId: string; messageId: string | null; query: string };
+
 const nav: Array<{ group: TranslationKey; items: Array<{ id: View; label: TranslationKey; icon: typeof Gauge }> }> = [
   {
     group: "nav.work",
@@ -87,7 +89,7 @@ export function App() {
 function ControlApp() {
   const { t } = useI18n();
   const [projects, setProjects] = useState<Project[]>([]);
-  const [activeId, setActiveId] = useState(() => window.localStorage.getItem("control-project"));
+  const [activeId, setActiveId] = useState(() => sessionTargetFromLocation()?.projectId ?? window.localStorage.getItem("control-project"));
   const [view, setView] = useState<View>(() => viewFromPath(location.pathname));
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -96,7 +98,7 @@ function ControlApp() {
   const [mobileOpen, setMobileOpen] = useState(false);
   const [theme, setTheme] = useState(() => normalizeTheme(window.localStorage.getItem("control-theme")));
   const [refreshKey, setRefreshKey] = useState(0);
-  const [sessionTarget, setSessionTarget] = useState<{ projectId: string; sessionId: string; messageId: string | null; query: string } | null>(null);
+  const [sessionTarget, setSessionTarget] = useState<SessionTarget | null>(() => sessionTargetFromLocation());
   const controlHealth = useResource<{ healthy: boolean; version: string }>(
     "/api/v1/health",
     refreshKey,
@@ -136,22 +138,48 @@ function ControlApp() {
 
   useEffect(() => {
     function popstate() {
+      const target = sessionTargetFromLocation();
       setView(viewFromPath(location.pathname));
+      setSessionTarget(target);
+      if (target) setActiveId(target.projectId);
     }
     window.addEventListener("popstate", popstate);
     return () => window.removeEventListener("popstate", popstate);
   }, []);
 
+  useEffect(() => {
+    function keydown(event: KeyboardEvent) {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLocaleLowerCase() !== "k") return;
+      event.preventDefault();
+      if (viewFromPath(location.pathname) === "search") {
+        const input = document.querySelector<HTMLInputElement>(".search-input input");
+        input?.focus();
+        input?.select();
+        return;
+      }
+      history.pushState({}, "", "/search");
+      setSessionTarget(null);
+      setView("search");
+      setMobileOpen(false);
+    }
+    window.addEventListener("keydown", keydown);
+    return () => window.removeEventListener("keydown", keydown);
+  }, []);
+
   function navigate(next: View) {
+    setSessionTarget(null);
     setView(next);
     history.pushState({}, "", next === "overview" ? "/" : `/${next}`);
     setMobileOpen(false);
   }
 
   function openSearchSession(projectId: string, sessionId: string, messageId: string | null, query: string) {
+    const target = { projectId, sessionId, messageId, query };
     setActiveId(projectId);
-    setSessionTarget({ projectId, sessionId, messageId, query });
-    navigate("sessions");
+    setSessionTarget(target);
+    setView("sessions");
+    history.pushState({}, "", sessionTargetUrl(target));
+    setMobileOpen(false);
   }
 
   const project = projects.find((item) => item.id === activeId) ?? null;
@@ -258,4 +286,6 @@ function ViewContent({ view, project, refreshKey, sessionTarget, onSessionTarget
 }
 
 function viewFromPath(path: string): View { const candidate = path.split("/")[1] as View; return nav.flatMap((group) => group.items).some((item) => item.id === candidate) ? candidate : "overview"; }
+function sessionTargetFromLocation(): SessionTarget | null { if (viewFromPath(location.pathname) !== "sessions") return null; const parameters = new URLSearchParams(location.search); const projectId = parameters.get("project"); const sessionId = parameters.get("session"); return projectId && sessionId ? { projectId, sessionId, messageId: parameters.get("message"), query: parameters.get("q") ?? "" } : null; }
+function sessionTargetUrl(target: SessionTarget) { const parameters = new URLSearchParams({ project: target.projectId, session: target.sessionId }); if (target.messageId) parameters.set("message", target.messageId); if (target.query) parameters.set("q", target.query); return `/sessions?${parameters}`; }
 function labelFor(view: View, t: ReturnType<typeof import("./i18n").createTranslator>) { const key = nav.flatMap((group) => group.items).find((item) => item.id === view)?.label; return t(key ?? "nav.overviewFallback"); }
