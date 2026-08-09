@@ -22,10 +22,11 @@ import {
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
 import { api } from "./api";
 import { AgentCoreMark } from "./AgentCoreMark";
+import { EventCenter } from "./EventCenter";
 import { I18nProvider, translate, useI18n, type TranslationKey } from "./i18n";
 import { FullState, LanguageMenu, ProjectDialog, ServerControl, ThemeDialog, Welcome } from "./ShellComponents";
 import { applyTheme, normalizeTheme, themes } from "./theme";
-import type { Project } from "./types";
+import type { ControlEvent, Project } from "./types";
 import { message, useResource } from "./useResource";
 
 export { contrastText, themes } from "./theme";
@@ -186,6 +187,19 @@ function ControlApp() {
     setMobileOpen(false);
   }
 
+  function openEvent(event: ControlEvent) {
+    if (event.session_id) {
+      openSearchSession(event.project_id, event.session_id, null, "");
+      return;
+    }
+    const next: View = event.task_id ? "tasks" : "overview";
+    setActiveId(event.project_id);
+    setSessionTarget(null);
+    setView(next);
+    history.pushState({}, "", next === "overview" ? "/" : `/${next}`);
+    setMobileOpen(false);
+  }
+
   const project = projects.find((item) => item.id === activeId) ?? null;
 
   if (loading) return <FullState icon={<RefreshCw className="spin" />} title={t("app.starting")} detail={t("app.loading")} />;
@@ -236,6 +250,7 @@ function ControlApp() {
           <button className="icon-button mobile-menu" onClick={() => setMobileOpen(true)} aria-label={t("app.openNavigation")} title={t("app.openNavigation")}><Menu /></button>
           <div className="breadcrumbs"><span>{project?.name ?? t("app.workspace")}</span><b>/</b><strong>{labelFor(view, t)}</strong></div>
           <div className="topbar-actions">
+            <EventCenter project={project} onOpen={openEvent} />
             <LanguageMenu />
             {project && <ServerControl project={project} onChange={() => setRefreshKey((value) => value + 1)} />}
             <button className="icon-button" onClick={() => setRefreshKey((value) => value + 1)} aria-label={t("app.refresh")} title={t("app.refresh")}><RefreshCw size={17} /></button>

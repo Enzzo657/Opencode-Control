@@ -345,6 +345,10 @@ class PermissionReply(StrictModel):
     reply: Literal["once", "always", "reject"]
 
 
+class EventReadAll(StrictModel):
+    project_id: str | None = Field(default=None, max_length=100)
+
+
 class GitCommitCreate(StrictModel):
     message: str = Field(min_length=1, max_length=500)
     paths: list[str] = Field(min_length=1, max_length=200)
@@ -1606,12 +1610,53 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             "projects": len(state.store.list_projects()),
         }
 
+    @app.get("/api/v1/events")
+    def events(
+        project_id: str | None = None,
+        sync_project_id: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=100)] = 40,
+    ) -> dict[str, Any]:
+        if project_id is not None:
+            project_or_404(project_id)
+        if sync_project_id is not None:
+            project_or_404(sync_project_id)
+            with suppress(HTTPException, OpenCodeError, ProcessError):
+                project_snapshot(sync_project_id)
+        return state.store.list_events(project_id=project_id, limit=limit)
+
+    @app.post("/api/v1/events/{event_id}/read")
+    def read_event(event_id: str, guard: WriteGuard) -> dict[str, bool]:
+        if not state.store.mark_event_read(event_id):
+            raise HTTPException(status_code=404, detail="event not found")
+        return {"read": True}
+
+    @app.post("/api/v1/events/read-all")
+    def read_all_events(payload: EventReadAll, guard: WriteGuard) -> dict[str, int]:
+        if payload.project_id is not None:
+            project_or_404(payload.project_id)
+        return {"read": state.store.mark_events_read(project_id=payload.project_id)}
+
     def managed_server_status(project_id: str) -> dict[str, object]:
         status = state.processes.status(project_id)
         version = status.get("version")
         status["compatibility"] = compatibility_for_version(
             version if isinstance(version, str) else state.config_preflight.version()
         )
+        last_error = status.get("last_error")
+        if isinstance(last_error, dict):
+            timestamp = last_error.get("timestamp")
+            project = state.store.get_project(project_id)
+            if isinstance(timestamp, str) and project is not None:
+                state.store.record_event(
+                    dedupe_key=f"server:{project_id}:error:{timestamp}",
+                    project_id=project_id,
+                    kind="server_failed",
+                    severity="error",
+                    resource_title=str(project["name"]),
+                    detail=str(last_error.get("summary") or "OpenCode server failed"),
+                    occurred_at=timestamp,
+                    unread=True,
+                )
         return status
 
     @app.get("/api/v1/compatibility")
@@ -2478,6 +2523,18 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             }
         return status
 
+    def record_server_lifecycle(project: dict[str, Any], kind: str) -> None:
+        timestamp = datetime.now(UTC).isoformat()
+        state.store.record_event(
+            dedupe_key=f"server:{project['id']}:{kind}:{timestamp}",
+            project_id=str(project["id"]),
+            kind=kind,
+            severity="info",
+            resource_title=str(project["name"]),
+            occurred_at=timestamp,
+            unread=False,
+        )
+
     @app.post("/api/v1/projects/{project_id}/server/start")
     def start_server(project_id: str, guard: WriteGuard) -> dict[str, object]:
         project = project_or_404(project_id)
@@ -2485,14 +2542,16 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         validate_root(workspace)
         status = state.processes.start(project_id, workspace)
         state.store.set_managed_enabled(project_id, True)
+        record_server_lifecycle(project, "server_started")
         invalidate_dashboard_cache(project_id)
         return status
 
     @app.post("/api/v1/projects/{project_id}/server/stop")
     def stop_server(project_id: str, guard: WriteGuard) -> dict[str, object]:
-        project_or_404(project_id)
+        project = project_or_404(project_id)
         state.store.set_managed_enabled(project_id, False)
         status = state.processes.stop(project_id)
+        record_server_lifecycle(project, "server_stopped")
         invalidate_dashboard_cache(project_id)
         return status
 
@@ -2509,6 +2568,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         state.processes.stop(project_id)
         status = state.processes.start(project_id, workspace)
         state.store.set_managed_enabled(project_id, True)
+        record_server_lifecycle(project, "server_restarted")
         invalidate_dashboard_cache(project_id)
         return status
 
@@ -2525,10 +2585,39 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 status = state.processes.restart_if_running(project_id, workspace)
                 if status is not None:
                     restarted[project_id] = status
+                    record_server_lifecycle(project, "server_restarted")
                     invalidate_dashboard_cache(project_id)
             except (OSError, ProcessError, WorkspaceError) as error:
                 restarted[project_id] = {"state": "error", "detail": str(error)}
         return restarted
+
+    def record_permission_events(
+        project_id: str,
+        session_id: str,
+        permissions: list[dict[str, Any]],
+        *,
+        session_title: str | None = None,
+    ) -> None:
+        task = state.store.session_task(project_id, session_id)
+        resource_title = task.get("title") if task else session_title or session_id
+        for permission in permissions:
+            permission_id = permission.get("id")
+            if not isinstance(permission_id, str):
+                continue
+            permission_name = permission.get("permission")
+            detail = str(permission_name) if permission_name else None
+            state.store.record_event(
+                dedupe_key=f"permission:{project_id}:{session_id}:{permission_id}",
+                project_id=project_id,
+                kind="permission_requested",
+                severity="action",
+                resource_title=str(resource_title),
+                detail=detail,
+                task_id=task.get("id") if task else None,
+                session_id=session_id,
+                permission_id=permission_id,
+                unread=True,
+            )
 
     @app.get("/api/v1/projects/{project_id}/snapshot")
     def project_snapshot(project_id: str) -> dict[str, Any]:
@@ -2546,7 +2635,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 "providers": {"connected": [], "available": []},
                 "server": server,
             }
-        snapshot = client_for(project_id).snapshot()
+        client = client_for(project_id)
+        snapshot = client.snapshot()
         sessions = snapshot.get("sessions")
         if isinstance(sessions, list):
             linked = state.store.project_session_tasks(project_id)
@@ -2571,6 +2661,33 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                         break
                     parent_id = current.get("parentID")
                     current = by_id.get(str(parent_id)) if parent_id else None
+            statuses = snapshot.get("statuses")
+            if isinstance(statuses, dict):
+                active_states = {
+                    "busy",
+                    "dispatching",
+                    "in_progress",
+                    "pending",
+                    "queued",
+                    "running",
+                }
+                for session_id, raw_status in statuses.items():
+                    if not isinstance(session_id, str) or not isinstance(raw_status, dict):
+                        continue
+                    value = raw_status.get("type") or raw_status.get("status")
+                    if value not in active_states:
+                        continue
+                    with suppress(OpenCodeError):
+                        pending = client.session_permissions(session_id)
+                        if pending:
+                            session = by_id.get(session_id)
+                            title = session.get("title") if isinstance(session, dict) else None
+                            record_permission_events(
+                                project_id,
+                                session_id,
+                                pending,
+                                session_title=str(title) if title else None,
+                            )
         snapshot["server"] = (
             server
             if server["state"] == "running"
@@ -2768,6 +2885,16 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             return
         if task.get("cron"):
             status = "scheduled" if task.get("schedule_enabled") else "paused"
+            state.store.record_event(
+                dedupe_key=f"task-continuation:{task['id']}:{session_id}:{info.get('id')}",
+                project_id=project_id,
+                kind="task_completed",
+                severity="info",
+                resource_title=str(task["title"]),
+                task_id=str(task["id"]),
+                session_id=session_id,
+                unread=False,
+            )
         else:
             status = "completed"
         state.store.update_task(
@@ -2896,7 +3023,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     def session_permissions(project_id: str, session_id: str) -> list[dict[str, Any]]:
         client = client_for_session(project_id, session_id)
         assert client is not None
-        return client.session_permissions(session_id)
+        permissions = client.session_permissions(session_id)
+        record_permission_events(project_id, session_id, permissions)
+        return permissions
 
     @app.post(
         "/api/v1/projects/{project_id}/sessions/{session_id}/permissions/{permission_id}/reply"
@@ -2911,6 +3040,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         client = client_for_session(project_id, session_id)
         assert client is not None
         client.reply_permission(session_id, permission_id, payload.reply)
+        state.store.resolve_permission_event(project_id, session_id, permission_id)
         return {"replied": True}
 
     @app.post("/api/v1/projects/{project_id}/sessions", status_code=201)

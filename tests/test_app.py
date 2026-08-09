@@ -1444,6 +1444,14 @@ def test_task_launch_uses_dedicated_opencode_session(
             f"/api/v1/projects/{project_id}/sessions/ses_task/permissions"
         )
         assert permissions.json()[0]["id"] == "per_1"
+        event_payload = client.get(
+            "/api/v1/events", params={"project_id": project_id}
+        ).json()
+        permission_event = next(
+            item for item in event_payload["events"] if item["kind"] == "permission_requested"
+        )
+        assert permission_event["session_id"] == "ses_task"
+        assert permission_event["read_at"] is None
         permission_reply = client.post(
             f"/api/v1/projects/{project_id}/sessions/ses_task/permissions/per_1/reply",
             headers=_csrf(client),
@@ -1451,6 +1459,21 @@ def test_task_launch_uses_dedicated_opencode_session(
         )
         assert permission_reply.status_code == 200
         assert calls[-1] == ("permission", ("ses_task", "per_1", "once"))
+        resolved_events = client.get(
+            "/api/v1/events", params={"project_id": project_id}
+        ).json()["events"]
+        assert next(
+            item for item in resolved_events if item["id"] == permission_event["id"]
+        )["read_at"] is not None
+        read_all = client.post(
+            "/api/v1/events/read-all",
+            headers=_csrf(client),
+            json={"project_id": project_id},
+        )
+        assert read_all.status_code == 200
+        assert client.get(
+            "/api/v1/events", params={"project_id": project_id}
+        ).json()["unread"] == 0
 
         follow_up = client.post(
             f"/api/v1/projects/{project_id}/sessions/ses_task/prompt",

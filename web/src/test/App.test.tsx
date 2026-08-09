@@ -52,6 +52,8 @@ describe("OpenCode Control", () => {
       const path = String(input);
       if (path.endsWith("/api/v1/projects")) return response([project]);
       if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.1.0", projects: 1 });
+      if (path.includes("/api/v1/events") && (!init?.method || init.method === "GET")) return response({ events: [], unread: 0 });
+      if (path.includes("/api/v1/events/") && init?.method === "POST") return response(path.endsWith("/read-all") ? { read: 0 } : { read: true });
       if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
       if (path.includes("/api/v1/search")) { const offset = Number(new URL(path, "http://localhost").searchParams.get("offset") ?? 0); return response({ query: "deploy", scope: path.includes("scope=global") ? "global" : "project", partial: false, unavailable_projects: [], indexed_sessions: offset ? 0 : 1, offset, has_more: offset === 0, results: [{ kind: "message", project_id: project.id, project_name: project.name, session_id: "ses_1", session_title: "Fix checkout", message_id: offset ? "msg_2" : "msg_1", role: "user", created_at: Date.now(), snippet: offset ? "Deploy through the release pipeline" : "Rotate deployment token" }] }); }
       if (path.includes("/api/v1/artifacts/archive")) return new Response(new Blob(["zip"]), { status: 200, headers: { "Content-Type": "application/zip" } });
@@ -96,6 +98,29 @@ describe("OpenCode Control", () => {
     fireEvent.click(screen.getByRole("button", { name: /Текущий проект.*Checkout API/ }));
     expect(screen.getAllByText("Подключен")).toHaveLength(2);
     expect(screen.getByText("Control 0.1.0")).toBeInTheDocument();
+  });
+
+  it("opens unread events and deep-links to their session", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.includes("/api/v1/events") && (!init?.method || init.method === "GET")) return response({ unread: 1, events: [{ id: "evt_failed", project_id: project.id, project_name: project.name, task_id: "task_1", session_id: "ses_1", run_id: null, permission_id: null, kind: "task_failed", severity: "error", resource_title: "Fix checkout", detail: "server unavailable", occurred_at: new Date().toISOString(), read_at: null }, { id: "evt_done", project_id: project.id, project_name: project.name, task_id: "task_1", session_id: "ses_1", run_id: null, permission_id: null, kind: "task_completed", severity: "info", resource_title: "Fix checkout", detail: null, occurred_at: new Date(Date.now() - 1000).toISOString(), read_at: new Date().toISOString() }] });
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    const trigger = await screen.findByRole("button", { name: "Открыть центр событий" });
+    expect(trigger).toHaveTextContent("1");
+    fireEvent.click(trigger);
+    expect(await screen.findByRole("region", { name: "События" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Текущий" })).toHaveClass("active");
+    expect(screen.getByText("Задача завершилась с ошибкой")).toBeInTheDocument();
+    expect(screen.getByText("server unavailable")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Fix checkout.*Задача завершилась с ошибкой/ }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/api/v1/events/evt_failed/read") && init?.method === "POST")).toBe(true));
+    expect(await screen.findByRole("dialog", { name: "Сессия Fix checkout" })).toBeInTheDocument();
+    expect(new URLSearchParams(location.search).get("session")).toBe("ses_1");
   });
 
   it("keeps per-session task outcomes consistent on Dashboard and Sessions", async () => {

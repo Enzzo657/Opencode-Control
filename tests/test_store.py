@@ -363,3 +363,52 @@ def test_task_session_statuses_are_scoped_to_each_execution(tmp_path: Path) -> N
     assert links["ses_completed"]["session_status"] == "completed"
     assert store.session_task(project_id, "ses_failed") == links["ses_failed"]
     store.close()
+
+
+def test_events_track_task_transitions_and_read_state(tmp_path: Path) -> None:
+    store = ControlStore(tmp_path / "data")
+    root = tmp_path / "project"
+    root.mkdir()
+    project = store.create_project(name="Events", root=root, endpoint=None)
+    project_id = str(project["id"])
+    task = store.create_task(
+        project_id,
+        title="Deploy",
+        prompt="Deploy safely",
+        agent="build",
+        model=None,
+    )
+    task_id = str(task["id"])
+    store.update_task(project_id, task_id, status="running", session_id="ses_deploy")
+    store.update_task(
+        project_id,
+        task_id,
+        status="failed",
+        session_id="ses_deploy",
+        error="server unavailable",
+    )
+    store.update_task(
+        project_id,
+        task_id,
+        status="failed",
+        session_id="ses_deploy",
+        error="server unavailable",
+    )
+
+    payload = store.list_events(project_id=project_id)
+    assert payload["unread"] == 1
+    assert len(payload["events"]) == 1
+    failed = payload["events"][0]
+    assert failed["kind"] == "task_failed"
+    assert failed["session_id"] == "ses_deploy"
+    assert failed["detail"] == "server unavailable"
+    assert failed["read_at"] is None
+    assert store.mark_event_read(str(failed["id"]))
+    assert store.list_events(project_id=project_id)["unread"] == 0
+
+    store.update_task(project_id, task_id, status="running", session_id="ses_deploy")
+    store.update_task(project_id, task_id, status="completed", session_id="ses_deploy")
+    payload = store.list_events(project_id=project_id)
+    assert payload["events"][0]["kind"] == "task_completed"
+    assert payload["events"][0]["read_at"] is not None
+    store.close()

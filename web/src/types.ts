@@ -29,6 +29,27 @@ export type Project = {
   server: ServerState;
 };
 
+export type ControlEvent = {
+  id: string;
+  project_id: string;
+  project_name: string;
+  task_id: string | null;
+  session_id: string | null;
+  run_id: string | null;
+  permission_id: string | null;
+  kind: string;
+  severity: "info" | "warning" | "error" | "action";
+  resource_title: string;
+  detail: string | null;
+  occurred_at: string;
+  read_at: string | null;
+};
+
+export type EventFeed = {
+  events: ControlEvent[];
+  unread: number;
+};
+
 export type Session = {
   id: string;
   title?: string;

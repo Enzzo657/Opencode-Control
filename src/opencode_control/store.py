@@ -5,7 +5,7 @@ import os
 import sqlite3
 import threading
 import uuid
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -127,6 +127,25 @@ class ControlStore:
                     ON scheduled_runs(status, lease_expires_at, scheduled_for);
                 CREATE INDEX IF NOT EXISTS scheduled_runs_task_history
                     ON scheduled_runs(project_id, task_id, scheduled_for DESC);
+                CREATE TABLE IF NOT EXISTS control_events (
+                    id TEXT PRIMARY KEY,
+                    dedupe_key TEXT NOT NULL UNIQUE,
+                    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+                    task_id TEXT,
+                    session_id TEXT,
+                    run_id TEXT,
+                    permission_id TEXT,
+                    kind TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    resource_title TEXT NOT NULL,
+                    detail TEXT,
+                    occurred_at TEXT NOT NULL,
+                    read_at TEXT
+                );
+                CREATE INDEX IF NOT EXISTS control_events_occurred
+                    ON control_events(occurred_at DESC, id DESC);
+                CREATE INDEX IF NOT EXISTS control_events_unread
+                    ON control_events(read_at, occurred_at DESC);
                 CREATE TABLE IF NOT EXISTS search_sessions (
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                     session_id TEXT NOT NULL,
@@ -235,6 +254,10 @@ class ControlStore:
                     "UPDATE projects SET root_device = ?, root_inode = ? WHERE id = ?",
                     (stat.st_dev, stat.st_ino, row["id"]),
                 )
+            self._connection.execute(
+                "DELETE FROM control_events WHERE occurred_at < ?",
+                ((datetime.now(UTC) - timedelta(days=30)).isoformat(),),
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -552,15 +575,176 @@ class ControlStore:
         session_id: str | None = None,
         error: str | None = None,
     ) -> dict[str, Any] | None:
+        timestamp = _now()
         with self._lock, self._connection:
+            previous = self._connection.execute(
+                "SELECT title, status, session_id, error FROM tasks "
+                "WHERE project_id = ? AND id = ?",
+                (project_id, task_id),
+            ).fetchone()
             self._connection.execute(
                 """
                 UPDATE tasks SET status = ?, session_id = COALESCE(?, session_id),
                     error = ?, updated_at = ? WHERE project_id = ? AND id = ?
                 """,
-                (status, session_id, error, _now(), project_id, task_id),
+                (status, session_id, error, timestamp, project_id, task_id),
             )
+            if previous is not None and status in {"completed", "failed", "aborted"} and (
+                previous["status"] != status or previous["error"] != error
+            ):
+                current_session_id = session_id or previous["session_id"]
+                self._record_event_locked(
+                    dedupe_key=f"task:{task_id}:{current_session_id or '-'}:{status}:{timestamp}",
+                    project_id=project_id,
+                    kind=f"task_{status}",
+                    severity="error" if status == "failed" else "info",
+                    resource_title=str(previous["title"]),
+                    detail=error,
+                    task_id=task_id,
+                    session_id=str(current_session_id) if current_session_id else None,
+                    occurred_at=timestamp,
+                    unread=status == "failed",
+                )
         return self.get_task(project_id, task_id)
+
+    def record_event(
+        self,
+        *,
+        dedupe_key: str,
+        project_id: str,
+        kind: str,
+        severity: str,
+        resource_title: str,
+        detail: str | None = None,
+        task_id: str | None = None,
+        session_id: str | None = None,
+        run_id: str | None = None,
+        permission_id: str | None = None,
+        occurred_at: str | None = None,
+        unread: bool = False,
+    ) -> dict[str, Any] | None:
+        with self._lock, self._connection:
+            event_id = self._record_event_locked(
+                dedupe_key=dedupe_key,
+                project_id=project_id,
+                kind=kind,
+                severity=severity,
+                resource_title=resource_title,
+                detail=detail,
+                task_id=task_id,
+                session_id=session_id,
+                run_id=run_id,
+                permission_id=permission_id,
+                occurred_at=occurred_at or _now(),
+                unread=unread,
+            )
+            if event_id is None:
+                return None
+            row = self._connection.execute(
+                "SELECT * FROM control_events WHERE id = ?", (event_id,)
+            ).fetchone()
+        return dict(row) if row else None
+
+    def list_events(
+        self, *, project_id: str | None = None, limit: int = 50
+    ) -> dict[str, Any]:
+        where = "WHERE events.project_id = ?" if project_id else ""
+        parameters: tuple[Any, ...] = (project_id,) if project_id else ()
+        with self._lock:
+            rows = self._connection.execute(
+                f"""
+                SELECT events.*, projects.name AS project_name
+                FROM control_events AS events
+                JOIN projects ON projects.id = events.project_id
+                {where}
+                ORDER BY events.occurred_at DESC, events.id DESC LIMIT ?
+                """,
+                (*parameters, limit),
+            ).fetchall()
+            unread = self._connection.execute(
+                f"SELECT COUNT(*) FROM control_events AS events {where} AND events.read_at IS NULL"
+                if where
+                else "SELECT COUNT(*) FROM control_events AS events WHERE events.read_at IS NULL",
+                parameters,
+            ).fetchone()
+        return {
+            "events": [dict(row) for row in rows],
+            "unread": int(unread[0]) if unread else 0,
+        }
+
+    def mark_event_read(self, event_id: str) -> bool:
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                "UPDATE control_events SET read_at = COALESCE(read_at, ?) WHERE id = ?",
+                (_now(), event_id),
+            )
+        return cursor.rowcount == 1
+
+    def mark_events_read(self, *, project_id: str | None = None) -> int:
+        query = "UPDATE control_events SET read_at = ? WHERE read_at IS NULL"
+        parameters: tuple[Any, ...] = (_now(),)
+        if project_id:
+            query += " AND project_id = ?"
+            parameters += (project_id,)
+        with self._lock, self._connection:
+            cursor = self._connection.execute(query, parameters)
+        return cursor.rowcount
+
+    def resolve_permission_event(
+        self, project_id: str, session_id: str, permission_id: str
+    ) -> None:
+        with self._lock, self._connection:
+            self._connection.execute(
+                """
+                UPDATE control_events SET read_at = COALESCE(read_at, ?)
+                WHERE project_id = ? AND session_id = ? AND permission_id = ?
+                """,
+                (_now(), project_id, session_id, permission_id),
+            )
+
+    def _record_event_locked(
+        self,
+        *,
+        dedupe_key: str,
+        project_id: str,
+        kind: str,
+        severity: str,
+        resource_title: str,
+        detail: str | None,
+        task_id: str | None,
+        session_id: str | None,
+        run_id: str | None = None,
+        permission_id: str | None = None,
+        occurred_at: str,
+        unread: bool,
+    ) -> str | None:
+        event_id = f"evt_{uuid.uuid4().hex}"
+        clean_detail = " ".join((detail or "").split())[:500] or None
+        cursor = self._connection.execute(
+            """
+            INSERT INTO control_events (
+                id, dedupe_key, project_id, task_id, session_id, run_id, permission_id,
+                kind, severity, resource_title, detail, occurred_at, read_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(dedupe_key) DO NOTHING
+            """,
+            (
+                event_id,
+                dedupe_key[:500],
+                project_id,
+                task_id,
+                session_id,
+                run_id,
+                permission_id,
+                kind,
+                severity,
+                resource_title[:200],
+                clean_detail,
+                occurred_at,
+                None if unread else occurred_at,
+            ),
+        )
+        return event_id if cursor.rowcount == 1 else None
 
     def record_task_prompt(
         self,
@@ -1166,6 +1350,24 @@ class ControlStore:
                         error = ?, updated_at = ? WHERE project_id = ? AND id = ?
                     """,
                     (error, timestamp, run["project_id"], run["task_id"]),
+                )
+            task = self._connection.execute(
+                "SELECT title FROM tasks WHERE project_id = ? AND id = ?",
+                (run["project_id"], run["task_id"]),
+            ).fetchone()
+            if task is not None:
+                self._record_event_locked(
+                    dedupe_key=f"run:{run_id}:{status}",
+                    project_id=str(run["project_id"]),
+                    kind=f"scheduled_run_{status}",
+                    severity="error" if status == "failed" else "info",
+                    resource_title=str(task["title"]),
+                    detail=error,
+                    task_id=str(run["task_id"]),
+                    session_id=str(run["session_id"]) if run["session_id"] else None,
+                    run_id=run_id,
+                    occurred_at=timestamp,
+                    unread=status == "failed",
                 )
         return True
 

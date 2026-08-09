@@ -114,18 +114,19 @@ pinned versions, source verification, backup и явного подтвержд�
 Отложен до стабилизации macOS/Linux. Потребуется отдельная реализация process groups,
 signals, file locks, workspace security для reparse points и native Windows tests.
 
-## 2. Центр событий и уведомлений
+## 2. Центр событий
 
 Следующий продуктовый этап после завершения Search и Artifacts.
 
-- [ ] Собрать завершения и ошибки Tasks и Sessions в единый локальный event stream.
-- [ ] Показывать ненавязчивые in-app уведомления без зависимости от открытого экрана.
-- [ ] Добавить unread state, фильтры по проекту и переход к исходной Task или Session.
-- [ ] Подключить системные уведомления как явную opt-in настройку.
-- [ ] Не сохранять prompt, message text и secrets в notification payload.
+- [x] Собрать завершения и ошибки Tasks и Sessions в единый локальный event stream.
+- [x] Показывать события во встроенной панели независимо от открытого экрана.
+- [x] Добавить unread state, фильтры по проекту и переход к исходной Session.
+- [x] Хранить successful history без unread badge и проблемы/permissions с badge.
+- [x] Не сохранять prompt, message text и secrets в event payload.
+- Системные уведомления macOS/Linux не планируются: события остаются внутри Control.
 
 ## Рекомендуемый порядок
 
-1. Реализовать локальный центр событий и in-app уведомления.
-2. После него провести stabilization pass и решить, готова ли alpha к public release.
+1. Провести stabilization pass и проверить alpha на длительной фоновой работе.
+2. Решить, готова ли alpha к public release.
 3. Возврат к Plugins и Windows только после отдельного security/platform решения.
