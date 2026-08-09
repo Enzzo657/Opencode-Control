@@ -722,10 +722,10 @@ describe("OpenCode Control", () => {
     expect(document.querySelector("script")).toBeNull();
   });
 
-  it("shows local project images inline with open and download actions", async () => {
+  it("opens local project images in an in-app gallery", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_image", role: "assistant" }, parts: [{ type: "text", text: "Создан [рисунок](output.png)\n\n![вложенный](images/preview.webp)\n\n![remote](https://example.test/image.png)" }] }]);
+      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_image", role: "assistant" }, parts: [{ type: "text", text: "Создан [рисунок](output.png)\n\nФайл находится здесь: `/code/checkout/output.png`\n\n![вложенный](images/preview.webp)\n\n![remote](https://example.test/image.png)" }] }]);
       return fallback(input, init);
     });
     render(<App />);
@@ -736,10 +736,22 @@ describe("OpenCode Control", () => {
     const images = await screen.findAllByRole("img");
     expect(images).toHaveLength(2);
     expect(images[0]).toHaveAttribute("src", expect.stringContaining(`/api/v1/projects/${project.id}/media?path=output.png`));
-    expect(screen.getByText("/code/checkout/output.png")).toBeInTheDocument();
-    expect(screen.getByText("/code/checkout/images/preview.webp")).toBeInTheDocument();
-    expect(screen.getAllByRole("link", { name: /Скачать/ })).toHaveLength(2);
+    expect(screen.queryByText("/code/checkout/output.png")).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Открыть" })).not.toBeInTheDocument();
+    const downloadLinks = screen.getAllByRole("link", { name: /Скачать изображение/ });
+    expect(downloadLinks).toHaveLength(2);
+    expect(downloadLinks.every((link) => link.textContent === "")).toBe(true);
     expect(screen.getByText("Изображение: remote")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Увеличить изображение output.png" }));
+    const viewer = await screen.findByRole("dialog", { name: "Просмотр изображений" });
+    expect(viewer).toHaveTextContent("1 / 2");
+    expect(viewer.querySelector("img")).toHaveAttribute("src", expect.stringContaining("path=output.png"));
+    fireEvent.click(screen.getByRole("button", { name: "Следующее изображение" }));
+    expect(viewer).toHaveTextContent("2 / 2");
+    expect(viewer.querySelector("img")).toHaveAttribute("src", expect.stringContaining("images%2Fpreview.webp"));
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Просмотр изображений" })).not.toBeInTheDocument());
   });
 
   it("shows provider errors without message parts", async () => {
