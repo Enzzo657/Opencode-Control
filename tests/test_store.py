@@ -310,3 +310,56 @@ def test_overlap_skip_does_not_overwrite_active_task_status(tmp_path: Path) -> N
     assert store.get_scheduled_run(str(run["id"]))["status"] == "skipped"
     assert store.get_task(project_id, task_id)["status"] == "running"
     store.close()
+
+
+def test_task_session_statuses_are_scoped_to_each_execution(tmp_path: Path) -> None:
+    store = ControlStore(tmp_path / "data")
+    project_id, task_id = _scheduled_task(store, tmp_path)
+
+    for day, session_id, outcome in [
+        (27, "ses_completed", "completed"),
+        (28, "ses_failed", "failed"),
+    ]:
+        run = store.materialize_scheduled_run(
+            project_id,
+            task_id,
+            expected_run_at=f"2026-07-{day:02d}T09:00:00+00:00",
+            next_run_at=f"2026-07-{day + 1:02d}T09:00:00+00:00",
+            created_at=f"2026-07-{day:02d}T09:00:01+00:00",
+        )
+        assert run is not None
+        token = f"owner-{day}"
+        assert store.claim_scheduled_run(
+            str(run["id"]),
+            lease_token=token,
+            lease_expires_at=f"2026-07-{day:02d}T09:02:00+00:00",
+            claimed_at=f"2026-07-{day:02d}T09:00:02+00:00",
+        )
+        assert store.attach_scheduled_run_session(str(run["id"]), token, session_id)
+        assert store.mark_scheduled_run_running(str(run["id"]), token)
+        assert store.finish_scheduled_run(
+            str(run["id"]),
+            outcome,
+            "run failed" if outcome == "failed" else None,
+        )
+
+    links = store.project_session_tasks(project_id)
+    assert links["ses_completed"]["session_status"] == "completed"
+    assert "session_error" not in links["ses_completed"]
+    assert links["ses_failed"]["session_status"] == "failed"
+    assert links["ses_failed"]["session_error"] == "run failed"
+
+    store.add_task_session(project_id, task_id, "ses_manual")
+    store.update_task(
+        project_id,
+        task_id,
+        status="failed",
+        session_id="ses_manual",
+        error="server unavailable",
+    )
+    links = store.project_session_tasks(project_id)
+    assert links["ses_manual"]["session_status"] == "failed"
+    assert links["ses_manual"]["session_error"] == "server unavailable"
+    assert links["ses_completed"]["session_status"] == "completed"
+    assert store.session_task(project_id, "ses_failed") == links["ses_failed"]
+    store.close()

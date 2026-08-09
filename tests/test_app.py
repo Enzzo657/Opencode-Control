@@ -1530,11 +1530,35 @@ def test_task_launch_uses_dedicated_opencode_session(
         sessions = {item["id"]: item for item in snapshot["sessions"]}
         assert sessions["ses_task"]["control_task"]["title"] == "Review auth"
         assert sessions["ses_task"]["control_task"]["status"] == "running"
+        assert sessions["ses_task"]["control_task"]["session_status"] == "running"
         assert sessions["ses_extra"]["control_task"]["title"] == "Review auth"
+        assert "session_status" not in sessions["ses_extra"]["control_task"]
         assert sessions["ses_child"]["control_task"]["title"] == "Review auth"
         assert "control_task" not in sessions["ses_cli"]
 
         control = client.app.state.control
+        control.store.update_task(
+            project_id,
+            response.json()["id"],
+            status="failed",
+            session_id="ses_task",
+            error="OpenCode server is unavailable",
+        )
+        failed_messages = client.get(
+            f"/api/v1/projects/{project_id}/sessions/ses_task/messages"
+        ).json()
+        historical_messages = client.get(
+            f"/api/v1/projects/{project_id}/sessions/ses_extra/messages"
+        ).json()
+        assert failed_messages[-1]["info"]["error"] == "OpenCode server is unavailable"
+        assert not any(item.get("info", {}).get("error") for item in historical_messages)
+        control.store.update_task(
+            project_id,
+            response.json()["id"],
+            status="running",
+            session_id="ses_task",
+        )
+
         control.dashboard_cache[(project_id, "7d", "UTC")] = (
             datetime.now(UTC),
             {"stale": True},
@@ -1887,6 +1911,22 @@ def test_dashboard_aggregates_message_usage_for_project_and_global_scope(
     with _client(tmp_path) as client:
         first = _project(client, roots[0], endpoint="http://127.0.0.1:4096")
         _project(client, roots[1], endpoint="http://127.0.0.1:4097")
+        control = client.app.state.control
+        task = control.store.create_task(
+            first["id"],
+            title="Failed session",
+            prompt="Run",
+            agent="build",
+            model="openai/gpt-test",
+        )
+        control.store.update_task(
+            first["id"],
+            str(task["id"]),
+            status="failed",
+            session_id="ses_shared",
+            error="server unavailable",
+        )
+        control.store.add_task_session(first["id"], str(task["id"]), "ses_shared")
         project_usage = client.get(
             "/api/v1/dashboard",
             params={
@@ -1902,6 +1942,7 @@ def test_dashboard_aggregates_message_usage_for_project_and_global_scope(
         )
 
         assert project_usage.status_code == 200, project_usage.text
+        assert project_usage.json()["recent_sessions"][0]["status"] == "failed"
         assert project_usage.json()["totals"] == {
             "id": "total",
             "tokens": {

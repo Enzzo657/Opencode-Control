@@ -2204,6 +2204,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             project_row = usage_row(project_id_value)
             project_row["name"] = str(project["name"])
             projects_usage[project_id_value] = project_row
+            linked_tasks = state.store.project_session_tasks(project_id_value)
             try:
                 client = client_for(project_id_value)
                 snapshot = client.snapshot()
@@ -2290,28 +2291,49 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     cast(set[str], totals["sessions"]).add(session_key)
                     cast(set[str], project_row["sessions"]).add(session_key)
                     status = statuses.get(session_id, {})
-                    status_value = status.get("type") if isinstance(status, dict) else None
-                    if status_value not in {None, "idle"}:
-                        totals["active"] += 1
-                    recent_sessions.append(
-                        {
-                            "id": session_id,
-                            "project_id": project_id_value,
-                            "project_name": project["name"],
-                            "title": session.get("title"),
-                            "agent": session.get("agent"),
-                            "model": session.get("model"),
-                            "time": session.get("time"),
-                            "status": status_value or "idle",
-                            "cost": session.get("cost") or 0,
-                            "tokens": session.get("tokens") or {},
-                        }
+                    runtime_status = (
+                        status.get("type") or status.get("status")
+                        if isinstance(status, dict)
+                        else None
                     )
+                    persisted_status = linked_tasks.get(session_id, {}).get("session_status")
+                    status_value = (
+                        runtime_status
+                        if runtime_status not in {None, "idle"}
+                        else persisted_status or runtime_status or "idle"
+                    )
+                    if status_value not in {"completed", "idle", "failed", "aborted"}:
+                        totals["active"] += 1
+                    recent_session = {
+                        "id": session_id,
+                        "project_id": project_id_value,
+                        "project_name": project["name"],
+                        "title": session.get("title"),
+                        "agent": session.get("agent"),
+                        "model": session.get("model"),
+                        "time": session.get("time"),
+                        "status": status_value,
+                        "cost": session.get("cost") or 0,
+                        "tokens": session.get("tokens") or {},
+                    }
+                    recent_sessions.append(recent_session)
+                else:
+                    recent_session = None
                 try:
                     messages = client.session_messages(session_id)
                 except OpenCodeError:
                     partial = True
                     continue
+                if recent_session is not None:
+                    assistant_messages = [
+                        message
+                        for message in messages
+                        if isinstance(message, dict)
+                        and isinstance(message.get("info"), dict)
+                        and message["info"].get("role") == "assistant"
+                    ]
+                    if assistant_messages and assistant_messages[-1]["info"].get("error"):
+                        recent_session["status"] = "failed"
                 for index, message in enumerate(messages):
                     if not isinstance(message, dict) or not isinstance(message.get("info"), dict):
                         continue
@@ -2502,13 +2524,16 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         validate_root(workspace)
         status = state.processes.start(project_id, workspace)
         state.store.set_managed_enabled(project_id, True)
+        invalidate_dashboard_cache(project_id)
         return status
 
     @app.post("/api/v1/projects/{project_id}/server/stop")
     def stop_server(project_id: str, guard: WriteGuard) -> dict[str, object]:
         project_or_404(project_id)
         state.store.set_managed_enabled(project_id, False)
-        return state.processes.stop(project_id)
+        status = state.processes.stop(project_id)
+        invalidate_dashboard_cache(project_id)
+        return status
 
     @app.post("/api/v1/projects/{project_id}/server/restart")
     def restart_server(project_id: str, guard: WriteGuard) -> dict[str, object]:
@@ -2523,6 +2548,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         state.processes.stop(project_id)
         status = state.processes.start(project_id, workspace)
         state.store.set_managed_enabled(project_id, True)
+        invalidate_dashboard_cache(project_id)
         return status
 
     @app.post("/api/v1/servers/restart")
@@ -2538,6 +2564,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 status = state.processes.restart_if_running(project_id, workspace)
                 if status is not None:
                     restarted[project_id] = status
+                    invalidate_dashboard_cache(project_id)
             except (OSError, ProcessError, WorkspaceError) as error:
                 restarted[project_id] = {"state": "error", "detail": str(error)}
         return restarted
@@ -2725,12 +2752,12 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         client = client_for_session(project_id, session_id)
         assert client is not None
         messages = client.session_messages(session_id)
-        task = state.store.task_for_session(project_id, session_id)
+        task = state.store.session_task(project_id, session_id)
         if (
             task is not None
-            and task.get("status") == "failed"
-            and isinstance(task.get("error"), str)
-            and task["error"]
+            and task.get("session_status") == "failed"
+            and isinstance(task.get("session_error"), str)
+            and task["session_error"]
             and not any(
                 isinstance(message, dict)
                 and isinstance(message.get("info"), dict)
@@ -2743,7 +2770,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     "info": {
                         "id": f"control-error-{task['id']}",
                         "role": "assistant",
-                        "error": task["error"],
+                        "error": task["session_error"],
                     },
                     "parts": [],
                 }

@@ -72,7 +72,7 @@ export function Sessions({ project, refreshKey, initialSearchTarget = null, onIn
         {sessions.length === 0 && <Empty icon={<MessageSquareText />} title={t("sessions.empty")} detail={t("sessions.emptyDetail")} />}
       </Panel>
       {composer && <SessionComposer project={project} agents={resource.data?.agents ?? []} commands={commands.data ?? []} providers={resource.data?.providers?.available ?? []} config={resource.data?.config} defaultModel={selectedDefaultModel(resource.data)} onClose={() => setComposer(false)} onCreated={() => { setComposer(false); resource.reload(); }} />}
-      {selected && <SessionDrawer project={project} session={selected} status={sessionStatus(resource.data, selected)} taskStatus={selected.control_task?.status} agents={resource.data?.agents ?? []} providers={resource.data?.providers?.available ?? []} mcp={resource.data?.mcp ?? {}} config={resource.data?.config} initialModel={modelIdOf(selected) || resource.data?.config?.model || ""} searchTarget={drawerSearchTarget?.sessionId === selected.id ? drawerSearchTarget : null} onDelete={() => void remove(selected)} onClose={() => { setSelectedSessionId(null); setDrawerSearchTarget(null); }} />}
+      {selected && <SessionDrawer project={project} session={selected} status={sessionStatus(resource.data, selected)} taskStatus={selected.control_task?.session_status} agents={resource.data?.agents ?? []} providers={resource.data?.providers?.available ?? []} mcp={resource.data?.mcp ?? {}} config={resource.data?.config} initialModel={modelIdOf(selected) || resource.data?.config?.model || ""} searchTarget={drawerSearchTarget?.sessionId === selected.id ? drawerSearchTarget : null} onDelete={() => void remove(selected)} onClose={() => { setSelectedSessionId(null); setDrawerSearchTarget(null); }} />}
     </Page>
   );
 }
@@ -269,14 +269,14 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
   const activeTodos = (todos.data ?? []).filter((todo) => todo.status !== "completed" && todo.status !== "cancelled");
   const mcpEntries = Object.entries(mcp).filter(([, value]) => value.status === "connected").sort(([left], [right]) => left.localeCompare(right));
   const liveStatus = runtimeStatus(messages.data ?? [], now);
-  const linkedTaskStatus = taskStatusOverride ?? taskStatus ?? session.control_task?.status;
+  const linkedTaskStatus = taskStatusOverride ?? taskStatus ?? session.control_task?.session_status;
   const stopped = aborted || linkedTaskStatus === "aborted";
   const failed = linkedTaskStatus === "failed" || status === "failed" || status === "error" || liveStatus === "failed";
   const observedStatus = failed ? "failed" : activeSessionStatus(status) ? status : liveStatus ?? status;
   const effectiveStatus = stopped ? "aborted" : busy || pendingFrom ? "busy" : observedStatus;
   const responseActive = !stopped && (busy || aborting || pendingFrom !== null || activeSessionStatus(observedStatus));
   const gitVisible = git.data?.available === true && (gitVisibility === "shown" || (gitVisibility === "auto" && git.data.changes.length > 0));
-  useEffect(() => { setTaskStatusOverride(null); }, [taskStatus, session.control_task?.status]);
+  useEffect(() => { setTaskStatusOverride(null); }, [taskStatus, session.control_task?.session_status]);
   useEffect(() => {
     if (selectionRestored || messages.data === null) return;
     const previous = latestUserSelection(messages.data);

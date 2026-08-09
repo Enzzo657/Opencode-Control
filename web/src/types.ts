@@ -43,7 +43,13 @@ export type Session = {
     cache?: { read?: number; write?: number };
   };
   time?: { created?: number; updated?: number };
-  control_task?: { id: string; title: string; status?: string };
+  control_task?: {
+    id: string;
+    title: string;
+    status?: string;
+    session_status?: string;
+    session_error?: string;
+  };
 };
 
 export type UsageTokens = {

@@ -98,6 +98,41 @@ describe("OpenCode Control", () => {
     expect(screen.getByText("Control 0.1.0")).toBeInTheDocument();
   });
 
+  it("keeps per-session task outcomes consistent on Dashboard and Sessions", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.includes("/api/v1/dashboard")) {
+        const payload = dashboardUsage();
+        payload.recent_sessions = [
+          { ...payload.recent_sessions[0], id: "ses_failed", title: "Failed run", status: "idle" },
+          { ...payload.recent_sessions[0], id: "ses_completed", title: "Completed run", status: "idle" },
+        ];
+        return response(payload);
+      }
+      if (path.includes("/snapshot")) {
+        const original = await fallback(input, init);
+        const payload = await original.json();
+        payload.sessions = [
+          { ...payload.sessions[0], id: "ses_failed", title: "Failed run", control_task: { id: "task_1", title: "Daily task", status: "failed", session_status: "failed", session_error: "server unavailable" } },
+          { ...payload.sessions[0], id: "ses_completed", title: "Completed run", control_task: { id: "task_1", title: "Daily task", status: "failed", session_status: "completed" } },
+        ];
+        payload.statuses = {};
+        return response(payload);
+      }
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    expect((await screen.findByText("Failed run")).closest(".dashboard-session-rows > div")).toHaveTextContent("Ошибка");
+    expect(screen.getByText("Completed run").closest(".dashboard-session-rows > div")).toHaveTextContent("Завершена");
+
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    expect((await screen.findByText("Failed run")).closest(".table-row")).toHaveTextContent("Ошибка");
+    expect(screen.getByText("Completed run").closest(".table-row")).toHaveTextContent("Завершена");
+  });
+
   it("switches Dashboard usage between project, global scope, and periods", async () => {
     render(<App />);
     expect(await screen.findByRole("heading", { name: "Дашборд" })).toBeInTheDocument();

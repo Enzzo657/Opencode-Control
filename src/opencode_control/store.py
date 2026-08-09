@@ -14,6 +14,42 @@ def _now() -> str:
     return datetime.now(UTC).isoformat()
 
 
+def _session_task_link(row: sqlite3.Row, run: sqlite3.Row | None) -> dict[str, str]:
+    session_id = str(row["session_id"])
+    task_status = str(row["status"])
+    task_is_current = row["current_session_id"] == session_id and task_status not in {
+        "scheduled",
+        "paused",
+    }
+    task_is_newer = run is None or str(row["updated_at"]) > str(run["updated_at"])
+    status: str | None = None
+    error: str | None = None
+    if task_is_current and task_is_newer:
+        status = task_status
+        error = str(row["error"]) if row["error"] else None
+    elif run is not None:
+        status = str(run["status"])
+        error = str(run["error"]) if run["error"] else None
+    normalized = {
+        "claimed": "dispatching",
+        "session_created": "dispatching",
+        "ambiguous": "dispatching",
+        "cancelled": "aborted",
+        "skipped": "aborted",
+        "error": "failed",
+    }.get(status or "", status)
+    result = {
+        "id": str(row["id"]),
+        "title": str(row["title"]),
+        "status": task_status,
+    }
+    if normalized:
+        result["session_status"] = normalized
+    if error:
+        result["session_error"] = error
+    return result
+
+
 class ControlStore:
     def __init__(self, data_dir: Path) -> None:
         data_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -646,21 +682,49 @@ class ControlStore:
         with self._lock:
             rows = self._connection.execute(
                 """
-                SELECT links.session_id, tasks.id, tasks.title, tasks.status
+                SELECT links.session_id, tasks.id, tasks.title, tasks.status,
+                    tasks.session_id AS current_session_id, tasks.error, tasks.updated_at
                 FROM task_sessions AS links
                 JOIN tasks ON tasks.project_id = links.project_id AND tasks.id = links.task_id
                 WHERE links.project_id = ?
                 """,
                 (project_id,),
             ).fetchall()
+            run_rows = self._connection.execute(
+                """
+                SELECT session_id, status, error, updated_at FROM scheduled_runs
+                WHERE project_id = ? AND session_id IS NOT NULL
+                ORDER BY updated_at DESC, id DESC
+                """,
+                (project_id,),
+            ).fetchall()
+        runs = {str(row["session_id"]): row for row in reversed(run_rows)}
         return {
-            str(row["session_id"]): {
-                "id": str(row["id"]),
-                "title": str(row["title"]),
-                "status": str(row["status"]),
-            }
+            str(row["session_id"]): _session_task_link(row, runs.get(str(row["session_id"])))
             for row in rows
         }
+
+    def session_task(self, project_id: str, session_id: str) -> dict[str, str] | None:
+        with self._lock:
+            row = self._connection.execute(
+                """
+                SELECT links.session_id, tasks.id, tasks.title, tasks.status,
+                    tasks.session_id AS current_session_id, tasks.error, tasks.updated_at
+                FROM task_sessions AS links
+                JOIN tasks ON tasks.project_id = links.project_id AND tasks.id = links.task_id
+                WHERE links.project_id = ? AND links.session_id = ?
+                """,
+                (project_id, session_id),
+            ).fetchone()
+            run = self._connection.execute(
+                """
+                SELECT session_id, status, error, updated_at FROM scheduled_runs
+                WHERE project_id = ? AND session_id = ?
+                ORDER BY updated_at DESC, id DESC LIMIT 1
+                """,
+                (project_id, session_id),
+            ).fetchone()
+        return _session_task_link(row, run) if row else None
 
     def task_for_session(self, project_id: str, session_id: str) -> dict[str, Any] | None:
         with self._lock:

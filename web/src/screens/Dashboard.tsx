@@ -12,6 +12,7 @@ import {
 import { ApiError, api } from "../api";
 import { buildUsageBuckets, niceScale, resolveGranularity, type ChartGranularity, type ResolvedGranularity, type UsageBucket } from "../dashboardChart";
 import { createTranslator, intlLocale, localizedStatus, translate, useI18n, type Locale } from "../i18n";
+import { sessionStatus } from "../sessionUtils";
 import type { DashboardUsage, Project, Session, Snapshot, UsageRow } from "../types";
 
 type DashboardProps = {
@@ -73,18 +74,22 @@ export function Dashboard({ project, refreshKey, onOpenTasks, onOpenSessions }: 
         : period === "30d"
           ? t("dashboard.period.30d")
           : t("dashboard.period.all");
-  const recentSessions =
-    usage.data?.recent_sessions ??
-    (scope === "project"
+  const runtimeSessions = new Map((runtime.data?.sessions ?? []).map((session) => [session.id, session]));
+  const recentSessions = usage.data?.recent_sessions
+    ? usage.data.recent_sessions.map((session) => {
+        const current = scope === "project" ? runtimeSessions.get(session.id) : undefined;
+        return current ? { ...session, status: sessionStatus(runtime.data, current) } : session;
+      })
+    : scope === "project"
       ? (runtime.data?.sessions ?? [])
           .filter((session) => !session.parentID)
           .map((session) => ({
             ...session,
             project_id: project.id,
             project_name: project.name,
-            status: dashboardSessionStatus(runtime.data, session),
+            status: sessionStatus(runtime.data, session),
           }))
-      : []);
+      : [];
 
   useLayoutEffect(() => {
     const scroller = chartScroller.current;
@@ -518,13 +523,6 @@ function compactNumber(value: number, locale: Locale) {
     notation: value > 9999 ? "compact" : "standard",
     maximumFractionDigits: 1,
   }).format(value);
-}
-
-function dashboardSessionStatus(snapshot: Snapshot | null | undefined, session: Session) {
-  const taskStatus = session.control_task?.status;
-  if (taskStatus === "aborted" || taskStatus === "failed") return taskStatus;
-  const status = snapshot?.statuses[session.id];
-  return status?.type ?? status?.status ?? "idle";
 }
 
 function dashboardModel(session: Session, locale: Locale) {
