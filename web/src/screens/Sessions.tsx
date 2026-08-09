@@ -295,23 +295,43 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
     const stream = streamRef.current;
     if (!messageId || !searchTarget || messages.data === null || !stream) return;
     const targetKey = `${messageId}:${searchTarget.query}`;
-    if (positionedSearchTarget.current === targetKey) return;
     const target = Array.from(stream.querySelectorAll<HTMLElement>("[data-message-id]"))
       .find((item) => item.dataset.messageId === messageId);
     if (!target) return;
+    if (positionedSearchTarget.current === targetKey) {
+      const targetBounds = target.getBoundingClientRect();
+      const streamBounds = stream.getBoundingClientRect();
+      if (targetBounds.bottom > streamBounds.top && targetBounds.top < streamBounds.bottom) return;
+    }
     initialScroll.current = false;
     stickToBottom.current = false;
+    const position = () => {
+      positionedSearchTarget.current = targetKey;
+      const targetBounds = target.getBoundingClientRect();
+      const streamBounds = stream.getBoundingClientRect();
+      const top = Math.max(
+        0,
+        stream.scrollTop + targetBounds.top - streamBounds.top - stream.clientHeight / 3,
+      );
+      if (typeof stream.scrollTo === "function") stream.scrollTo({ top, behavior: "auto" });
+      else stream.scrollTop = top;
+      setShowScrollToBottom(!scrollAtBottom(stream));
+      highlightSearchText(target, searchTarget.query);
+    };
     let frame = requestAnimationFrame(() => {
       frame = requestAnimationFrame(() => {
-        positionedSearchTarget.current = targetKey;
-        const top = Math.max(0, target.offsetTop - stream.clientHeight / 3);
-        if (typeof stream.scrollTo === "function") stream.scrollTo({ top, behavior: "auto" });
-        else stream.scrollTop = top;
-        setShowScrollToBottom(!scrollAtBottom(stream));
-        highlightSearchText(target, searchTarget.query);
+        position();
       });
     });
-    return () => cancelAnimationFrame(frame);
+    const settle = window.setTimeout(position, 300);
+    const final = window.setTimeout(position, 800);
+    stream.addEventListener("load", position, true);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.clearTimeout(settle);
+      window.clearTimeout(final);
+      stream.removeEventListener("load", position, true);
+    };
   }, [activeSearchMessageId, messages.data, searchTarget]);
   useLayoutEffect(() => {
     if (messages.data === null) return;

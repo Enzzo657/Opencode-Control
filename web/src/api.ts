@@ -39,6 +39,19 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   return (await response.json()) as T;
 }
 
+export async function apiBlob(path: string, options: RequestInit = {}): Promise<Blob> {
+  const method = (options.method ?? "GET").toUpperCase();
+  const headers = new Headers(options.headers);
+  if (options.body) headers.set("Content-Type", "application/json");
+  if (!["GET", "HEAD", "OPTIONS"].includes(method)) headers.set("X-CSRF-Token", await ensureSession());
+  const response = await fetch(path, { ...options, headers, credentials: "same-origin" });
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+    throw new ApiError(formatError(payload?.detail, response.status), response.status, payload?.detail);
+  }
+  return response.blob();
+}
+
 function formatError(detail: unknown, status: number): string {
   if (typeof detail === "string") return detail;
   if (Array.isArray(detail)) {

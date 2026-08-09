@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import os
 import sqlite3
 import subprocess
 import threading
 import time
+import zipfile
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -106,6 +108,10 @@ def test_project_media_is_streamed_inline_and_rejects_unsafe_files(tmp_path: Pat
         absolute = client.get(endpoint, params={"path": str(image)})
         download = client.get(endpoint, params={"path": "result.png", "download": "true"})
         disguised = client.get(endpoint, params={"path": "notes.png"})
+        missing = client.get(endpoint, params={"path": "missing.png"})
+        missing_download = client.get(
+            endpoint, params={"path": "missing.png", "download": "true"}
+        )
         traversal = client.get(endpoint, params={"path": str(outside)})
         symlink = client.get(endpoint, params={"path": "linked.png"})
         hardlink = client.get(endpoint, params={"path": "hardlink.png"})
@@ -118,6 +124,9 @@ def test_project_media_is_streamed_inline_and_rejects_unsafe_files(tmp_path: Pat
     assert absolute.status_code == 200
     assert download.headers["content-disposition"].startswith("attachment;")
     assert disguised.status_code == 415
+    assert missing.status_code == 200
+    assert missing.headers["content-type"].startswith("image/svg+xml")
+    assert missing_download.status_code == 404
     assert traversal.status_code == 404
     assert symlink.status_code == 403
     assert hardlink.status_code == 403
@@ -2006,6 +2015,159 @@ def test_search_indexes_changed_sessions_across_projects(
     assert len(message_calls) == 2
     assert [item["kind"] for item in project_title.json()["results"]] == ["session"]
     assert private_output.json()["results"] == []
+
+
+def test_artifacts_support_project_and_global_scope(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    roots = [tmp_path / "one", tmp_path / "two"]
+    png = b"\x89PNG\r\n\x1a\n" + b"artifact"
+    revealed: list[Path] = []
+    trashed: list[Path] = []
+    for root in roots:
+        root.mkdir()
+        (root / "result.png").write_bytes(png)
+        (root / "report.pdf").write_bytes(b"%PDF-1.4\ntest")
+        (root / "data.csv").write_text("id,name\n1,test\n")
+        (root / "data.json").write_text('{"status":"ready"}\n')
+        (root / "notes.txt").write_text("artifact notes\n")
+        with zipfile.ZipFile(root / "bundle.zip", "w") as bundle:
+            bundle.writestr("inside.txt", "artifact archive")
+        artifact_directory = root / ".opencode" / "artifacts"
+        artifact_directory.mkdir(parents=True)
+        (artifact_directory / "project-note.txt").write_text("project artifact\n")
+        (artifact_directory / "invalid.json").write_text("{invalid json}\n")
+        (artifact_directory / "binary.txt").write_bytes(b"text\x00binary")
+        with zipfile.ZipFile(artifact_directory / "unsafe.zip", "w") as bundle:
+            bundle.writestr("../escape.txt", "not extracted")
+
+    class FakeOpenCodeClient:
+        def __init__(self, endpoint: str, directory: str, **kwargs: Any) -> None:
+            self.directory = directory
+
+        def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            return {"worktree": self.directory}
+
+        def sessions(self) -> list[dict[str, Any]]:
+            name = Path(self.directory).name
+            return [{"id": f"ses_{name}", "title": f"Images {name}", "time": {"updated": 10}}]
+
+        def session_messages(self, session_id: str) -> list[dict[str, Any]]:
+            return [{
+                "info": {"id": f"msg_{session_id}", "role": "assistant", "time": {"created": 11}},
+                "parts": [{
+                    "type": "text",
+                    "text": "[result](result.png) [again](result.png) [pdf](report.pdf) "
+                    "[csv](data.csv) [json](data.json) [zip](bundle.zip) [txt](notes.txt) "
+                    "[missing](missing.png) [remote](https://example.test/image.png)",
+                }],
+            }]
+
+    monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
+    monkeypatch.setattr(app_module, "_reveal_file", lambda path: revealed.append(Path(path)))
+    monkeypatch.setattr(app_module, "send2trash", lambda path: trashed.append(Path(path)))
+    with _client(tmp_path) as client:
+        first = _project(client, roots[0], endpoint="http://127.0.0.1:4096")
+        _project(client, roots[1], endpoint="http://127.0.0.1:4097")
+        current = client.get(
+            "/api/v1/artifacts", params={"scope": "project", "project_id": first["id"]}
+        )
+        global_response = client.get("/api/v1/artifacts", params={"scope": "global"})
+        by_name = {item["name"]: item for item in current.json()["artifacts"]}
+        pdf_preview = client.get(
+            f"/api/v1/artifacts/{by_name['report.pdf']['id']}/preview"
+        )
+        csv_preview = client.get(
+            f"/api/v1/artifacts/{by_name['data.csv']['id']}/preview"
+        )
+        json_preview = client.get(
+            f"/api/v1/artifacts/{by_name['data.json']['id']}/preview"
+        )
+        text_preview = client.get(
+            f"/api/v1/artifacts/{by_name['notes.txt']['id']}/preview"
+        )
+        zip_preview = client.get(
+            f"/api/v1/artifacts/{by_name['bundle.zip']['id']}/preview"
+        )
+        invalid_json = client.get(
+            f"/api/v1/artifacts/{by_name['invalid.json']['id']}/preview"
+        )
+        unsafe_zip = client.get(
+            f"/api/v1/artifacts/{by_name['unsafe.zip']['id']}/preview"
+        )
+        selected_ids = [item["id"] for item in current.json()["artifacts"][:3]]
+        archive = client.post(
+            "/api/v1/artifacts/archive",
+            headers=_csrf(client),
+            json={"artifact_ids": selected_ids},
+        )
+        reveal = client.post(
+            f"/api/v1/artifacts/{by_name['result.png']['id']}/reveal",
+            headers=_csrf(client),
+        )
+        trash = client.post(
+            f"/api/v1/artifacts/{by_name['report.pdf']['id']}/trash",
+            headers=_csrf(client),
+        )
+        project_reveal = client.post(
+            f"/api/v1/projects/{first['id']}/artifact/reveal",
+            headers=_csrf(client),
+            json={"path": "result.png"},
+        )
+        project_trash = client.post(
+            f"/api/v1/projects/{first['id']}/artifact/trash",
+            headers=_csrf(client),
+            json={"path": "notes.txt"},
+        )
+        bulk_trash = client.post(
+            "/api/v1/artifacts/trash",
+            headers=_csrf(client),
+            json={"artifact_ids": [by_name["data.csv"]["id"], "missing-id"]},
+        )
+
+    assert current.status_code == 200, current.text
+    assert len(current.json()["artifacts"]) == 9
+    assert {item["kind"] for item in current.json()["artifacts"]} == {
+        "image", "pdf", "data", "archive", "text"
+    }
+    assert any(item["message_id"] == "msg_ses_one" for item in current.json()["artifacts"])
+    assert any(item["message_id"] is None for item in current.json()["artifacts"])
+    assert not any(item["name"] == "binary.txt" for item in current.json()["artifacts"])
+    assert len(global_response.json()["artifacts"]) == 18
+    assert {item["project_name"] for item in global_response.json()["artifacts"]} == {
+        "Test project"
+    }
+    assert all(
+        item["media_url"].startswith("/api/v1/projects/")
+        for item in global_response.json()["artifacts"]
+        if item["kind"] == "image"
+    )
+    assert archive.status_code == 200, archive.text
+    assert archive.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(io.BytesIO(archive.content)) as bundle:
+        assert len(bundle.namelist()) == 3
+    assert pdf_preview.status_code == 200
+    assert pdf_preview.headers["content-type"].startswith("application/pdf")
+    assert pdf_preview.headers["content-disposition"].startswith("inline;")
+    assert "frame-ancestors 'self'" in pdf_preview.headers["content-security-policy"]
+    assert csv_preview.json()["columns"] == ["id", "name"]
+    assert csv_preview.json()["rows"] == [["1", "test"]]
+    assert '  "status": "ready"' in json_preview.json()["content"]
+    assert text_preview.json()["content"] == "artifact notes\n"
+    assert zip_preview.json()["entries"][0]["name"] == "inside.txt"
+    assert invalid_json.status_code == 415
+    assert unsafe_zip.json()["entries"][0]["unsafe"] is True
+    assert reveal.status_code == 200
+    assert project_reveal.status_code == 200
+    assert trash.status_code == 200
+    assert project_trash.status_code == 200
+    assert roots[0] / "result.png" in revealed
+    assert roots[0] / "report.pdf" in trashed
+    assert roots[0] / "notes.txt" in trashed
+    assert bulk_trash.json()["trashed_ids"] == [by_name["data.csv"]["id"]]
+    assert bulk_trash.json()["errors"] == [
+        {"id": "missing-id", "error": "artifact was not found"}
+    ]
 
 
 def test_scheduled_task_uses_a_fresh_session_by_default(

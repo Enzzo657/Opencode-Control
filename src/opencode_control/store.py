@@ -99,6 +99,7 @@ class ControlStore:
                     parent_id TEXT,
                     updated_at REAL,
                     indexed_at TEXT NOT NULL,
+                    artifact_index_version INTEGER NOT NULL DEFAULT 1,
                     PRIMARY KEY (project_id, session_id)
                 );
                 CREATE TABLE IF NOT EXISTS search_messages (
@@ -117,6 +118,18 @@ class ControlStore:
                     ON search_sessions(project_id, updated_at DESC);
                 CREATE INDEX IF NOT EXISTS search_messages_created
                     ON search_messages(project_id, created_at DESC);
+                CREATE TABLE IF NOT EXISTS search_artifacts (
+                    project_id TEXT NOT NULL,
+                    session_id TEXT NOT NULL,
+                    message_id TEXT NOT NULL,
+                    artifact_path TEXT NOT NULL,
+                    created_at REAL,
+                    PRIMARY KEY (project_id, session_id, message_id, artifact_path),
+                    FOREIGN KEY (project_id, session_id)
+                        REFERENCES search_sessions(project_id, session_id) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS search_artifacts_recent
+                    ON search_artifacts(project_id, created_at DESC);
                 INSERT INTO task_sessions (project_id, task_id, session_id, created_at)
                 SELECT project_id, id, session_id, created_at FROM tasks
                 WHERE session_id IS NOT NULL
@@ -139,6 +152,17 @@ class ControlStore:
                 self._connection.execute(
                     "ALTER TABLE projects ADD COLUMN "
                     "starter_commands_version INTEGER NOT NULL DEFAULT 0"
+                )
+            search_columns = {
+                str(row[1])
+                for row in self._connection.execute(
+                    "PRAGMA table_info(search_sessions)"
+                ).fetchall()
+            }
+            if "artifact_index_version" not in search_columns:
+                self._connection.execute(
+                    "ALTER TABLE search_sessions ADD COLUMN "
+                    "artifact_index_version INTEGER NOT NULL DEFAULT 0"
                 )
             task_columns = {
                 str(row[1])
@@ -259,16 +283,20 @@ class ControlStore:
                 (version, _now(), project_id),
             )
 
-    def search_session_versions(self, project_id: str) -> dict[str, tuple[float | None, str]]:
+    def search_session_versions(
+        self, project_id: str
+    ) -> dict[str, tuple[float | None, str, int]]:
         with self._lock:
             rows = self._connection.execute(
-                "SELECT session_id, updated_at, title FROM search_sessions WHERE project_id = ?",
+                "SELECT session_id, updated_at, title, artifact_index_version "
+                "FROM search_sessions WHERE project_id = ?",
                 (project_id,),
             ).fetchall()
         return {
             str(row["session_id"]): (
                 float(row["updated_at"]) if row["updated_at"] is not None else None,
                 str(row["title"]),
+                int(row["artifact_index_version"]),
             )
             for row in rows
         }
@@ -287,19 +315,25 @@ class ControlStore:
             self._connection.execute(
                 """
                 INSERT INTO search_sessions
-                    (project_id, session_id, title, title_search, parent_id, updated_at, indexed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (project_id, session_id, title, title_search, parent_id, updated_at,
+                     indexed_at, artifact_index_version)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
                 ON CONFLICT(project_id, session_id) DO UPDATE SET
                     title = excluded.title,
                     title_search = excluded.title_search,
                     parent_id = excluded.parent_id,
                     updated_at = excluded.updated_at,
-                    indexed_at = excluded.indexed_at
+                    indexed_at = excluded.indexed_at,
+                    artifact_index_version = 1
                 """,
                 (project_id, session_id, title, title.casefold(), parent_id, updated_at, _now()),
             )
             self._connection.execute(
                 "DELETE FROM search_messages WHERE project_id = ? AND session_id = ?",
+                (project_id, session_id),
+            )
+            self._connection.execute(
+                "DELETE FROM search_artifacts WHERE project_id = ? AND session_id = ?",
                 (project_id, session_id),
             )
             self._connection.executemany(
@@ -321,6 +355,45 @@ class ControlStore:
                     for message in messages
                 ],
             )
+            self._connection.executemany(
+                """
+                INSERT INTO search_artifacts
+                    (project_id, session_id, message_id, artifact_path, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        project_id,
+                        session_id,
+                        str(message["id"]),
+                        str(path),
+                        message.get("created_at"),
+                    )
+                    for message in messages
+                    for path in message.get("artifacts", [])
+                ],
+            )
+
+    def list_artifacts(self, project_ids: list[str]) -> list[dict[str, Any]]:
+        if not project_ids:
+            return []
+        placeholders = ", ".join("?" for _ in project_ids)
+        with self._lock:
+            rows = self._connection.execute(
+                f"""
+                SELECT artifacts.project_id, artifacts.session_id, artifacts.message_id,
+                    artifacts.artifact_path, artifacts.created_at, sessions.title
+                FROM search_artifacts AS artifacts
+                JOIN search_sessions AS sessions
+                    ON sessions.project_id = artifacts.project_id
+                    AND sessions.session_id = artifacts.session_id
+                WHERE artifacts.project_id IN ({placeholders})
+                ORDER BY artifacts.created_at DESC, artifacts.message_id DESC,
+                    artifacts.artifact_path
+                """,
+                project_ids,
+            ).fetchall()
+        return [dict(row) for row in rows]
 
     def prune_search_sessions(self, project_id: str, session_ids: set[str]) -> None:
         with self._lock, self._connection:

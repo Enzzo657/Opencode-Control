@@ -4,7 +4,7 @@
 только оставшуюся работу. Реализованные этапы приведены кратко, без старых checklist
 и вариантов реализации.
 
-Обновлено: 2 августа 2026.
+Обновлено: 9 августа 2026.
 
 ## Принципы
 
@@ -54,6 +54,11 @@
 - Локальный поиск по названиям Sessions и тексту user/assistant messages для текущего
   проекта и global scope с incremental SQLite index, ranked pagination, permanent
   message deep links, keyboard shortcut и partial results.
+- Полный Artifacts lifecycle для текущего или всех проектов: безопасные previews для
+  image/PDF/CSV/JSON/TXT/Markdown/LOG/ZIP, filters и sort в URL, deep link к исходному
+  сообщению, Finder, системная Корзина, bulk ZIP и bulk trash без сканирования project root.
+- Локальные изображения в Sessions с inline preview, полноэкранной gallery, Finder и
+  системной Корзиной; действия имеют mouse, touch и keyboard states.
 
 ## Текущие ограничения
 
@@ -109,7 +114,18 @@ pinned versions, source verification, backup и явного подтвержд�
 Отложен до стабилизации macOS/Linux. Потребуется отдельная реализация process groups,
 signals, file locks, workspace security для reparse points и native Windows tests.
 
+## 2. Центр событий и уведомлений
+
+Следующий продуктовый этап после завершения Search и Artifacts.
+
+- [ ] Собрать завершения и ошибки Tasks и Sessions в единый локальный event stream.
+- [ ] Показывать ненавязчивые in-app уведомления без зависимости от открытого экрана.
+- [ ] Добавить unread state, фильтры по проекту и переход к исходной Task или Session.
+- [ ] Подключить системные уведомления как явную opt-in настройку.
+- [ ] Не сохранять prompt, message text и secrets в notification payload.
+
 ## Рекомендуемый порядок
 
-1. Локализация вместе с постепенным разбиением frontend.
-2. Возврат к CI/releases, Plugins и Windows только после отдельного решения.
+1. Реализовать локальный центр событий и in-app уведомления.
+2. После него провести stabilization pass и решить, готова ли alpha к public release.
+3. Возврат к Plugins и Windows только после отдельного security/platform решения.

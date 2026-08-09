@@ -257,6 +257,36 @@ def test_search_index_ranks_titles_and_paginates_stably(tmp_path: Path) -> None:
     store.close()
 
 
+def test_artifact_index_tracks_message_sources(tmp_path: Path) -> None:
+    store = ControlStore(tmp_path / "data")
+    root = tmp_path / "project"
+    root.mkdir()
+    project_id = str(store.create_project(name="Artifacts", root=root, endpoint=None)["id"])
+    store.replace_search_session(
+        project_id,
+        session_id="ses_artifacts",
+        title="Generate images",
+        parent_id=None,
+        updated_at=10,
+        messages=[
+            {
+                "id": "msg_artifacts",
+                "role": "assistant",
+                "created_at": 11,
+                "content": "Images",
+                "artifacts": ["one.png", "nested/two.webp"],
+            }
+        ],
+    )
+
+    artifacts = store.list_artifacts([project_id])
+    assert [item["artifact_path"] for item in artifacts] == ["nested/two.webp", "one.png"]
+    assert {item["message_id"] for item in artifacts} == {"msg_artifacts"}
+    store.prune_search_sessions(project_id, set())
+    assert store.list_artifacts([project_id]) == []
+    store.close()
+
+
 def test_overlap_skip_does_not_overwrite_active_task_status(tmp_path: Path) -> None:
     store = ControlStore(tmp_path / "data")
     project_id, task_id = _scheduled_task(store, tmp_path)

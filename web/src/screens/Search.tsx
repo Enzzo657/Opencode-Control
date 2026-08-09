@@ -3,6 +3,7 @@ import { startTransition, useDeferredValue, useEffect, useState } from "react";
 import { api } from "../api";
 import { useI18n } from "../i18n";
 import { relativeTime } from "../sessionUtils";
+import { ScopeSwitch } from "../ScopeSwitch";
 import type { Project, SearchResponse, SearchResult } from "../types";
 import { Banner, Empty, Page, Panel } from "../ui";
 import { message } from "../useResource";
@@ -61,13 +62,8 @@ export function Search({ project, onOpenSession }: { project: Project; onOpenSes
   }
 
   return <Page title={t("search.title")} description={t("search.description")}>
-    <div className="search-controls">
-      <label className="search-input"><SearchIcon size={19} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("search.placeholder")} aria-label={t("search.inputLabel")} />{loading && <span>{t("search.indexing")}</span>}</label>
-      <div className="search-scope" role="group" aria-label={t("search.scopeLabel")}>
-        <button className={scope === "project" ? "active" : ""} onClick={() => setScope("project")}>{t("search.currentProject")}</button>
-        <button className={scope === "global" ? "active" : ""} onClick={() => setScope("global")}>{t("search.allProjects")}</button>
-      </div>
-    </div>
+    <div className="search-toolbar"><ScopeSwitch value={scope} onChange={setScope} label={t("search.scopeLabel")} /></div>
+    <div className="search-controls"><label className="search-input"><SearchIcon size={19} /><input autoFocus value={query} onChange={(event) => setQuery(event.target.value)} placeholder={t("search.placeholder")} aria-label={t("search.inputLabel")} />{loading && <span>{t("search.indexing")}</span>}</label></div>
     {error && <Banner tone="danger">{error}</Banner>}
     {result?.partial && <Banner tone="notice">{t("search.partial", { projects: result.unavailable_projects.map((item) => item.name).join(", ") })}</Banner>}
     {result && result.indexed_sessions > 0 && <p className="search-index-note">{t("search.indexUpdated", { count: result.indexed_sessions })}</p>}

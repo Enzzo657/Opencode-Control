@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
+import csv
 import hashlib
+import io
 import ipaddress
 import json
 import logging
@@ -12,8 +14,11 @@ import mimetypes
 import re
 import secrets
 import sqlite3
+import subprocess
+import sys
 import threading
 import urllib.parse
+import zipfile
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
@@ -26,6 +31,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from send2trash import send2trash
 
 from opencode_control import __version__
 from opencode_control.command_catalog import (
@@ -137,6 +143,14 @@ class Attachment(StrictModel):
         if len(decoded) > 5 * 1024 * 1024:
             raise ValueError("each attachment must be 5 MB or smaller")
         return self
+
+
+class ArtifactArchivePayload(StrictModel):
+    artifact_ids: list[str] = Field(min_length=1, max_length=100)
+
+
+class ProjectArtifactAction(StrictModel):
+    path: str = Field(min_length=1, max_length=4096)
 
 
 class PromptCreate(StrictModel):
@@ -687,9 +701,17 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "no-referrer"
         response.headers["Cache-Control"] = "no-store"
+        frame_ancestors = (
+            "'self'"
+            if request.url.path.startswith("/api/v1/artifacts/")
+            and request.url.path.endswith("/preview")
+            and response.headers.get("content-type", "").startswith("application/pdf")
+            else "'none'"
+        )
         response.headers["Content-Security-Policy"] = (
             "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; "
-            "script-src 'self'; connect-src 'self'; font-src 'self'; frame-ancestors 'none'"
+            "script-src 'self'; connect-src 'self'; font-src 'self'; "
+            f"frame-ancestors {frame_ancestors}"
         )
         return response
 
@@ -1643,9 +1665,23 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         project_id: str,
         path: Annotated[str, Query(min_length=1, max_length=4096)],
         download: bool = False,
-    ) -> FileResponse:
+    ) -> Response:
         project = project_or_404(project_id)
-        media_path, stat_result = _safe_project_media(Path(str(project["root"])), path)
+        root = Path(str(project["root"]))
+        try:
+            media_path, stat_result = _safe_project_media(root, path)
+        except HTTPException as error:
+            if error.status_code == 404 and not download and _safe_missing_media_path(root, path):
+                return Response(
+                    content=_MISSING_IMAGE_SVG,
+                    media_type="image/svg+xml",
+                    headers={
+                        "Cache-Control": "no-store",
+                        "Content-Security-Policy": "sandbox; default-src 'none'",
+                        "X-Content-Type-Options": "nosniff",
+                    },
+                )
+            raise
         media_type = mimetypes.guess_type(media_path.name)[0] or "application/octet-stream"
         return FileResponse(
             media_path,
@@ -1659,6 +1695,42 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 "X-Content-Type-Options": "nosniff",
             },
         )
+
+    @app.get("/api/v1/projects/{project_id}/artifact")
+    def project_artifact_file(
+        project_id: str,
+        path: Annotated[str, Query(min_length=1, max_length=4096)],
+    ) -> FileResponse:
+        project = project_or_404(project_id)
+        artifact_path, stat_result, _, media_type = _safe_project_artifact(
+            Path(str(project["root"])), path
+        )
+        return FileResponse(
+            artifact_path,
+            media_type=media_type,
+            filename=artifact_path.name,
+            stat_result=stat_result,
+            content_disposition_type="attachment",
+            headers={
+                "Cache-Control": "private, max-age=3600",
+                "Content-Security-Policy": "sandbox; default-src 'none'",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.post("/api/v1/projects/{project_id}/artifact/reveal")
+    def reveal_project_artifact(project_id: str, payload: ProjectArtifactAction) -> dict[str, Any]:
+        project = project_or_404(project_id)
+        path, _, _, _ = _safe_project_artifact(Path(str(project["root"])), payload.path)
+        _reveal_file(path)
+        return {"revealed": True, "name": path.name}
+
+    @app.post("/api/v1/projects/{project_id}/artifact/trash")
+    def trash_project_artifact(project_id: str, payload: ProjectArtifactAction) -> dict[str, Any]:
+        project = project_or_404(project_id)
+        path, _, _, _ = _safe_project_artifact(Path(str(project["root"])), payload.path)
+        _move_to_trash(path)
+        return {"trashed": True, "name": path.name}
 
     def sync_search_project(project: dict[str, Any]) -> int:
         project_id = str(project["id"])
@@ -1677,7 +1749,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 if isinstance(raw_updated, (int, float)) and math.isfinite(raw_updated)
                 else None
             )
-            if updated_at is not None and versions.get(session_id) == (updated_at, title):
+            if updated_at is not None and versions.get(session_id) == (updated_at, title, 1):
                 continue
             messages = client.session_messages(session_id)
             state.store.replace_search_session(
@@ -1749,6 +1821,288 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 for row in rows[:limit]
             ],
         }
+
+    @app.get("/api/v1/artifacts")
+    def artifacts(
+        scope: Literal["project", "global"] = "project",
+        project_id: str | None = None,
+        limit: Annotated[int, Query(ge=1, le=500)] = 200,
+    ) -> dict[str, Any]:
+        if scope == "project":
+            selected_projects = [project_or_404(project_id or "")]
+        else:
+            selected_projects = state.store.list_projects()
+        unavailable: list[dict[str, str]] = []
+        indexed_sessions = 0
+        for project in selected_projects:
+            try:
+                indexed_sessions += sync_search_project(project)
+            except (HTTPException, OpenCodeError, ProcessError, WorkspaceError) as error:
+                detail = error.detail if isinstance(error, HTTPException) else str(error)
+                unavailable.append(
+                    {
+                        "id": str(project["id"]),
+                        "name": str(project["name"]),
+                        "error": str(detail),
+                    }
+                )
+        project_by_id = {str(project["id"]): project for project in selected_projects}
+        results: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for row in artifact_rows(project_by_id):
+            project = project_by_id[str(row["project_id"])]
+            try:
+                media_path, stat_result, kind, media_type = _safe_project_artifact(
+                    Path(str(project["root"])), str(row["artifact_path"])
+                )
+            except HTTPException:
+                continue
+            key = (str(project["id"]), str(media_path))
+            if key in seen:
+                continue
+            seen.add(key)
+            query = urllib.parse.urlencode({"path": str(row["artifact_path"])})
+            media_url = (
+                f"/api/v1/projects/{project['id']}/media?{query}" if kind == "image" else None
+            )
+            download_url = f"/api/v1/projects/{project['id']}/artifact?{query}"
+            results.append(
+                {
+                    "id": _artifact_id(str(project["id"]), media_path),
+                    "kind": kind,
+                    "name": media_path.name,
+                    "mime": media_type,
+                    "size": stat_result.st_size,
+                    "modified_at": stat_result.st_mtime * 1000,
+                    "created_at": row["created_at"],
+                    "project_id": project["id"],
+                    "project_name": project["name"],
+                    "session_id": row.get("session_id"),
+                    "session_title": row.get("title"),
+                    "message_id": row.get("message_id"),
+                    "media_url": media_url,
+                    "download_url": download_url,
+                }
+            )
+            if len(results) >= limit:
+                break
+        return {
+            "scope": scope,
+            "partial": bool(unavailable),
+            "unavailable_projects": unavailable,
+            "indexed_sessions": indexed_sessions,
+            "has_more": len(results) >= limit,
+            "artifacts": results,
+        }
+
+    @app.post("/api/v1/artifacts/archive")
+    def artifact_archive(payload: ArtifactArchivePayload) -> Response:
+        wanted = set(payload.artifact_ids)
+        if len(wanted) != len(payload.artifact_ids):
+            raise HTTPException(status_code=422, detail="artifact IDs must be unique")
+        projects = {str(item["id"]): item for item in state.store.list_projects()}
+        selected: list[tuple[Path, str]] = []
+        total_size = 0
+        for row in artifact_rows(projects):
+            project = projects[str(row["project_id"])]
+            try:
+                path, stat_result, _, _ = _safe_project_artifact(
+                    Path(str(project["root"])), str(row["artifact_path"])
+                )
+            except HTTPException:
+                continue
+            artifact_id = _artifact_id(str(project["id"]), path)
+            if artifact_id not in wanted:
+                continue
+            total_size += stat_result.st_size
+            if total_size > 100 * 1024 * 1024:
+                raise HTTPException(status_code=413, detail="selected artifacts exceed 100 MB")
+            relative = path.relative_to(Path(str(project["root"])).resolve(strict=True))
+            project_name = re.sub(r"[^A-Za-z0-9._-]+", "-", str(project["name"])).strip("-")
+            selected.append((path, f"{project_name or project['id']}/{relative.as_posix()}"))
+        if len(selected) != len(wanted):
+            raise HTTPException(
+                status_code=404,
+                detail="one or more selected artifacts are unavailable",
+            )
+        archive = io.BytesIO()
+        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
+            for path, archive_name in selected:
+                bundle.write(path, archive_name)
+        return Response(
+            content=archive.getvalue(),
+            media_type="application/zip",
+            headers={
+                "Content-Disposition": 'attachment; filename="opencode-artifacts.zip"',
+                "Cache-Control": "no-store",
+                "X-Content-Type-Options": "nosniff",
+            },
+        )
+
+    @app.get("/api/v1/artifacts/{artifact_id}/preview")
+    def artifact_preview(artifact_id: str) -> Response:
+        _, _, path, stat_result, kind, media_type = resolve_artifact(artifact_id)
+        if kind in {"image", "pdf"}:
+            return FileResponse(
+                path,
+                media_type=media_type,
+                filename=path.name,
+                stat_result=stat_result,
+                content_disposition_type="inline",
+                headers={
+                    "Cache-Control": "private, max-age=3600",
+                    "X-Content-Type-Options": "nosniff",
+                },
+            )
+        if kind == "archive":
+            try:
+                with zipfile.ZipFile(path) as bundle:
+                    infos = bundle.infolist()
+            except (OSError, zipfile.BadZipFile) as error:
+                raise HTTPException(status_code=415, detail="ZIP archive is invalid") from error
+            total_size = sum(info.file_size for info in infos)
+            entries = [
+                {
+                    "name": info.filename,
+                    "size": info.file_size,
+                    "compressed_size": info.compress_size,
+                    "directory": info.is_dir(),
+                    "unsafe": Path(info.filename).is_absolute()
+                    or ".." in Path(info.filename).parts,
+                }
+                for info in infos[:1000]
+            ]
+            return JSONResponse(
+                {
+                    "kind": kind,
+                    "name": path.name,
+                    "mime": media_type,
+                    "size": stat_result.st_size,
+                    "entries": entries,
+                    "entry_count": len(infos),
+                    "total_size": total_size,
+                    "truncated": len(infos) > len(entries),
+                    "suspicious": total_size > 1024 * 1024 * 1024,
+                }
+            )
+        preview_limit = 1024 * 1024
+        with path.open("rb") as handle:
+            raw = handle.read(preview_limit + 1)
+        truncated = len(raw) > preview_limit
+        try:
+            content = raw[:preview_limit].decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise HTTPException(status_code=415, detail="text preview is not UTF-8") from error
+        suffix = path.suffix.lower()
+        if suffix == ".json" and not truncated:
+            try:
+                content = json.dumps(json.loads(content), ensure_ascii=False, indent=2)
+            except json.JSONDecodeError as error:
+                raise HTTPException(status_code=415, detail="JSON artifact is invalid") from error
+        if suffix == ".csv":
+            reader = csv.reader(io.StringIO(content))
+            rows = [row[:100] for _, row in zip(range(1001), reader, strict=False)]
+            header = rows[0] if rows else []
+            return JSONResponse(
+                {
+                    "kind": kind,
+                    "format": "csv",
+                    "name": path.name,
+                    "mime": media_type,
+                    "size": stat_result.st_size,
+                    "columns": header,
+                    "rows": rows[1:1001],
+                    "truncated": truncated or len(rows) > 1000,
+                }
+            )
+        return JSONResponse(
+            {
+                "kind": kind,
+                "format": (
+                    "markdown" if suffix == ".md" else "json" if suffix == ".json" else "text"
+                ),
+                "name": path.name,
+                "mime": media_type,
+                "size": stat_result.st_size,
+                "content": content,
+                "truncated": truncated,
+            }
+        )
+
+    @app.post("/api/v1/artifacts/{artifact_id}/reveal")
+    def reveal_artifact(artifact_id: str) -> dict[str, Any]:
+        _, _, path, _, _, _ = resolve_artifact(artifact_id)
+        _reveal_file(path)
+        return {"revealed": True, "name": path.name}
+
+    @app.post("/api/v1/artifacts/{artifact_id}/trash")
+    def trash_artifact(artifact_id: str) -> dict[str, Any]:
+        _, _, path, _, _, _ = resolve_artifact(artifact_id)
+        _move_to_trash(path)
+        return {"trashed": True, "name": path.name}
+
+    @app.post("/api/v1/artifacts/trash")
+    def trash_artifacts(payload: ArtifactArchivePayload) -> dict[str, Any]:
+        wanted = list(dict.fromkeys(payload.artifact_ids))
+        if len(wanted) != len(payload.artifact_ids):
+            raise HTTPException(status_code=422, detail="artifact IDs must be unique")
+        trashed: list[str] = []
+        errors: list[dict[str, str]] = []
+        for artifact_id in wanted:
+            try:
+                _, _, path, _, _, _ = resolve_artifact(artifact_id)
+                _move_to_trash(path)
+                trashed.append(artifact_id)
+            except HTTPException as error:
+                errors.append({"id": artifact_id, "error": str(error.detail)})
+        return {"trashed_ids": trashed, "errors": errors}
+
+    def artifact_rows(projects: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+        rows = state.store.list_artifacts(list(projects))
+        for project in projects.values():
+            root = Path(str(project["root"]))
+            directory = root / ".opencode" / "artifacts"
+            if not directory.is_dir() or directory.is_symlink():
+                continue
+            for path in directory.rglob("*"):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                try:
+                    relative = path.relative_to(root)
+                    stat_result = path.stat()
+                except (OSError, ValueError):
+                    continue
+                rows.append(
+                    {
+                        "project_id": project["id"],
+                        "session_id": None,
+                        "message_id": None,
+                        "artifact_path": relative.as_posix(),
+                        "created_at": stat_result.st_mtime * 1000,
+                        "title": None,
+                    }
+                )
+        return sorted(
+            rows,
+            key=lambda row: (float(row.get("created_at") or 0), str(row["artifact_path"])),
+            reverse=True,
+        )
+
+    def resolve_artifact(
+        artifact_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], Path, Any, str, str]:
+        projects = {str(item["id"]): item for item in state.store.list_projects()}
+        for row in artifact_rows(projects):
+            project = projects[str(row["project_id"])]
+            try:
+                path, stat_result, kind, media_type = _safe_project_artifact(
+                    Path(str(project["root"])), str(row["artifact_path"])
+                )
+            except HTTPException:
+                continue
+            if _artifact_id(str(project["id"]), path) == artifact_id:
+                return project, row, path, stat_result, kind, media_type
+        raise HTTPException(status_code=404, detail="artifact was not found")
 
     def invalidate_dashboard_cache(project_id: str) -> None:
         with state.dashboard_lock:
@@ -3598,12 +3952,40 @@ def _search_message_entries(messages: list[dict[str, Any]]) -> list[dict[str, An
                 if isinstance(raw_created, (int, float)) and math.isfinite(raw_created)
                 else None,
                 "content": text,
+                "artifacts": _local_artifact_paths(text),
             }
         )
     return entries
 
 
-def _safe_project_media(root: Path, raw_path: str) -> tuple[Path, Any]:
+_MARKDOWN_FILE_LINK = re.compile(r"\]\(\s*<?([^\s)>]+)>?(?:\s+[^)]*)?\)")
+_RASTER_SUFFIXES = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".ico"}
+_ARTIFACT_SUFFIXES = _RASTER_SUFFIXES | {
+    ".pdf",
+    ".csv",
+    ".json",
+    ".zip",
+    ".txt",
+    ".md",
+    ".log",
+}
+
+
+def _local_artifact_paths(content: str) -> list[str]:
+    paths: list[str] = []
+    for match in _MARKDOWN_FILE_LINK.finditer(content):
+        value = urllib.parse.unquote(match.group(1).split("#", 1)[0].split("?", 1)[0])
+        if value.startswith("file://"):
+            value = urllib.parse.urlparse(value).path
+        elif re.match(r"^[a-z][a-z0-9+.-]*:", value, re.IGNORECASE):
+            continue
+        if Path(value).suffix.lower() not in _ARTIFACT_SUFFIXES or value in paths:
+            continue
+        paths.append(value[:4096])
+    return paths
+
+
+def _safe_project_file(root: Path, raw_path: str) -> tuple[Path, Any]:
     if "\x00" in raw_path:
         raise HTTPException(status_code=400, detail="media path is invalid")
     try:
@@ -3630,6 +4012,11 @@ def _safe_project_media(root: Path, raw_path: str) -> tuple[Path, Any]:
         raise HTTPException(status_code=403, detail="project media must be a regular file")
     if stat_result.st_size > 50 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="project media is larger than 50 MB")
+    return resolved, stat_result
+
+
+def _safe_project_media(root: Path, raw_path: str) -> tuple[Path, Any]:
+    resolved, stat_result = _safe_project_file(root, raw_path)
     with resolved.open("rb") as handle:
         signature = handle.read(16)
     if not _is_safe_raster_image(signature):
@@ -3638,6 +4025,98 @@ def _safe_project_media(root: Path, raw_path: str) -> tuple[Path, Any]:
             detail="only PNG, JPEG, GIF, WebP, AVIF and ICO are supported",
         )
     return resolved, stat_result
+
+
+def _safe_project_artifact(root: Path, raw_path: str) -> tuple[Path, Any, str, str]:
+    resolved, stat_result = _safe_project_file(root, raw_path)
+    suffix = resolved.suffix.lower()
+    if suffix not in _ARTIFACT_SUFFIXES:
+        raise HTTPException(status_code=415, detail="artifact format is not supported")
+    with resolved.open("rb") as handle:
+        sample = handle.read(min(stat_result.st_size, 1024 * 1024))
+    if suffix in _RASTER_SUFFIXES:
+        if not _is_safe_raster_image(sample[:16]):
+            raise HTTPException(status_code=415, detail="image signature is invalid")
+        kind = "image"
+    elif suffix == ".pdf":
+        if not sample.startswith(b"%PDF-"):
+            raise HTTPException(status_code=415, detail="PDF signature is invalid")
+        kind = "pdf"
+    elif suffix == ".zip":
+        if not sample.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+            raise HTTPException(status_code=415, detail="ZIP signature is invalid")
+        kind = "archive"
+    else:
+        if b"\x00" in sample:
+            raise HTTPException(status_code=415, detail="text artifact contains binary data")
+        try:
+            sample.decode("utf-8")
+        except UnicodeDecodeError as error:
+            raise HTTPException(status_code=415, detail="text artifact is not UTF-8") from error
+        kind = "data" if suffix in {".csv", ".json"} else "text"
+    media_type = mimetypes.guess_type(resolved.name)[0] or "application/octet-stream"
+    return resolved, stat_result, kind, media_type
+
+
+def _artifact_id(project_id: str, path: Path) -> str:
+    return hashlib.sha256(f"{project_id}:{path}".encode()).hexdigest()[:24]
+
+
+def _reveal_file(path: Path) -> None:
+    if sys.platform == "darwin":
+        command = ["open", "-R", str(path)]
+    elif sys.platform.startswith("linux"):
+        command = ["xdg-open", str(path.parent)]
+    elif sys.platform == "win32":
+        command = ["explorer", f"/select,{path}"]
+    else:
+        raise HTTPException(status_code=501, detail="file reveal is not supported")
+    try:
+        subprocess.run(command, check=True, capture_output=True, timeout=10)
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=501, detail="system file manager is unavailable") from error
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
+        raise HTTPException(status_code=500, detail="failed to reveal artifact") from error
+
+
+def _move_to_trash(path: Path) -> None:
+    try:
+        send2trash(path)
+    except (OSError, TypeError) as error:
+        raise HTTPException(status_code=500, detail="failed to move artifact to Trash") from error
+
+
+_MISSING_IMAGE_SVG = (
+    b'<svg xmlns="http://www.w3.org/2000/svg" width="640" height="400" '
+    b'viewBox="0 0 640 400"><rect width="640" height="400" fill="#11141a"/>'
+    b'<path d="M250 275l55-70 42 48 38-43 55 65H250z" fill="#363d49"/>'
+    b'<circle cx="285" cy="155" r="24" fill="#4b5565"/>'
+    b'<rect x="220" y="110" width="200" height="180" rx="18" fill="none" '
+    b'stroke="#4b5565" stroke-width="8"/><text x="320" y="335" fill="#818a99" '
+    b'font-family="system-ui,sans-serif" font-size="18" text-anchor="middle">'
+    b"Image file is no longer available</text></svg>"
+)
+
+
+def _safe_missing_media_path(root: Path, raw_path: str) -> bool:
+    if "\x00" in raw_path:
+        return False
+    requested = Path(raw_path).expanduser()
+    if requested.suffix.lower() not in _RASTER_SUFFIXES:
+        return False
+    try:
+        resolved_root = root.resolve(strict=True)
+        candidate = requested if requested.is_absolute() else resolved_root / requested
+        resolved = candidate.resolve(strict=False)
+        relative = resolved.relative_to(resolved_root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    current = resolved_root
+    for part in relative.parts[:-1]:
+        current /= part
+        if current.is_symlink():
+            return False
+    return not resolved.exists()
 
 
 def _is_safe_raster_image(signature: bytes) -> bool:

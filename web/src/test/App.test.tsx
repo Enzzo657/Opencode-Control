@@ -54,6 +54,12 @@ describe("OpenCode Control", () => {
       if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.1.0", projects: 1 });
       if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
       if (path.includes("/api/v1/search")) { const offset = Number(new URL(path, "http://localhost").searchParams.get("offset") ?? 0); return response({ query: "deploy", scope: path.includes("scope=global") ? "global" : "project", partial: false, unavailable_projects: [], indexed_sessions: offset ? 0 : 1, offset, has_more: offset === 0, results: [{ kind: "message", project_id: project.id, project_name: project.name, session_id: "ses_1", session_title: "Fix checkout", message_id: offset ? "msg_2" : "msg_1", role: "user", created_at: Date.now(), snippet: offset ? "Deploy through the release pipeline" : "Rotate deployment token" }] }); }
+      if (path.includes("/api/v1/artifacts/archive")) return new Response(new Blob(["zip"]), { status: 200, headers: { "Content-Type": "application/zip" } });
+      if (path.endsWith("/api/v1/artifacts/trash")) return response({ trashed_ids: ["artifact-1", "artifact-2"], errors: [] });
+      if (/\/api\/v1\/artifacts\/[^/]+\/(?:reveal|trash)$/.test(path)) return response({ revealed: path.endsWith("/reveal"), trashed: path.endsWith("/trash") });
+      if (/\/api\/v1\/projects\/[^/]+\/artifact\/(?:reveal|trash)$/.test(path)) return response({ revealed: path.endsWith("/reveal"), trashed: path.endsWith("/trash") });
+      if (path.includes("/api/v1/artifacts/artifact-3/preview")) return response({ kind: "data", format: "csv", name: "data.csv", mime: "text/csv", size: 128, columns: ["id", "name"], rows: [["1", "test"]], truncated: false });
+      if (path.includes("/api/v1/artifacts")) return response({ scope: path.includes("scope=global") ? "global" : "project", partial: false, unavailable_projects: [], indexed_sessions: 1, has_more: false, artifacts: [{ id: "artifact-1", kind: "image", name: "result.png", mime: "image/png", size: 2048, modified_at: Date.now(), created_at: Date.now(), project_id: project.id, project_name: project.name, session_id: "ses_1", session_title: "Fix checkout", message_id: "msg_1", media_url: `/api/v1/projects/${project.id}/media?path=result.png`, download_url: `/api/v1/projects/${project.id}/artifact?path=result.png` }, { id: "artifact-2", kind: "pdf", name: "report.pdf", mime: "application/pdf", size: 4096, modified_at: Date.now(), created_at: Date.now(), project_id: project.id, project_name: project.name, session_id: null, session_title: null, message_id: null, media_url: null, download_url: `/api/v1/projects/${project.id}/artifact?path=report.pdf` }, { id: "artifact-3", kind: "data", name: "data.csv", mime: "text/csv", size: 128, modified_at: Date.now(), created_at: Date.now(), project_id: project.id, project_name: project.name, session_id: null, session_title: null, message_id: null, media_url: null, download_url: `/api/v1/projects/${project.id}/artifact?path=data.csv` }] });
       if (path.endsWith("/tasks") && (!init?.method || init.method === "GET")) return response([{ id: "task_1", project_id: project.id, title: "Fix checkout task", prompt: "Fix it", agent: "build", model: "openai/gpt-test", status: "completed", session_id: "ses_1", session_ids: ["ses_1"], error: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }]);
       if (path.includes("/snapshot")) {
         return response({
@@ -172,6 +178,7 @@ describe("OpenCode Control", () => {
     for (const [navigation, heading] of [
       ["Sessions", "Sessions"],
       ["Search", "Search"],
+      ["Artifacts", "Artifacts"],
       ["Tasks", "Tasks"],
       ["Agents", "Agents"],
       ["Skills", "Skills"],
@@ -192,11 +199,17 @@ describe("OpenCode Control", () => {
     await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Поиск" }));
     expect(await screen.findByRole("heading", { name: "Поиск" })).toBeInTheDocument();
-    fireEvent.change(screen.getByRole("textbox", { name: "Поиск по сессиям и сообщениям" }), { target: { value: "deploy" } });
+    const scopeSwitch = screen.getByRole("group", { name: "Область поиска" });
+    const searchInput = screen.getByRole("textbox", { name: "Поиск по сессиям и сообщениям" });
+    expect(scopeSwitch).toHaveClass("scope-switch");
+    expect(scopeSwitch.compareDocumentPosition(searchInput) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Текущий проект" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.change(searchInput, { target: { value: "deploy" } });
     await waitFor(() => expect(document.querySelector(".search-snippet")).toHaveTextContent("Rotate deployment token"));
     expect(screen.getByText("Локальный индекс обновлён: 1 сесс.")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Все проекты" }));
+    expect(screen.getByRole("button", { name: "Все проекты" })).toHaveAttribute("aria-pressed", "true");
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/api/v1/search?") && String(input).includes("scope=global"))).toBe(true));
     fireEvent.click(await screen.findByRole("button", { name: "Показать ещё" }));
     await waitFor(() => expect(Array.from(document.querySelectorAll(".search-snippet")).some((item) => item.textContent === "Deploy through the release pipeline")).toBe(true));
@@ -241,6 +254,69 @@ describe("OpenCode Control", () => {
     await waitFor(() => expect(document.querySelector('[data-message-id="msg_2"]')).toHaveClass("search-target"));
     expect(screen.getByText("2/2")).toBeInTheDocument();
     expect(new URLSearchParams(location.search).get("message")).toBe("msg_2");
+  });
+
+  it("browses project and global artifacts and opens the source message", async () => {
+    Object.defineProperty(URL, "createObjectURL", { configurable: true, value: vi.fn(() => "blob:artifacts") });
+    Object.defineProperty(URL, "revokeObjectURL", { configurable: true, value: vi.fn() });
+    const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(screen.getByRole("button", { name: "Артефакты" }));
+    expect(await screen.findByRole("heading", { name: "Артефакты" })).toBeInTheDocument();
+    expect(screen.getByRole("group", { name: "Область артефактов" })).toHaveClass("scope-switch");
+    expect(await screen.findByRole("img", { name: "result.png" })).toBeInTheDocument();
+    expect(screen.getByText(/2.0 KiB/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Показать result.png в Finder" })).toHaveClass("reveal");
+    fireEvent.click(screen.getByRole("button", { name: "Показать result.png в Finder" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith("/api/v1/artifacts/artifact-1/reveal"))).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Переместить result.png в Корзину" }));
+    expect(await screen.findByRole("dialog", { name: "Переместить result.png в Корзину?" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+
+    fireEvent.click(screen.getByRole("button", { name: "Все проекты" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("/api/v1/artifacts?scope=global"))).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Данные" }));
+    expect(screen.getByText("data.csv")).toBeInTheDocument();
+    expect(screen.queryByText("report.pdf")).not.toBeInTheDocument();
+    expect(new URLSearchParams(location.search).get("type")).toBe("data");
+    expect(screen.getByText("1 из 3")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать" }));
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать все" }));
+    expect(screen.getByRole("button", { name: "Экспортировать ZIP (1)" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Отмена" }));
+    fireEvent.click(screen.getByRole("button", { name: "Все", pressed: false }));
+    fireEvent.change(screen.getByRole("combobox", { name: "Сортировка" }), { target: { value: "largest" } });
+    expect(document.querySelector(".artifact-info strong")).toHaveTextContent("report.pdf");
+    expect(new URLSearchParams(location.search).get("sort")).toBe("largest");
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать" }));
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать result.png" }));
+    expect(screen.getByRole("button", { name: "Снять выбор result.png" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Снять выбор result.png" }));
+    expect(screen.getByRole("button", { name: "Выбрать result.png" })).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать result.png" }));
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать report.pdf" }));
+    fireEvent.click(screen.getByRole("button", { name: "Экспортировать ZIP (2)" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).includes("/api/v1/artifacts/archive") && String(init?.body).includes("artifact-2"))).toBe(true));
+    expect(anchorClick).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "В Корзину (2)" }));
+    expect(await screen.findByRole("dialog", { name: "Переместить 2 артефактов в Корзину?" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Переместить в Корзину" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).endsWith("/api/v1/artifacts/trash"))).toBe(true));
+    fireEvent.change(screen.getByRole("combobox", { name: "Сортировка" }), { target: { value: "newest" } });
+    fireEvent.click(screen.getByRole("button", { name: "Открыть артефакт result.png" }));
+    expect(await screen.findByRole("dialog", { name: "Просмотр артефактов" })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: "Показать result.png в Finder" })).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "Следующий артефакт" }));
+    await waitFor(() => expect(document.querySelector(".artifact-pdf")).toHaveAttribute("title", "report.pdf"));
+    fireEvent.click(screen.getByRole("button", { name: "Следующий артефакт" }));
+    expect(await screen.findByRole("columnheader", { name: "id" })).toBeInTheDocument();
+    expect(screen.getByRole("cell", { name: "test" })).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    fireEvent.click(screen.getByRole("button", { name: "Fix checkout" }));
+
+    expect(await screen.findByRole("dialog", { name: /Сессия Fix checkout/ })).toBeInTheDocument();
+    expect(new URLSearchParams(location.search).get("message")).toBe("msg_1");
   });
 
   it("creates English resource templates when English is active", async () => {
@@ -738,9 +814,12 @@ describe("OpenCode Control", () => {
     expect(images[0]).toHaveAttribute("src", expect.stringContaining(`/api/v1/projects/${project.id}/media?path=output.png`));
     expect(screen.queryByText("/code/checkout/output.png")).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Открыть" })).not.toBeInTheDocument();
-    const downloadLinks = screen.getAllByRole("link", { name: /Скачать изображение/ });
-    expect(downloadLinks).toHaveLength(2);
-    expect(downloadLinks.every((link) => link.textContent === "")).toBe(true);
+    const revealButtons = screen.getAllByRole("button", { name: /Показать .* в Finder/ });
+    expect(revealButtons).toHaveLength(2);
+    expect(revealButtons.every((button) => button.classList.contains("reveal"))).toBe(true);
+    expect(screen.getAllByRole("button", { name: /Переместить .* в Корзину/ })).toHaveLength(2);
+    fireEvent.click(revealButtons[0]);
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).includes(`/api/v1/projects/${project.id}/artifact/reveal`) && String(init?.body).includes("output.png"))).toBe(true));
     expect(screen.getByText("Изображение: remote")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Увеличить изображение output.png" }));

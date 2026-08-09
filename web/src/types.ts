@@ -107,6 +107,32 @@ export type SearchResponse = {
   results: SearchResult[];
 };
 
+export type Artifact = {
+  id: string;
+  kind: "image" | "pdf" | "archive" | "data" | "text";
+  name: string;
+  mime: string;
+  size: number;
+  modified_at: number;
+  created_at: number | null;
+  project_id: string;
+  project_name: string;
+  session_id: string | null;
+  session_title: string | null;
+  message_id: string | null;
+  media_url: string | null;
+  download_url: string;
+};
+
+export type ArtifactsResponse = {
+  scope: "project" | "global";
+  partial: boolean;
+  unavailable_projects: Array<{ id: string; name: string; error: string }>;
+  indexed_sessions: number;
+  has_more: boolean;
+  artifacts: Artifact[];
+};
+
 export type Agent = {
   name: string;
   description?: string;

@@ -5,6 +5,7 @@ import {
   FileCode2,
   Gauge,
   KeyRound,
+  Images,
   Menu,
   MessageSquareText,
   Network,
@@ -30,6 +31,7 @@ import { message, useResource } from "./useResource";
 export { contrastText, themes } from "./theme";
 
 const AgentsSkills = lazy(() => import("./screens/AgentsSkills").then((module) => ({ default: module.AgentsSkills })));
+const Artifacts = lazy(() => import("./screens/Artifacts").then((module) => ({ default: module.Artifacts })));
 const Commands = lazy(() => import("./screens/Commands").then((module) => ({ default: module.Commands })));
 const Dashboard = lazy(() => import("./screens/Dashboard").then((module) => ({ default: module.Dashboard })));
 const Instructions = lazy(() => import("./screens/Instructions").then((module) => ({ default: module.Instructions })));
@@ -45,6 +47,7 @@ type View =
   | "overview"
   | "sessions"
   | "search"
+  | "artifacts"
   | "tasks"
   | "agents"
   | "skills"
@@ -64,6 +67,7 @@ const nav: Array<{ group: TranslationKey; items: Array<{ id: View; label: Transl
       { id: "overview", label: "nav.overview", icon: Gauge },
       { id: "sessions", label: "nav.sessions", icon: MessageSquareText },
       { id: "search", label: "nav.search", icon: SearchIcon },
+      { id: "artifacts", label: "nav.artifacts", icon: Images },
       { id: "tasks", label: "nav.tasks", icon: Zap },
     ],
   },
@@ -274,6 +278,7 @@ function ViewContent({ view, project, refreshKey, sessionTarget, onSessionTarget
   if (view === "overview") return <Dashboard project={project} refreshKey={refreshKey} onOpenTasks={() => navigate("tasks")} onOpenSessions={() => navigate("sessions")} />;
   if (view === "sessions") return <Sessions project={project} refreshKey={refreshKey} initialSearchTarget={sessionTarget} onInitialSessionHandled={onSessionTargetHandled} />;
   if (view === "search") return <SearchScreen project={project} onOpenSession={onOpenSearchSession} />;
+  if (view === "artifacts") return <Artifacts project={project} onOpenSession={onOpenSearchSession} />;
   if (view === "tasks") return <Tasks project={project} refreshKey={refreshKey} />;
   if (view === "agents") return <AgentsSkills project={project} kind="agents" refreshKey={refreshKey} />;
   if (view === "skills") return <AgentsSkills project={project} kind="skills" />;
