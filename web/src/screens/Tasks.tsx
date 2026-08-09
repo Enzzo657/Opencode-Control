@@ -5,7 +5,7 @@ import { commandDisplayDescription } from "../commands";
 import { localizedStatus, translate, useI18n } from "../i18n";
 import { PromptBox } from "../PromptBox";
 import { describeCron, formatScheduleTime, parseScheduleCron, scheduleCron, scheduledRunLabel, type ScheduleKind } from "../schedule";
-import { mentionedAgents, modelIdOf, relativeTime, rememberComposerSelection, rememberedComposerSelection, selectedDefaultModel, slashCommand, statusOf, taskSessionIds } from "../sessionUtils";
+import { mentionedAgents, modelIdOf, relativeTime, rememberComposerSelection, rememberedComposerSelection, selectedDefaultModel, sessionStatus, slashCommand, taskSessionIds } from "../sessionUtils";
 import type { Agent, Attachment, CommandItem, Project, ProviderSummary, RuntimeConfig, Session, Snapshot, Task } from "../types";
 import { Banner, Empty, Field, Modal, Page } from "../ui";
 import { message, useResource } from "../useResource";
@@ -93,7 +93,7 @@ export function Tasks({ project, refreshKey }: { project: Project; refreshKey: n
       {open && <TaskComposer project={project} agents={snapshot.data?.agents ?? []} commands={commands.data ?? []} providers={snapshot.data?.providers?.available ?? []} config={snapshot.data?.config} defaultModel={selectedDefaultModel(snapshot.data)} onClose={() => setOpen(false)} onCreated={() => { setOpen(false); tasks.reload(); snapshot.reload(); }} />}
       {sessionTask && <SessionComposer project={project} task={sessionTask} agents={snapshot.data?.agents ?? []} commands={commands.data ?? []} providers={snapshot.data?.providers?.available ?? []} config={snapshot.data?.config} defaultModel={sessionTask.model ?? selectedDefaultModel(snapshot.data)} onClose={() => setSessionTask(null)} onCreated={() => { setSessionTask(null); tasks.reload(); snapshot.reload(); }} />}
       {scheduleTask && <TaskScheduleEditor project={project} task={scheduleTask} agents={snapshot.data?.agents ?? []} commands={commands.data ?? []} onClose={() => setScheduleTask(null)} onSaved={() => { setScheduleTask(null); tasks.reload(); }} />}
-      {selectedSession && <SessionDrawer project={project} session={selectedSession} status={statusOf(snapshot.data, selectedSession.id)} taskStatus={selectedTask?.status ?? selectedSession.control_task?.status} agents={snapshot.data?.agents ?? []} providers={snapshot.data?.providers?.available ?? []} mcp={snapshot.data?.mcp ?? {}} config={snapshot.data?.config} initialAgent={selectedTask?.agent ?? selectedSession.agent ?? ""} initialModel={selectedTask?.model || modelIdOf(selectedSession) || snapshot.data?.config?.model || ""} onDelete={() => void removeSession(selectedSession)} onClose={() => setSelectedSessionId(null)} />}
+      {selectedSession && <SessionDrawer project={project} session={selectedSession} status={sessionStatus(snapshot.data, selectedSession)} taskStatus={selectedTask?.session_id === selectedSession.id ? selectedTask.status : selectedSession.control_task?.session_status} agents={snapshot.data?.agents ?? []} providers={snapshot.data?.providers?.available ?? []} mcp={snapshot.data?.mcp ?? {}} config={snapshot.data?.config} initialAgent={selectedTask?.agent ?? selectedSession.agent ?? ""} initialModel={selectedTask?.model || modelIdOf(selectedSession) || snapshot.data?.config?.model || ""} onDelete={() => void removeSession(selectedSession)} onClose={() => setSelectedSessionId(null)} />}
     </Page>
   );
 }

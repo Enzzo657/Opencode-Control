@@ -2631,6 +2631,7 @@ def test_command_runs_natively_and_rejects_busy_session(
     status = {"value": "idle"}
     started = threading.Event()
     release = threading.Event()
+    messages: list[dict[str, Any]] = []
 
     class FakeOpenCodeClient:
         def __init__(self, endpoint: str, directory: str, **kwargs: Any) -> None:
@@ -2666,14 +2667,37 @@ def test_command_runs_natively_and_rejects_busy_session(
             release.wait(timeout=2)
             calls.append((session_id, command, arguments))
 
+        def session_messages(self, session_id: str) -> list[dict[str, Any]]:
+            return messages
+
     monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
     with _client(tmp_path) as client:
         project_id = _project(client, root, endpoint="http://127.0.0.1:4096")["id"]
         headers = _csrf(client)
         endpoint = f"/api/v1/projects/{project_id}/sessions/ses_command/commands/review"
+        control = client.app.state.control
+        task = control.store.create_task(
+            project_id,
+            title="Review",
+            prompt="Review auth",
+            agent="build",
+            model="openai/gpt-test",
+        )
+        control.store.update_task(
+            project_id,
+            str(task["id"]),
+            status="failed",
+            session_id="ses_command",
+            error="server unavailable",
+        )
+        control.store.add_task_session(project_id, str(task["id"]), "ses_command")
 
         executed = client.post(endpoint, headers=headers, json={"arguments": "auth"})
         assert started.wait(timeout=1)
+        running = control.store.get_task(project_id, str(task["id"]))
+        assert running is not None
+        assert running["status"] == "running"
+        assert running["error"] is None
         status["value"] = "busy"
         busy = client.post(endpoint, headers=headers, json={"arguments": "again"})
 
@@ -2687,3 +2711,42 @@ def test_command_runs_natively_and_rejects_busy_session(
             time.sleep(0.01)
         assert calls == [("ses_command", "review", "auth")]
         assert busy.status_code == 409
+        completed_at = (datetime.now(UTC).timestamp() + 1) * 1000
+        messages.extend(
+            [
+                {
+                    "info": {
+                        "id": "msg_user",
+                        "role": "user",
+                        "time": {"created": completed_at - 500},
+                    },
+                    "parts": [{"type": "text", "text": "/review auth"}],
+                },
+                {
+                    "info": {
+                        "id": "msg_assistant",
+                        "role": "assistant",
+                        "finish": "stop",
+                        "time": {"created": completed_at - 400, "completed": completed_at},
+                    },
+                    "parts": [{"type": "step-finish"}],
+                },
+            ]
+        )
+        control.store.update_task(
+            project_id,
+            str(task["id"]),
+            status="failed",
+            session_id="ses_command",
+            error="stale failure",
+        )
+        status["value"] = "idle"
+        response = client.get(
+            f"/api/v1/projects/{project_id}/sessions/ses_command/messages"
+        )
+        assert response.status_code == 200
+        assert not any(item.get("info", {}).get("error") for item in response.json())
+        completed = control.store.get_task(project_id, str(task["id"]))
+        assert completed is not None
+        assert completed["status"] == "completed"
+        assert completed["error"] is None

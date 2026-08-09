@@ -98,7 +98,7 @@ export const ru = {
   "tasks.conversationHistory": "История диалога",
   "tasks.reuseSession": "продолжать предыдущую",
   "tasks.newSessionEachRun": "новая для каждого запуска",
-  "tasks.lastRun": "Последний запуск",
+  "tasks.lastRun": "Последний запуск расписания",
   "tasks.nextRun": "Следующий запуск",
   "tasks.schedulePaused": "приостановлен",
   "tasks.reasoning": "Рассуждение",

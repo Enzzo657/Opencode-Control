@@ -100,7 +100,7 @@ export const en = {
   "tasks.conversationHistory": "Conversation history",
   "tasks.reuseSession": "continue the previous session",
   "tasks.newSessionEachRun": "new session for each run",
-  "tasks.lastRun": "Last run",
+  "tasks.lastRun": "Last scheduled run",
   "tasks.nextRun": "Next run",
   "tasks.schedulePaused": "paused",
   "tasks.reasoning": "Reasoning",

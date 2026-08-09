@@ -269,10 +269,10 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
   const activeTodos = (todos.data ?? []).filter((todo) => todo.status !== "completed" && todo.status !== "cancelled");
   const mcpEntries = Object.entries(mcp).filter(([, value]) => value.status === "connected").sort(([left], [right]) => left.localeCompare(right));
   const liveStatus = runtimeStatus(messages.data ?? [], now);
-  const linkedTaskStatus = taskStatusOverride ?? taskStatus ?? session.control_task?.session_status;
-  const stopped = aborted || linkedTaskStatus === "aborted";
-  const failed = linkedTaskStatus === "failed" || status === "failed" || status === "error" || liveStatus === "failed";
-  const observedStatus = failed ? "failed" : activeSessionStatus(status) ? status : liveStatus ?? status;
+  const displayedStatus = taskStatusOverride ?? taskStatus ?? status;
+  const stopped = aborted || displayedStatus === "aborted";
+  const failed = displayedStatus === "failed" || displayedStatus === "error" || liveStatus === "failed";
+  const observedStatus = failed ? "failed" : activeSessionStatus(displayedStatus) ? displayedStatus : liveStatus ?? displayedStatus;
   const effectiveStatus = stopped ? "aborted" : busy || pendingFrom ? "busy" : observedStatus;
   const responseActive = !stopped && (busy || aborting || pendingFrom !== null || activeSessionStatus(observedStatus));
   const gitVisible = git.data?.available === true && (gitVisibility === "shown" || (gitVisibility === "auto" && git.data.changes.length > 0));

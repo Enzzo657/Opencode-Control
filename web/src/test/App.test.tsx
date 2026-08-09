@@ -680,6 +680,33 @@ describe("OpenCode Control", () => {
     });
   });
 
+  it("replaces a persisted failure with running when the session is continued", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes("/snapshot")) {
+        const original = await fallback(input, init);
+        const payload = await original.json();
+        payload.statuses = {};
+        payload.sessions[0].control_task = { ...payload.sessions[0].control_task, status: "failed", session_status: "failed", session_error: "server unavailable" };
+        return response(payload);
+      }
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(await screen.findByText("Fix checkout"));
+    const dialog = await screen.findByRole("dialog", { name: "Сессия Fix checkout" });
+    expect(dialog.querySelector('.status[data-status="failed"]')).toHaveTextContent("Ошибка");
+
+    const textarea = screen.getByPlaceholderText("Продолжите диалог в этой же сессии…");
+    fireEvent.change(textarea, { target: { value: "Продолжи выполнение" } });
+    fireEvent.click(screen.getByRole("button", { name: "Отправить в эту сессию" }));
+    await waitFor(() => expect(dialog.querySelector('.status[data-status="busy"]')).toHaveTextContent("Выполняется"));
+    expect(dialog.querySelector('.status[data-status="failed"]')).not.toBeInTheDocument();
+  });
+
   it("replaces send with stop while the agent is active", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {

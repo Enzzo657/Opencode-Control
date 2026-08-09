@@ -208,9 +208,7 @@ class TaskScheduleUpdate(StrictModel):
     def validate_schedule(self) -> TaskScheduleUpdate:
         if self.prompt is not None and not self.prompt.strip():
             raise ValueError("task prompt is required")
-        if self.mentions is not None and any(
-            not item or len(item) > 128 for item in self.mentions
-        ):
+        if self.mentions is not None and any(not item or len(item) > 128 for item in self.mentions):
             raise ValueError("invalid mentioned agent")
         if self.mode is None:
             if (
@@ -334,10 +332,7 @@ class ProviderConfigWrite(StrictModel):
         parsed = urllib.parse.urlsplit(self.base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
             raise ValueError("provider base URL must be HTTP or HTTPS")
-        if any(
-            not model.strip() or len(model) > 500 or "\0" in model
-            for model in self.models
-        ):
+        if any(not model.strip() or len(model) > 500 or "\0" in model for model in self.models):
             raise ValueError("provider model ID is invalid")
         return self
 
@@ -386,9 +381,7 @@ class ControlState:
             data_dir=config.data_dir,
         )
         self.config_transactions = ConfigTransactionManager(config.data_dir)
-        self.config_preflight = OpenCodeConfigPreflight(
-            config.opencode_binary, config.data_dir
-        )
+        self.config_preflight = OpenCodeConfigPreflight(config.opencode_binary, config.data_dir)
         self.config_lock = threading.RLock()
         self.browser_sessions: dict[str, str] = {}
         self.skill_import_previews: dict[str, dict[str, Any]] = {}
@@ -582,8 +575,10 @@ def _normalize_mcp_config(value: dict[str, Any]) -> dict[str, Any]:
             )
         command = value.get("command")
         environment = value.get("environment", value.get("env", {}))
-        if not isinstance(command, list) or not command or any(
-            not isinstance(item, str) or not item for item in command
+        if (
+            not isinstance(command, list)
+            or not command
+            or any(not isinstance(item, str) or not item for item in command)
         ):
             raise HTTPException(
                 status_code=422, detail="local MCP command must be a non-empty string array"
@@ -618,12 +613,9 @@ def _normalize_mcp_config(value: dict[str, Any]) -> dict[str, Any]:
             raise HTTPException(status_code=422, detail="remote MCP url is required")
         headers = value.get("headers", {})
         if not isinstance(headers, dict) or any(
-            not isinstance(key, str) or not isinstance(item, str)
-            for key, item in headers.items()
+            not isinstance(key, str) or not isinstance(item, str) for key, item in headers.items()
         ):
-            raise HTTPException(
-                status_code=422, detail="remote MCP headers must contain strings"
-            )
+            raise HTTPException(status_code=422, detail="remote MCP headers must contain strings")
         result = {key: item for key, item in value.items() if key in allowed}
         result["enabled"] = value.get("enabled", True)
     else:
@@ -658,9 +650,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         recovery = await asyncio.to_thread(state.config_transactions.recover_pending)
         for result in recovery:
             level = logging.ERROR if result["state"] == "recovery_failed" else logging.WARNING
-            logging.getLogger("uvicorn.error").log(
-                level, "Config transaction recovery: %s", result
-            )
+            logging.getLogger("uvicorn.error").log(level, "Config transaction recovery: %s", result)
         await initialize_project_commands()
         restore = asyncio.create_task(restore_managed_servers())
         scheduler = asyncio.create_task(scheduler_loop())
@@ -742,9 +732,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         legacy_review = prefix / "review.md"
         if read_text(workspace, legacy_review, missing="\0") == LEGACY_REVIEW_COMMAND_CONTENT:
             delete_file(workspace, legacy_review)
-        state.store.set_starter_commands_version(
-            str(project["id"]), STARTER_COMMANDS_VERSION
-        )
+        state.store.set_starter_commands_version(str(project["id"]), STARTER_COMMANDS_VERSION)
 
     async def initialize_project_commands() -> None:
         logger = logging.getLogger("uvicorn.error")
@@ -752,9 +740,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             try:
                 await asyncio.to_thread(ensure_project_commands, project)
             except (HTTPException, OSError, WorkspaceError) as error:
-                logger.error(
-                    "Could not initialize Commands for %s: %s", project["name"], error
-                )
+                logger.error("Could not initialize Commands for %s: %s", project["name"], error)
 
     def client_for(project_id: str) -> OpenCodeClient:
         project = project_or_404(project_id)
@@ -769,9 +755,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 str(endpoint),
                 str(project["root"]),
                 password=password,
-                guard=(lambda: state.processes.lease(project_id, managed))
-                if managed
-                else None,
+                guard=(lambda: state.processes.lease(project_id, managed)) if managed else None,
             )
             if not managed:
                 _validate_external_project(client, Path(str(project["root"])))
@@ -930,9 +914,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     def skill_conflicts(
         project: dict[str, Any], scope: Literal["project", "global"], document: SkillDocument
     ) -> tuple[dict[str, Any], str]:
-        target_sha256, target_exists = skill_directory_hash(
-            project, scope, document.name
-        )
+        target_sha256, target_exists = skill_directory_hash(project, scope, document.name)
         matches = []
         for item in skill_entries(project):
             effective_name = str(item.get("effective_name") or item["id"])
@@ -1016,9 +998,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             state.skill_import_previews[preview_id] = preview
         return skill_preview_response(preview_id, preview)
 
-    def get_skill_preview(
-        preview_id: str, project_id: str, session_id: str
-    ) -> dict[str, Any]:
+    def get_skill_preview(preview_id: str, project_id: str, session_id: str) -> dict[str, Any]:
         with state.skill_import_lock:
             remove_expired_skill_previews()
             preview = state.skill_import_previews.get(preview_id)
@@ -1028,9 +1008,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 raise HTTPException(status_code=404, detail="Skill preview not found")
             return preview
 
-    def raw_config_files(
-        root: WorkspaceRoot, candidates: dict[str, str]
-    ) -> dict[str, str]:
+    def raw_config_files(root: WorkspaceRoot, candidates: dict[str, str]) -> dict[str, str]:
         result: dict[str, str] = {}
         for relative in (Path("opencode.json"), Path("opencode.jsonc")):
             key = ConfigFile(root, relative).key
@@ -1103,9 +1081,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 ):
                     running.append(candidate_project)
 
-            transaction = state.config_transactions.begin(
-                label, list(candidate_files)
-            )
+            transaction = state.config_transactions.begin(label, list(candidate_files))
             try:
                 transaction.write_candidates(candidates)
                 transaction.mark_restarting()
@@ -1124,8 +1100,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                         failure = error
                         diagnostic = (
                             error.diagnostic.as_dict()
-                            if isinstance(error, ProcessError)
-                            and error.diagnostic is not None
+                            if isinstance(error, ProcessError) and error.diagnostic is not None
                             else None
                         )
                         restarts[project_id] = {
@@ -1265,8 +1240,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             )
             state.store.add_task_session(project_id, str(task["id"]), session_id)
             dispatched_prompt = (
-                f"Ожидаемый результат: {task['title']}\n\n"
-                f"Подробное задание:\n{task['prompt']}"
+                f"Ожидаемый результат: {task['title']}\n\nПодробное задание:\n{task['prompt']}"  # noqa: RUF001
             )
             task_id = str(task["id"])
             background = send_task_input(
@@ -1380,9 +1354,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         value = status.get("type") or status.get("status") if isinstance(status, dict) else None
         return value in {"busy", "dispatching", "in_progress", "pending", "queued", "running"}
 
-    def dispatch_scheduled_run(
-        run: dict[str, Any], task: dict[str, Any], lease_token: str
-    ) -> None:
+    def dispatch_scheduled_run(run: dict[str, Any], task: dict[str, Any], lease_token: str) -> None:
         project_id = str(run["project_id"])
         run_id = str(run["id"])
         session_id: str | None = None
@@ -1400,9 +1372,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             else:
                 session = client.create_session(str(task["title"]))
                 session_id = str(session["id"])
-            attached = state.store.attach_scheduled_run_session(
-                run_id, lease_token, session_id
-            )
+            attached = state.store.attach_scheduled_run_session(run_id, lease_token, session_id)
             if not attached:
                 raise RuntimeError("scheduled run lease changed before session attachment")
             marker = f"<!-- opencode-control-run:{run_id} -->"
@@ -1417,6 +1387,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     f"{marker}\nОжидаемый результат: {task['title']}\n\n"  # noqa: RUF001
                     f"Подробное задание:\n{task['prompt']}"
                 )
+
             def mark_running() -> None:
                 if not state.store.mark_scheduled_run_running(run_id, lease_token):
                     raise RuntimeError("scheduled run lease changed before command dispatch")
@@ -1432,9 +1403,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     run_id, "failed", str(error)
                 ),
             )
-            if not background and not state.store.mark_scheduled_run_running(
-                run_id, lease_token
-            ):
+            if not background and not state.store.mark_scheduled_run_running(run_id, lease_token):
                 raise RuntimeError("scheduled run lease changed after prompt dispatch")
         except Exception as error:
             detail = str(error)
@@ -1483,9 +1452,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 )
                 continue
             sessions = {
-                item.get("id")
-                for item in snapshot.get("sessions", [])
-                if isinstance(item, dict)
+                item.get("id") for item in snapshot.get("sessions", []) if isinstance(item, dict)
             }
             try:
                 age = (now - datetime.fromisoformat(str(run["updated_at"]))).total_seconds()
@@ -1594,9 +1561,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         return JSONResponse({"detail": str(error)}, status_code=400)
 
     @app.exception_handler(ConfigOperationError)
-    async def config_operation_error(
-        request: Request, error: ConfigOperationError
-    ) -> JSONResponse:
+    async def config_operation_error(request: Request, error: ConfigOperationError) -> JSONResponse:
         payload = cast(dict[str, Any], redact_for_browser(error.result))
         return JSONResponse(
             {**payload, "detail": payload},
@@ -2259,9 +2224,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 if isinstance(item, dict) and isinstance(item.get("id"), str)
             }
 
-            def root_session_id(
-                session_id: str, index: dict[str, Any] = session_index
-            ) -> str:
+            def root_session_id(session_id: str, index: dict[str, Any] = session_index) -> str:
                 current = session_id
                 seen: set[str] = set()
                 while current not in seen:
@@ -2278,9 +2241,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     continue
                 session_id = str(session["id"])
                 session_key = f"{project_id_value}:{session_id}"
-                usage_session_key = (
-                    f"{project_id_value}:{root_session_id(session_id)}"
-                )
+                usage_session_key = f"{project_id_value}:{root_session_id(session_id)}"
                 session_time = session.get("time")
                 raw_time: dict[str, Any] = session_time if isinstance(session_time, dict) else {}
                 updated = raw_time.get("updated")
@@ -2391,9 +2352,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             }
 
         recent_sessions.sort(
-            key=lambda item: item.get("time", {}).get("updated", 0)
-            if isinstance(item.get("time"), dict)
-            else 0,
+            key=lambda item: (
+                item.get("time", {}).get("updated", 0) if isinstance(item.get("time"), dict) else 0
+            ),
             reverse=True,
         )
         result = {
@@ -2610,11 +2571,15 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                         break
                     parent_id = current.get("parentID")
                     current = by_id.get(str(parent_id)) if parent_id else None
-        snapshot["server"] = server if server["state"] == "running" else {
-            "state": "external",
-            "managed": False,
-            "endpoint": endpoint,
-        }
+        snapshot["server"] = (
+            server
+            if server["state"] == "running"
+            else {
+                "state": "external",
+                "managed": False,
+                "endpoint": endpoint,
+            }
+        )
         return snapshot
 
     @app.get("/api/v1/projects/{project_id}/providers/auth")
@@ -2670,9 +2635,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         try:
             payload = ProviderOAuthAuthorize.model_validate(await request.json())
         except (ValidationError, ValueError, TypeError) as error:
-            raise HTTPException(
-                status_code=422, detail="Некорректные данные OAuth"
-            ) from error
+            raise HTTPException(status_code=422, detail="Некорректные данные OAuth") from error
         return managed_client_for_auth(project_id).authorize_provider_oauth(
             provider_id, payload.method, payload.inputs
         )
@@ -2687,9 +2650,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         try:
             payload = ProviderOAuthCallback.model_validate(await request.json())
         except (ValidationError, ValueError, TypeError) as error:
-            raise HTTPException(
-                status_code=422, detail="Некорректный ответ OAuth"
-            ) from error
+            raise HTTPException(status_code=422, detail="Некорректный ответ OAuth") from error
         managed_client_for_auth(project_id).complete_provider_oauth(
             provider_id, payload.method, payload.code
         )
@@ -2721,17 +2682,11 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             project,
             "project",
             f"provider:{item_id}",
-            {
-                ConfigFile(root, relative): render_jsonc_update(
-                    root, relative, config_value
-                )
-            },
+            {ConfigFile(root, relative): render_jsonc_update(root, relative, config_value)},
         )
         if payload.api_key:
             try:
-                managed_client_for_auth(project_id).set_provider_api_key(
-                    item_id, payload.api_key
-                )
+                managed_client_for_auth(project_id).set_provider_api_key(item_id, payload.api_key)
             except (OpenCodeError, ProcessError) as error:
                 raise HTTPException(
                     status_code=409,
@@ -2747,11 +2702,88 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             "operation": operation,
         }
 
+    def reconcile_task_session_messages(
+        project_id: str, session_id: str, messages: list[Any]
+    ) -> None:
+        task = state.store.task_for_session(project_id, session_id)
+        if (
+            task is None
+            or task.get("session_id") != session_id
+            or task.get("status") not in {"dispatching", "running", "failed"}
+        ):
+            return
+        last_user = -1
+        last_assistant = -1
+        for index, message in enumerate(messages):
+            info = message.get("info") if isinstance(message, dict) else None
+            if not isinstance(info, dict):
+                continue
+            if info.get("role") == "user":
+                last_user = index
+            elif info.get("role") == "assistant":
+                last_assistant = index
+        if last_assistant <= last_user:
+            return
+        message = messages[last_assistant]
+        info = message.get("info") if isinstance(message, dict) else None
+        if not isinstance(info, dict):
+            return
+        raw_time = info.get("time")
+        message_time = raw_time if isinstance(raw_time, dict) else {}
+        occurred = message_time.get("completed") or message_time.get("created")
+        if not isinstance(occurred, (int, float)):
+            return
+        occurred_ms = float(occurred) if occurred > 100_000_000_000 else float(occurred) * 1000
+        try:
+            task_updated_ms = datetime.fromisoformat(str(task["updated_at"])).timestamp() * 1000
+        except ValueError:
+            return
+        if occurred_ms <= task_updated_ms:
+            return
+        raw_error = info.get("error")
+        if raw_error:
+            if isinstance(raw_error, dict):
+                detail = (
+                    raw_error.get("message") or raw_error.get("name") or "OpenCode session failed"
+                )
+            else:
+                detail = str(raw_error)
+            state.store.update_task(
+                project_id,
+                str(task["id"]),
+                status="failed",
+                session_id=session_id,
+                error=str(detail),
+            )
+            invalidate_dashboard_cache(project_id)
+            return
+        raw_parts = message.get("parts")
+        parts = raw_parts if isinstance(raw_parts, list) else []
+        finished = (
+            bool(message_time.get("completed"))
+            or info.get("finish") == "stop"
+            or any(isinstance(part, dict) and part.get("type") == "step-finish" for part in parts)
+        )
+        if not finished:
+            return
+        if task.get("cron"):
+            status = "scheduled" if task.get("schedule_enabled") else "paused"
+        else:
+            status = "completed"
+        state.store.update_task(
+            project_id,
+            str(task["id"]),
+            status=status,
+            session_id=session_id,
+        )
+        invalidate_dashboard_cache(project_id)
+
     @app.get("/api/v1/projects/{project_id}/sessions/{session_id}/messages")
     def session_messages(project_id: str, session_id: str) -> Any:
         client = client_for_session(project_id, session_id)
         assert client is not None
         messages = client.session_messages(session_id)
+        reconcile_task_session_messages(project_id, session_id, messages)
         task = state.store.session_task(project_id, session_id)
         if (
             task is not None
@@ -2923,6 +2955,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 update_model=not scheduled and "model" in payload.model_fields_set,
                 update_variant=not scheduled and "variant" in payload.model_fields_set,
             )
+            invalidate_dashboard_cache(project_id)
         return {"accepted": True}
 
     @app.post("/api/v1/projects/{project_id}/sessions/{session_id}/abort")
@@ -2971,9 +3004,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             return result
         statuses = snapshot.get("statuses", {})
         session_ids = {
-            item.get("id")
-            for item in snapshot.get("sessions", [])
-            if isinstance(item, dict)
+            item.get("id") for item in snapshot.get("sessions", []) if isinstance(item, dict)
         }
         now = datetime.now(UTC)
         active_states = {"busy", "dispatching", "in_progress", "pending", "queued", "running"}
@@ -2987,9 +3018,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             for session_id in linked_ids:
                 status = statuses.get(session_id, {}) if isinstance(statuses, dict) else {}
                 value = (
-                    status.get("type") or status.get("status")
-                    if isinstance(status, dict)
-                    else None
+                    status.get("type") or status.get("status") if isinstance(status, dict) else None
                 )
                 if value in active_states:
                     active = True
@@ -3097,9 +3126,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 timezone=payload.timezone,
                 enabled=enabled,
                 cron_session_mode=payload.cron_session_mode or "new",
-                next_run_at=(
-                    _next_cron_run(payload.cron, payload.timezone) if enabled else None
-                ),
+                next_run_at=(_next_cron_run(payload.cron, payload.timezone) if enabled else None),
                 prompt=payload.prompt,
                 mentions=payload.mentions,
             )
@@ -3322,6 +3349,39 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         value = status.get("type") or status.get("status") if isinstance(status, dict) else None
         if value in {"busy", "dispatching", "in_progress", "pending", "queued", "running"}:
             raise HTTPException(status_code=409, detail="session is already active")
+        task = state.store.task_for_session(project_id, session_id)
+        scheduled = bool(task and task.get("cron"))
+
+        def mark_task_running() -> None:
+            if task is None:
+                return
+            state.store.record_task_prompt(
+                project_id,
+                str(task["id"]),
+                session_id=session_id,
+                prompt=None,
+                agent=payload.agent,
+                model=payload.model,
+                variant=payload.variant,
+                mentions=[],
+                update_agent=not scheduled and "agent" in payload.model_fields_set,
+                update_model=not scheduled and "model" in payload.model_fields_set,
+                update_variant=not scheduled and "variant" in payload.model_fields_set,
+            )
+            invalidate_dashboard_cache(project_id)
+
+        def mark_task_failed(error: Exception) -> None:
+            if task is None:
+                return
+            state.store.update_task(
+                project_id,
+                str(task["id"]),
+                status="failed",
+                session_id=session_id,
+                error=str(error),
+            )
+            invalidate_dashboard_cache(project_id)
+
         if not state.submit_command(
             lambda: client.run_command(
                 session_id,
@@ -3330,7 +3390,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 agent=payload.agent,
                 model=payload.model,
                 variant=payload.variant,
-            )
+            ),
+            before_start=mark_task_running,
+            on_error=mark_task_failed,
         ):
             raise HTTPException(status_code=429, detail="too many commands are already running")
         return {"accepted": True}
@@ -3488,9 +3550,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             else:
                 root, relative, target_path = skill_target(project, scope, document.name)
                 with state.config_lock:
-                    current_conflict, current_sha256 = skill_conflicts(
-                        project, scope, document
-                    )
+                    current_conflict, current_sha256 = skill_conflicts(project, scope, document)
                     if current_sha256 != preview["target_sha256"]:
                         raise HTTPException(
                             status_code=409,
@@ -3511,9 +3571,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                                 root,
                                 relative.parent,
                                 {
-                                    Path(file.path): WorkspaceTreeFile(
-                                        file.content, file.mode
-                                    )
+                                    Path(file.path): WorkspaceTreeFile(file.content, file.mode)
                                     for file in downloaded.files
                                 },
                             )
@@ -3581,26 +3639,16 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 status_code=422,
                 detail="Skill frontmatter name must match the target directory",
             )
-        source_root, source_directory = skill_directory(
-            project, payload.source_scope, source_id
-        )
-        target_root, target_directory = skill_directory(
-            project, payload.target_scope, target_id
-        )
+        source_root, source_directory = skill_directory(project, payload.source_scope, source_id)
+        target_root, target_directory = skill_directory(project, payload.target_scope, target_id)
         source_files = snapshot_directory(source_root, source_directory)
         if source_files is None:
             raise HTTPException(status_code=404, detail="Skill directory not found")
-        source_files[Path("SKILL.md")] = WorkspaceTreeFile(
-            payload.content.encode("utf-8"), 0o600
-        )
-        same_target = (
-            source_root.path == target_root.path and source_directory == target_directory
-        )
+        source_files[Path("SKILL.md")] = WorkspaceTreeFile(payload.content.encode("utf-8"), 0o600)
+        same_target = source_root.path == target_root.path and source_directory == target_directory
         with state.config_lock:
             if same_target:
-                write_text(
-                    source_root, source_directory / "SKILL.md", payload.content
-                )
+                write_text(source_root, source_directory / "SKILL.md", payload.content)
             else:
                 if snapshot_directory(target_root, target_directory) is not None:
                     raise HTTPException(
@@ -3614,9 +3662,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                         delete_directory(target_root, target_directory)
                     raise
         restart_scope: Literal["project", "global"] = (
-            "global"
-            if "global" in {payload.source_scope, payload.target_scope}
-            else "project"
+            "global" if "global" in {payload.source_scope, payload.target_scope} else "project"
         )
         return {
             "id": target_id,
@@ -3721,11 +3767,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             project,
             payload.scope,
             f"configuration:{payload.scope}",
-            {
-                ConfigFile(root, relative): render_jsonc_update(
-                    root, relative, replacement
-                )
-            },
+            {ConfigFile(root, relative): render_jsonc_update(root, relative, replacement)},
         )
         return {
             "scope": payload.scope,
@@ -3780,11 +3822,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             project,
             payload.scope,
             f"mcp:{item_id}",
-            {
-                ConfigFile(root, relative): render_jsonc_update(
-                    root, relative, config_value
-                )
-            },
+            {ConfigFile(root, relative): render_jsonc_update(root, relative, config_value)},
         )
         return {
             "name": item_id,
@@ -3850,11 +3888,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             project,
             payload.scope,
             f"mcp-enabled:{item_id}",
-            {
-                ConfigFile(root, relative): render_jsonc_update(
-                    root, relative, config_value
-                )
-            },
+            {ConfigFile(root, relative): render_jsonc_update(root, relative, config_value)},
         )
         return {
             "name": item_id,
@@ -3904,11 +3938,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             project,
             "project",
             f"mcp-remove:{item_id}",
-            {
-                ConfigFile(root, relative): render_jsonc_update(
-                    root, relative, config_value
-                )
-            },
+            {ConfigFile(root, relative): render_jsonc_update(root, relative, config_value)},
         )
         return {"name": item_id, "scope": scope, "operation": operation}
 
