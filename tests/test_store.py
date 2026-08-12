@@ -49,6 +49,38 @@ def test_materializing_run_atomically_advances_schedule(tmp_path: Path) -> None:
     store.close()
 
 
+def test_overdue_run_is_recorded_as_skipped_and_schedule_advances(tmp_path: Path) -> None:
+    store = ControlStore(tmp_path / "data")
+    project_id, task_id = _scheduled_task(store, tmp_path)
+
+    run = store.skip_overdue_scheduled_run(
+        project_id,
+        task_id,
+        expected_run_at="2026-07-27T09:00:00+00:00",
+        next_run_at="2026-07-28T09:00:00+00:00",
+        created_at="2026-07-27T12:00:00+00:00",
+        reason="Control was offline when this run was scheduled",
+    )
+    duplicate = store.skip_overdue_scheduled_run(
+        project_id,
+        task_id,
+        expected_run_at="2026-07-27T09:00:00+00:00",
+        next_run_at="2026-07-28T09:00:00+00:00",
+        created_at="2026-07-27T12:00:01+00:00",
+        reason="Control was offline when this run was scheduled",
+    )
+
+    assert run is not None
+    assert run["status"] == "skipped"
+    assert duplicate is None
+    assert store.get_task(project_id, task_id)["next_run_at"] == "2026-07-28T09:00:00+00:00"
+    events = store.list_events(project_id=project_id)
+    assert events["unread"] == 0
+    assert len(events["events"]) == 1
+    assert events["events"][0]["kind"] == "scheduled_run_skipped"
+    store.close()
+
+
 def test_only_one_scheduler_can_claim_and_update_a_run(tmp_path: Path) -> None:
     data_dir = tmp_path / "data"
     first = ControlStore(data_dir)

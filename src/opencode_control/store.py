@@ -1052,6 +1052,28 @@ class ControlStore:
             )
         return self.get_scheduled_run(run_id)
 
+    def skip_overdue_scheduled_run(
+        self,
+        project_id: str,
+        task_id: str,
+        *,
+        expected_run_at: str,
+        next_run_at: str,
+        created_at: str,
+        reason: str,
+    ) -> dict[str, Any] | None:
+        run = self.materialize_scheduled_run(
+            project_id,
+            task_id,
+            expected_run_at=expected_run_at,
+            next_run_at=next_run_at,
+            created_at=created_at,
+        )
+        if run is None:
+            return None
+        self.finish_scheduled_run(str(run["id"]), "skipped", reason)
+        return self.get_scheduled_run(str(run["id"]))
+
     def recover_interrupted_scheduled_runs(self) -> int:
         timestamp = _now()
         with self._lock, self._connection:

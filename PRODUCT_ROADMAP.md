@@ -140,6 +140,8 @@ signals, file locks, workspace security для reparse points и native Windows 
 - [x] Проверять orphan через root identity и authenticated health из private registry.
 - [x] Закрыть config transaction crash-window между write и manifest update.
 - [x] Использовать at-most-once recovery для scheduled session creation.
+- [x] Пропускать downtime cron runs старше двух минут без массового catch-up.
+- [x] Добавить изолированный scheduler/recovery soak harness с SQLite integrity check.
 
 1. Провести длительный soak-test scheduler, reconnect и event retention.
 2. Проверить recovery после реального reboot/power loss.

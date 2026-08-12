@@ -154,6 +154,31 @@ Config transactions записывают candidate hash до изменения 
 восстанавливает snapshot при crash до или сразу после записи. Scheduled run переходит в
 durable `creating_session` до внешнего вызова и после crash не запускается повторно вслепую.
 
+### Soak и reboot
+
+Изолированный recovery harness не использует добавленные в Control проекты:
+
+```bash
+opencode-control soak --cycles 1000
+opencode-control soak --cycles 43200 --interval 1 --data-dir ~/opencode-control-soak
+```
+
+Первая команда выполняет быстрый stress pass. Вторая работает около 12 часов и сохраняет
+SQLite для последующей диагностики. Harness чередует completed/failed/skipped runs,
+симулирует crash в `creating_session`, периодически переоткрывает SQLite и в конце проверяет
+`PRAGMA integrity_check`, отсутствие активных runs и точное количество событий.
+
+После reboot проверьте:
+
+```bash
+opencode-control status
+opencode-control start --no-open
+```
+
+Затем откройте Control и убедитесь, что managed проекты снова `running`, старые PID registry
+очищены, пропущенные более чем на две минуты scheduled runs отмечены `skipped`, а новые
+запуски продолжаются только с ближайшего будущего времени.
+
 Text preview ограничен 1 MiB, CSV — 1000 строками и 100 колонками, ZIP listing — 1000
 записями. Preview никогда не распаковывает архив и помечает небезопасные entry names.
 

@@ -9,7 +9,7 @@ import subprocess
 import threading
 import time
 import zipfile
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -2320,7 +2320,7 @@ def test_scheduled_task_uses_a_fresh_session_by_default(
         model=None,
         cron="* * * * *",
         timezone="UTC",
-        next_run_at="2020-01-01T00:00:00+00:00",
+        next_run_at=(datetime.now(UTC) - timedelta(seconds=10)).isoformat(),
     )
     store.update_task(
         str(project["id"]), str(task["id"]), status="completed", session_id="ses_old"
@@ -2345,7 +2345,9 @@ def test_scheduled_task_uses_a_fresh_session_by_default(
     assert "opencode-control-run:" in calls[1][1][1]
     assert runs[0]["status"] == "running"
     assert runs[0]["attempt_count"] == 1
-    assert runs[0]["scheduled_for"] == "2020-01-01T00:00:00+00:00"
+    assert datetime.fromisoformat(runs[0]["scheduled_for"]) > datetime.now(UTC) - timedelta(
+        minutes=2
+    )
     assert updated["last_scheduled_run"]["id"] == runs[0]["id"]
 
 

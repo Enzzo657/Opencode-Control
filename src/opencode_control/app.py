@@ -1532,6 +1532,20 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             ):
                 continue
             next_run = _next_cron_run(expression, timezone, now)
+            try:
+                overdue = now - datetime.fromisoformat(expected).astimezone(UTC)
+            except ValueError:
+                continue
+            if overdue > timedelta(minutes=2):
+                state.store.skip_overdue_scheduled_run(
+                    str(candidate["project_id"]),
+                    str(candidate["id"]),
+                    expected_run_at=expected,
+                    next_run_at=next_run,
+                    created_at=now.isoformat(),
+                    reason="Control was offline when this run was scheduled",
+                )
+                continue
             run = state.store.materialize_scheduled_run(
                 str(candidate["project_id"]),
                 str(candidate["id"]),

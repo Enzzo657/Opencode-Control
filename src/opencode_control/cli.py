@@ -23,6 +23,7 @@ import uvicorn
 from opencode_control.app import create_app
 from opencode_control.config import ControlConfig
 from opencode_control.log_rotation import LogRotationError, rotate_log
+from opencode_control.soak import run_soak
 from opencode_control.store import ControlStore
 
 
@@ -55,6 +56,16 @@ def main(argv: list[str] | None = None) -> None:
         return
     if arguments.action == "uninstall":
         _uninstall(config, pid_path, arguments.yes, arguments.purge_data)
+        return
+    if arguments.action == "soak":
+        result = run_soak(
+            cycles=arguments.cycles,
+            data_dir=Path(arguments.data_dir).expanduser().resolve()
+            if arguments.data_dir
+            else None,
+            interval_seconds=arguments.interval,
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
         return
     if arguments.action == "stop":
         stopped = _stop(pid_path, "OpenCode Control", "opencode_control.cli", quiet=True)
@@ -97,6 +108,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--purge-data",
         action="store_true",
         help="delete projects, tasks, configuration and logs after uninstalling",
+    )
+    soak = commands.add_parser(
+        "soak", help="run an isolated scheduler and recovery stress test"
+    )
+    soak.add_argument("--cycles", type=int, default=1000)
+    soak.add_argument(
+        "--interval", type=float, default=0, help="seconds to wait between cycles"
+    )
+    soak.add_argument(
+        "--data-dir", help="keep soak data in this directory instead of using a temporary one"
     )
     return parser
 
@@ -226,6 +247,8 @@ def _control_data_purge_plan(path: Path) -> tuple[list[Path], list[Path]]:
         "control.log.1",
         "control.log.2",
         "control.log.3",
+        "managed-processes.json",
+        "managed-processes.tmp",
     }
     files: list[Path] = []
     directories: list[Path] = []
