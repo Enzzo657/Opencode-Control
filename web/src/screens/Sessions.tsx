@@ -5,15 +5,16 @@ import { intlLocale, localizedStatus, translate, useI18n } from "../i18n";
 import { MessageMarkdown } from "../MessageMarkdown";
 import { PromptBox } from "../PromptBox";
 import { compact, mentionedAgents, modelIdOf, modelOf, readSessionSelection, relativeTime, rememberComposerSelection, rememberedComposerSelection, rememberSessionSelection, selectedDefaultModel, sessionLifetimeTokens, sessionStatus, slashCommand } from "../sessionUtils";
-import type { Agent, Attachment, CommandItem, GitState, Project, ProviderSummary, RuntimeConfig, Session, Snapshot, Task } from "../types";
+import type { Agent, Attachment, CommandItem, GitState, Project, ProviderSummary, RuntimeConfig, Session, Task } from "../types";
 import { Banner, Empty, Field, Modal, Page, Panel, ScopeGuide, Status } from "../ui";
 import { message, useResource } from "../useResource";
+import { useSnapshotResource } from "../useSnapshotResource";
 
 type SessionSearchTarget = { sessionId: string; messageId: string | null; query: string };
 
 export function Sessions({ project, refreshKey, initialSearchTarget = null, onInitialSessionHandled }: { project: Project; refreshKey: number; initialSearchTarget?: SessionSearchTarget | null; onInitialSessionHandled?: () => void }) {
   const { t } = useI18n();
-  const resource = useResource<Snapshot>(`/api/v1/projects/${project.id}/snapshot`, refreshKey, 3000);
+  const resource = useSnapshotResource(`/api/v1/projects/${project.id}/snapshot`, refreshKey, 3000);
   const commands = useResource<CommandItem[]>(`/api/v1/projects/${project.id}/commands`, refreshKey);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [composer, setComposer] = useState(false);
@@ -54,6 +55,7 @@ export function Sessions({ project, refreshKey, initialSearchTarget = null, onIn
   return (
     <Page title={t("sessions.title")} description={t("sessions.description")} action={<button className="primary-button" onClick={() => setComposer(true)}><Plus size={16} /> {t("sessions.new")}</button>}>
       {notice && <Banner tone={notice.tone}>{notice.text}</Banner>}
+      {resource.stale && <Banner tone="notice">{t("sessions.reconnecting")}</Banner>}
       {resource.error && <Banner tone="danger">{resource.error}</Banner>}
       <ScopeGuide><strong>{t("sessions.mainCount", { count: allSessions.length - childCount })}</strong><span>{t("sessions.childCount", { count: childCount })}</span><label className="toggle-field"><input type="checkbox" checked={showChildren} onChange={(event) => setShowChildren(event.target.checked)} /> {t("sessions.showChildren")}</label></ScopeGuide>
       <Panel className="table-panel">
@@ -65,14 +67,14 @@ export function Sessions({ project, refreshKey, initialSearchTarget = null, onIn
               <span><strong>{session.agent ?? t("common.default")}</strong><small>{modelOf(session)}</small></span>
               <span><strong>{t("sessions.tokens", { count: compact(sessionLifetimeTokens(session)) })}</strong><small>{t("sessions.allTimeCost", { cost: (session.cost ?? 0).toFixed(4) })}</small></span>
               <span><Status value={sessionStatus(resource.data, session)} /></span>
-              <span className="row-actions"><button className="icon-button danger" onClick={(event) => { event.stopPropagation(); void abort(session); }} aria-label={t("sessions.abort")}><CircleStop size={16} /></button><button className="icon-button danger" onClick={(event) => { event.stopPropagation(); void remove(session); }} aria-label={t("sessions.delete")}><Trash2 size={15} /></button></span>
+               <span className="row-actions"><button className="icon-button danger" disabled={resource.stale} onClick={(event) => { event.stopPropagation(); void abort(session); }} aria-label={t("sessions.abort")}><CircleStop size={16} /></button><button className="icon-button danger" disabled={resource.stale} onClick={(event) => { event.stopPropagation(); void remove(session); }} aria-label={t("sessions.delete")}><Trash2 size={15} /></button></span>
             </div>
           ))}
         </div>
         {sessions.length === 0 && <Empty icon={<MessageSquareText />} title={t("sessions.empty")} detail={t("sessions.emptyDetail")} />}
       </Panel>
       {composer && <SessionComposer project={project} agents={resource.data?.agents ?? []} commands={commands.data ?? []} providers={resource.data?.providers?.available ?? []} config={resource.data?.config} defaultModel={selectedDefaultModel(resource.data)} onClose={() => setComposer(false)} onCreated={() => { setComposer(false); resource.reload(); }} />}
-      {selected && <SessionDrawer project={project} session={selected} status={sessionStatus(resource.data, selected)} taskStatus={selected.control_task?.session_status} agents={resource.data?.agents ?? []} providers={resource.data?.providers?.available ?? []} mcp={resource.data?.mcp ?? {}} config={resource.data?.config} initialModel={modelIdOf(selected) || resource.data?.config?.model || ""} searchTarget={drawerSearchTarget?.sessionId === selected.id ? drawerSearchTarget : null} onDelete={() => void remove(selected)} onClose={() => { setSelectedSessionId(null); setDrawerSearchTarget(null); }} />}
+      {selected && <SessionDrawer project={project} session={selected} status={sessionStatus(resource.data, selected)} taskStatus={selected.control_task?.session_status} agents={resource.data?.agents ?? []} providers={resource.data?.providers?.available ?? []} mcp={resource.data?.mcp ?? {}} config={resource.data?.config} initialModel={modelIdOf(selected) || resource.data?.config?.model || ""} searchTarget={drawerSearchTarget?.sessionId === selected.id ? drawerSearchTarget : null} onDelete={resource.stale ? undefined : () => void remove(selected)} onClose={() => { setSelectedSessionId(null); setDrawerSearchTarget(null); }} />}
     </Page>
   );
 }

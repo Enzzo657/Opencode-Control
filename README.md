@@ -138,6 +138,22 @@ OpenCode server lifecycle и запросов permissions. Ошибки и ож�
 История хранится в локальной SQLite базе 30 дней и не содержит prompt, message text или
 secrets. Системные уведомления macOS/Linux намеренно не используются.
 
+### Restart и reconnect
+
+Открытая SPA переживает restart Control без перезагрузки страницы: просроченная CSRF
+session автоматически обновляется, а исходный write-запрос повторяется один раз. При
+временной недоступности OpenCode экраны Sessions и Tasks сохраняют последний полный
+snapshot, показывают reconnect banner и временно блокируют destructive actions. Статусы
+активных Tasks сверяются с текущей execution Session в snapshot-потоке и фоновом цикле;
+частичный snapshot без sessions/statuses не может ложно завершить Task.
+
+При аварийном завершении Control managed OpenCode процессы не дублируются. PID, endpoint,
+project root identity, process generation и server password хранятся в приватном registry
+с mode `0600`; новый Control принимает процесс только после authenticated health check.
+Config transactions записывают candidate hash до изменения файла, поэтому rollback
+восстанавливает snapshot при crash до или сразу после записи. Scheduled run переходит в
+durable `creating_session` до внешнего вызова и после crash не запускается повторно вслепую.
+
 Text preview ограничен 1 MiB, CSV — 1000 строками и 100 колонками, ZIP listing — 1000
 записями. Preview никогда не распаковывает архив и помечает небезопасные entry names.
 

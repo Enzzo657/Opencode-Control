@@ -317,6 +317,7 @@ export const en = {
   "dashboard.noProjects": "No project data available.",
   "sessions.title": "Sessions",
   "sessions.description": "Main conversations are shown first. Open child sessions separately to inspect subagent work.",
+  "sessions.reconnecting": "OpenCode is reconnecting. Last known data is preserved and destructive actions are temporarily disabled.",
   "sessions.new": "New session",
   "search.title": "Search",
   "search.description": "Find sessions and messages in the current project or across your local OpenCode history.",

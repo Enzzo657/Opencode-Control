@@ -210,9 +210,7 @@ class ControlStore:
                 )
             search_columns = {
                 str(row[1])
-                for row in self._connection.execute(
-                    "PRAGMA table_info(search_sessions)"
-                ).fetchall()
+                for row in self._connection.execute("PRAGMA table_info(search_sessions)").fetchall()
             }
             if "artifact_index_version" not in search_columns:
                 self._connection.execute(
@@ -342,9 +340,7 @@ class ControlStore:
                 (version, _now(), project_id),
             )
 
-    def search_session_versions(
-        self, project_id: str
-    ) -> dict[str, tuple[float | None, str, int]]:
+    def search_session_versions(self, project_id: str) -> dict[str, tuple[float | None, str, int]]:
         with self._lock:
             rows = self._connection.execute(
                 "SELECT session_id, updated_at, title, artifact_index_version "
@@ -589,8 +585,10 @@ class ControlStore:
                 """,
                 (status, session_id, error, timestamp, project_id, task_id),
             )
-            if previous is not None and status in {"completed", "failed", "aborted"} and (
-                previous["status"] != status or previous["error"] != error
+            if (
+                previous is not None
+                and status in {"completed", "failed", "aborted"}
+                and (previous["status"] != status or previous["error"] != error)
             ):
                 current_session_id = session_id or previous["session_id"]
                 self._record_event_locked(
@@ -645,9 +643,7 @@ class ControlStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def list_events(
-        self, *, project_id: str | None = None, limit: int = 50
-    ) -> dict[str, Any]:
+    def list_events(self, *, project_id: str | None = None, limit: int = 50) -> dict[str, Any]:
         where = "WHERE events.project_id = ?" if project_id else ""
         parameters: tuple[Any, ...] = (project_id,) if project_id else ()
         with self._lock:
@@ -1059,6 +1055,12 @@ class ControlStore:
     def recover_interrupted_scheduled_runs(self) -> int:
         timestamp = _now()
         with self._lock, self._connection:
+            creating = self._connection.execute(
+                """
+                SELECT id FROM scheduled_runs
+                WHERE status = 'creating_session' AND session_id IS NULL
+                """
+            ).fetchall()
             self._connection.execute(
                 """
                 UPDATE scheduled_runs SET status = 'cancelled', lease_token = NULL,
@@ -1082,7 +1084,24 @@ class ControlStore:
                 """,
                 (timestamp,),
             )
-        return cursor.rowcount
+        for row in creating:
+            self.finish_scheduled_run(
+                str(row["id"]),
+                "failed",
+                "Control restarted while creating the OpenCode session; retry suppressed",
+            )
+        return cursor.rowcount + len(creating)
+
+    def mark_scheduled_run_creating(self, run_id: str, lease_token: str) -> bool:
+        with self._lock, self._connection:
+            cursor = self._connection.execute(
+                """
+                UPDATE scheduled_runs SET status = 'creating_session', updated_at = ?
+                WHERE id = ? AND status = 'claimed' AND lease_token = ? AND session_id IS NULL
+                """,
+                (_now(), run_id, lease_token),
+            )
+        return cursor.rowcount == 1
 
     def claim_scheduled_run(
         self, run_id: str, *, lease_token: str, lease_expires_at: str, claimed_at: str
@@ -1125,7 +1144,7 @@ class ControlStore:
             rows = self._connection.execute(
                 """
                 SELECT * FROM scheduled_runs
-                WHERE status IN ('session_created', 'running', 'ambiguous')
+                WHERE status IN ('creating_session', 'session_created', 'running', 'ambiguous')
                 ORDER BY created_at
                 """
             ).fetchall()
@@ -1137,7 +1156,9 @@ class ControlStore:
                 """
                 SELECT 1 FROM scheduled_runs
                 WHERE project_id = ? AND task_id = ?
-                    AND status IN ('claimed', 'session_created', 'running', 'ambiguous')
+                    AND status IN (
+                        'claimed', 'creating_session', 'session_created', 'running', 'ambiguous'
+                    )
                 LIMIT 1
                 """,
                 (project_id, task_id),
@@ -1155,7 +1176,9 @@ class ControlStore:
         query = """
             SELECT * FROM scheduled_runs
             WHERE project_id = ? AND task_id = ?
-                AND status IN ('claimed', 'session_created', 'running', 'ambiguous')
+                AND status IN (
+                    'claimed', 'creating_session', 'session_created', 'running', 'ambiguous'
+                )
         """
         parameters: list[Any] = [project_id, task_id]
         if session_id is not None:
@@ -1190,15 +1213,13 @@ class ControlStore:
             ).fetchall()
         return [dict(row) for row in rows]
 
-    def attach_scheduled_run_session(
-        self, run_id: str, lease_token: str, session_id: str
-    ) -> bool:
+    def attach_scheduled_run_session(self, run_id: str, lease_token: str, session_id: str) -> bool:
         timestamp = _now()
         with self._lock, self._connection:
             run = self._connection.execute(
                 """
                 SELECT * FROM scheduled_runs
-                WHERE id = ? AND status = 'claimed' AND lease_token = ?
+                WHERE id = ? AND status IN ('claimed', 'creating_session') AND lease_token = ?
                 """,
                 (run_id, lease_token),
             ).fetchone()
@@ -1283,9 +1304,7 @@ class ControlStore:
             )
         return True
 
-    def mark_scheduled_run_ambiguous(
-        self, run_id: str, lease_token: str, error: str
-    ) -> bool:
+    def mark_scheduled_run_ambiguous(self, run_id: str, lease_token: str, error: str) -> bool:
         timestamp = _now()
         with self._lock, self._connection:
             run = self._connection.execute(
@@ -1337,7 +1356,9 @@ class ControlStore:
                 """
                 SELECT 1 FROM scheduled_runs
                 WHERE project_id = ? AND task_id = ? AND id != ?
-                    AND status IN ('claimed', 'session_created', 'running', 'ambiguous')
+                    AND status IN (
+                        'claimed', 'creating_session', 'session_created', 'running', 'ambiguous'
+                    )
                 LIMIT 1
                 """,
                 (run["project_id"], run["task_id"], run_id),
@@ -1398,9 +1419,7 @@ class ControlStore:
         except json.JSONDecodeError:
             mentions = []
         result["mentions"] = [item for item in mentions if isinstance(item, str)]
-        result["session_ids"] = self.task_session_ids(
-            str(result["project_id"]), str(result["id"])
-        )
+        result["session_ids"] = self.task_session_ids(str(result["project_id"]), str(result["id"]))
         with self._lock:
             latest_run = self._connection.execute(
                 """

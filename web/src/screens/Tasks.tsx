@@ -6,16 +6,17 @@ import { localizedStatus, translate, useI18n } from "../i18n";
 import { PromptBox } from "../PromptBox";
 import { describeCron, formatScheduleTime, parseScheduleCron, scheduleCron, scheduledRunLabel, type ScheduleKind } from "../schedule";
 import { mentionedAgents, modelIdOf, relativeTime, rememberComposerSelection, rememberedComposerSelection, selectedDefaultModel, sessionStatus, slashCommand, taskSessionIds } from "../sessionUtils";
-import type { Agent, Attachment, CommandItem, Project, ProviderSummary, RuntimeConfig, Session, Snapshot, Task } from "../types";
+import type { Agent, Attachment, CommandItem, Project, ProviderSummary, RuntimeConfig, Session, Task } from "../types";
 import { Banner, Empty, Field, Modal, Page } from "../ui";
 import { message, useResource } from "../useResource";
+import { useSnapshotResource } from "../useSnapshotResource";
 import { localizedAgentDescription } from "../workspace";
 import { SessionComposer, SessionDrawer } from "./Sessions";
 
 export function Tasks({ project, refreshKey }: { project: Project; refreshKey: number }) {
   const { t } = useI18n();
   const tasks = useResource<Task[]>(`/api/v1/projects/${project.id}/tasks`, refreshKey, 3000);
-  const snapshot = useResource<Snapshot>(`/api/v1/projects/${project.id}/snapshot`, refreshKey, 5000);
+  const snapshot = useSnapshotResource(`/api/v1/projects/${project.id}/snapshot`, refreshKey, 5000);
   const commands = useResource<CommandItem[]>(`/api/v1/projects/${project.id}/commands`, refreshKey);
   const [open, setOpen] = useState(false);
   const [sessionTask, setSessionTask] = useState<Task | null>(null);
@@ -61,6 +62,7 @@ export function Tasks({ project, refreshKey }: { project: Project; refreshKey: n
   return (
     <Page title={t("tasks.title")} description={t("tasks.description")} action={<button className="primary-button" onClick={() => setOpen(true)}><Play size={16} /> {t("tasks.run")}</button>}>
       {tasks.error && <Banner tone="danger">{tasks.error}</Banner>}
+      {snapshot.stale && <Banner tone="notice">{t("sessions.reconnecting")}</Banner>}
       {actionError && <Banner tone="danger">{actionError}</Banner>}
       <div className="context-summary task-context-summary">
         <div><small>{t("common.project")}</small><strong>{project.name}</strong></div>

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import secrets
@@ -14,7 +15,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, Protocol
 
 from opencode_control.log_rotation import LogRotationError, rotate_log
 from opencode_control.opencode_client import OpenCodeClient, OpenCodeError
@@ -54,7 +55,7 @@ class ProcessDiagnostic:
 class ManagedProcess:
     project_id: str
     endpoint: str
-    process: subprocess.Popen[bytes]
+    process: ProcessHandle
     log_handle: BinaryIO
     password: str
     version: str | None = None
@@ -64,7 +65,37 @@ class ManagedProcess:
 class ManagedConnection:
     endpoint: str
     password: str
-    process: subprocess.Popen[bytes]
+    process: ProcessHandle
+
+
+class ProcessHandle(Protocol):
+    pid: int
+    returncode: int | None
+
+    def poll(self) -> int | None: ...
+
+    def wait(self, timeout: float) -> int: ...
+
+
+class AdoptedProcess:
+    def __init__(self, pid: int) -> None:
+        self.pid = pid
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        if _pid_alive(self.pid):
+            return None
+        self.returncode = 0
+        return self.returncode
+
+    def wait(self, timeout: float) -> int:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            result = self.poll()
+            if result is not None:
+                return result
+            time.sleep(0.05)
+        raise subprocess.TimeoutExpired(str(self.pid), timeout)
 
 
 class OpenCodeProcessManager:
@@ -76,6 +107,8 @@ class OpenCodeProcessManager:
         self._lock = threading.RLock()
         self._project_locks: dict[str, threading.RLock] = {}
         self._failures: dict[str, ProcessDiagnostic] = {}
+        self.registry_path = data_dir / "managed-processes.json"
+        self._registry = self._load_registry()
 
     def _project_lock(self, project_id: str) -> threading.RLock:
         with self._lock:
@@ -101,6 +134,12 @@ class OpenCodeProcessManager:
             return self.status(project_id)
         if existing:
             self._forget(project_id)
+        adopted = self._adopt(project_id, root)
+        if adopted is not None:
+            with self._lock:
+                self._processes[project_id] = adopted
+                self._failures.pop(project_id, None)
+            return self.status(project_id)
         port = _available_port()
         endpoint = f"http://127.0.0.1:{port}"
         password = secrets.token_urlsafe(32)
@@ -140,6 +179,7 @@ class OpenCodeProcessManager:
         managed = ManagedProcess(project_id, endpoint, process, log_handle, password)
         with self._lock:
             self._processes[project_id] = managed
+        self._remember(project_id, root, managed)
         client = OpenCodeClient(endpoint, None, timeout=0.5, password=password)
         deadline = time.monotonic() + 10
         last_health_error: str | None = None
@@ -160,6 +200,7 @@ class OpenCodeProcessManager:
                 if isinstance(health, dict) and health.get("healthy") is True:
                     version = health.get("version")
                     managed.version = version if isinstance(version, str) else None
+                    self._remember(project_id, root, managed)
                     with self._lock:
                         self._failures.pop(project_id, None)
                     return self.status(project_id)
@@ -195,9 +236,7 @@ class OpenCodeProcessManager:
             self._forget(project_id)
             return {"state": "stopped", "managed": True, "endpoint": endpoint}
 
-    def restart_if_running(
-        self, project_id: str, root: WorkspaceRoot
-    ) -> dict[str, object] | None:
+    def restart_if_running(self, project_id: str, root: WorkspaceRoot) -> dict[str, object] | None:
         with self._project_lock(project_id):
             with self._lock:
                 managed = self._processes.get(project_id)
@@ -264,8 +303,110 @@ class OpenCodeProcessManager:
     def _forget(self, project_id: str) -> None:
         with self._lock:
             managed = self._processes.pop(project_id, None)
+            self._registry.pop(project_id, None)
+            self._save_registry()
         if managed is not None:
             managed.log_handle.close()
+
+    def _adopt(self, project_id: str, root: WorkspaceRoot) -> ManagedProcess | None:
+        with self._lock:
+            raw = self._registry.get(project_id)
+        if not isinstance(raw, dict):
+            return None
+        try:
+            pid_value = raw["pid"]
+            endpoint_value = raw["endpoint"]
+            password_value = raw["password"]
+            device_value = raw["root_device"]
+            inode_value = raw["root_inode"]
+        except KeyError:
+            self._discard_registry(project_id)
+            return None
+        if (
+            not isinstance(pid_value, int)
+            or not isinstance(endpoint_value, str)
+            or not isinstance(password_value, str)
+            or not isinstance(device_value, int)
+            or not isinstance(inode_value, int)
+        ):
+            self._discard_registry(project_id)
+            return None
+        pid = pid_value
+        endpoint = endpoint_value
+        password = password_value
+        device = device_value
+        inode = inode_value
+        if device != root.device or inode != root.inode or not _pid_alive(pid):
+            self._discard_registry(project_id)
+            return None
+        client = OpenCodeClient(endpoint, None, timeout=0.5, password=password)
+        try:
+            health = client.request("GET", "/global/health", directory=False)
+        except OpenCodeError:
+            self._terminate_orphan(pid)
+            self._discard_registry(project_id)
+            return None
+        if not isinstance(health, dict) or health.get("healthy") is not True:
+            self._terminate_orphan(pid)
+            self._discard_registry(project_id)
+            return None
+        log_path = self.log_dir / f"{project_id}.log"
+        log_path.touch(mode=0o600, exist_ok=True)
+        os.chmod(log_path, 0o600)
+        log_handle = log_path.open("ab", buffering=0)
+        version = health.get("version")
+        return ManagedProcess(
+            project_id,
+            endpoint,
+            AdoptedProcess(pid),
+            log_handle,
+            password,
+            version if isinstance(version, str) else None,
+        )
+
+    def _remember(self, project_id: str, root: WorkspaceRoot, managed: ManagedProcess) -> None:
+        with self._lock:
+            self._registry[project_id] = {
+                "pid": managed.process.pid,
+                "endpoint": managed.endpoint,
+                "password": managed.password,
+                "version": managed.version,
+                "generation": secrets.token_hex(16),
+                "root_device": root.device,
+                "root_inode": root.inode,
+            }
+            self._save_registry()
+
+    def _discard_registry(self, project_id: str) -> None:
+        with self._lock:
+            if self._registry.pop(project_id, None) is not None:
+                self._save_registry()
+
+    def _terminate_orphan(self, pid: int) -> None:
+        with _ignore_process_error():
+            os.killpg(pid, signal.SIGTERM)
+        deadline = time.monotonic() + 2
+        while _pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(0.05)
+        if _pid_alive(pid):
+            with _ignore_process_error():
+                os.killpg(pid, signal.SIGKILL)
+
+    def _load_registry(self) -> dict[str, dict[str, object]]:
+        try:
+            raw = json.loads(self.registry_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        return {str(key): value for key, value in raw.items() if isinstance(value, dict)}
+
+    def _save_registry(self) -> None:
+        temporary = self.registry_path.with_suffix(".tmp")
+        temporary.write_text(json.dumps(self._registry, sort_keys=True), encoding="utf-8")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, self.registry_path)
+        os.chmod(self.registry_path, 0o600)
 
     def _stopped_status(
         self, project_id: str, diagnostic: ProcessDiagnostic | None = None
@@ -314,6 +455,16 @@ class _ignore_process_error:
 
     def __exit__(self, error_type: object, error: object, traceback: object) -> bool:
         return isinstance(error, ProcessLookupError)
+
+
+def _pid_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
 
 
 def _available_port() -> int:

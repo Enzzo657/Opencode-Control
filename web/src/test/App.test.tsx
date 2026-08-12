@@ -705,6 +705,33 @@ describe("OpenCode Control", () => {
     });
   });
 
+  it("preserves sessions while OpenCode reconnects after a degraded snapshot", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    let degraded = false;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).includes("/snapshot") && degraded) return response({ state: "degraded", errors: ["statuses_unavailable"], sessions: [], statuses: {}, agents: [], mcp: {}, providers: { connected: [], available: [] }, server: { state: "running", managed: true, endpoint: "http://127.0.0.1:4096" } });
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(await screen.findByText("Fix checkout"));
+    expect(await screen.findByRole("dialog", { name: "Сессия Fix checkout" })).toBeInTheDocument();
+
+    degraded = true;
+    fireEvent.click(screen.getByRole("button", { name: "Обновить данные" }));
+    expect(await screen.findByText(/OpenCode переподключается/)).toBeInTheDocument();
+    expect(screen.getByRole("dialog", { name: "Сессия Fix checkout" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Остановить сессию" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Удалить сессию" })).toBeDisabled();
+
+    degraded = false;
+    fireEvent.click(screen.getByRole("button", { name: "Обновить данные" }));
+    await waitFor(() => expect(screen.queryByText(/OpenCode переподключается/)).not.toBeInTheDocument());
+    expect(screen.getByRole("button", { name: "Остановить сессию" })).toBeEnabled();
+  });
+
   it("replaces a persisted failure with running when the session is continued", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import re
@@ -209,11 +210,17 @@ class ConfigTransaction:
         self._save_manifest()
         for item in self.files:
             content = candidates[item.config_file.key]
-            write_text(item.config_file.root, item.config_file.relative, content)
-            item.candidate_sha256 = snapshot_file(
-                item.config_file.root, item.config_file.relative
-            ).sha256
+            digest = hashlib.sha256()
+            digest.update(b"1\0")
+            digest.update(content.encode("utf-8"))
+            item.candidate_sha256 = digest.hexdigest()
             self._save_manifest()
+            write_text(item.config_file.root, item.config_file.relative, content)
+            if (
+                snapshot_file(item.config_file.root, item.config_file.relative).sha256
+                != item.candidate_sha256
+            ):
+                raise WorkspaceError("config candidate hash does not match written content")
         self.state = "candidate_written"
         self._save_manifest()
 
@@ -224,13 +231,19 @@ class ConfigTransaction:
     def rollback(self) -> None:
         conflicts: list[str] = []
         for item in reversed(self.files):
-            expected = item.candidate_sha256 or item.snapshot.sha256
+            current = snapshot_file(item.config_file.root, item.config_file.relative).sha256
+            allowed = {item.snapshot.sha256}
+            if item.candidate_sha256:
+                allowed.add(item.candidate_sha256)
+            if current not in allowed:
+                conflicts.append(item.config_file.key)
+                continue
             try:
                 restore_file(
                     item.config_file.root,
                     item.config_file.relative,
                     item.snapshot,
-                    expected_sha256=expected,
+                    expected_sha256=current,
                 )
             except WorkspaceError:
                 conflicts.append(item.config_file.key)
@@ -238,8 +251,7 @@ class ConfigTransaction:
             self.state = "rollback_conflict"
             self._save_manifest()
             raise WorkspaceError(
-                "config rollback refused because files changed externally: "
-                + ", ".join(conflicts)
+                "config rollback refused because files changed externally: " + ", ".join(conflicts)
             )
         self.state = "rolled_back"
         self._save_manifest()
@@ -300,9 +312,7 @@ class ConfigTransactionManager:
                 if backup_name is not None:
                     self._write_private(directory / backup_name, snapshot.content)
                 files.append(_TransactionFile(config_file, snapshot, backup_name))
-            transaction = ConfigTransaction(
-                self, operation_id, label, directory, files
-            )
+            transaction = ConfigTransaction(self, operation_id, label, directory, files)
             transaction._save_manifest()
             return transaction
         except Exception:
@@ -350,9 +360,7 @@ class ConfigTransactionManager:
                 raise WorkspaceError("invalid config transaction file entry")
             backup_name = value.get("backup")
             content = (
-                (directory / str(backup_name)).read_text(encoding="utf-8")
-                if backup_name
-                else ""
+                (directory / str(backup_name)).read_text(encoding="utf-8") if backup_name else ""
             )
             config_file = ConfigFile(
                 WorkspaceRoot(
@@ -373,9 +381,7 @@ class ConfigTransactionManager:
                     config_file,
                     snapshot,
                     str(backup_name) if backup_name else None,
-                    str(value["candidate_sha256"])
-                    if value.get("candidate_sha256")
-                    else None,
+                    str(value["candidate_sha256"]) if value.get("candidate_sha256") else None,
                 )
             )
         transaction = ConfigTransaction(
@@ -391,9 +397,7 @@ class ConfigTransactionManager:
     def _write_manifest(self, directory: Path, value: dict[str, Any]) -> None:
         with self._lock:
             temporary = directory / f".manifest.{secrets.token_hex(8)}"
-            self._write_private(
-                temporary, json.dumps(value, ensure_ascii=False, indent=2) + "\n"
-            )
+            self._write_private(temporary, json.dumps(value, ensure_ascii=False, indent=2) + "\n")
             os.replace(temporary, directory / "manifest.json")
             descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
             try:

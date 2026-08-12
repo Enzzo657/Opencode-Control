@@ -121,6 +121,41 @@ def test_restart_recovers_claim_before_external_side_effect(tmp_path: Path) -> N
     restarted.close()
 
 
+def test_restart_does_not_retry_after_session_creation_started(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    store = ControlStore(data_dir)
+    project_id, task_id = _scheduled_task(store, tmp_path)
+    run = store.materialize_scheduled_run(
+        project_id,
+        task_id,
+        expected_run_at="2026-07-27T09:00:00+00:00",
+        next_run_at="2026-07-28T09:00:00+00:00",
+        created_at="2026-07-27T09:00:01+00:00",
+    )
+    assert run is not None
+    assert store.claim_scheduled_run(
+        str(run["id"]),
+        lease_token="crashed-owner",
+        lease_expires_at="2026-07-27T09:02:00+00:00",
+        claimed_at="2026-07-27T09:00:02+00:00",
+    )
+    assert store.mark_scheduled_run_creating(str(run["id"]), "crashed-owner")
+    store.close()
+
+    restarted = ControlStore(data_dir)
+    assert restarted.recover_interrupted_scheduled_runs() == 1
+    recovered = restarted.get_scheduled_run(str(run["id"]))
+
+    assert recovered is not None
+    assert recovered["status"] == "failed"
+    assert "retry suppressed" in recovered["error"]
+    assert restarted.claimable_scheduled_runs("2026-07-27T09:03:00+00:00") == []
+    events = restarted.list_events(project_id=project_id)
+    assert events["unread"] == 1
+    assert events["events"][0]["kind"] == "scheduled_run_failed"
+    restarted.close()
+
+
 def test_schedule_change_cancels_unstarted_run_and_fences_worker(tmp_path: Path) -> None:
     store = ControlStore(tmp_path / "data")
     project_id, task_id = _scheduled_task(store, tmp_path)
@@ -167,9 +202,7 @@ def test_ambiguous_dispatch_is_preserved_for_reconciliation(tmp_path: Path) -> N
     )
     store.attach_scheduled_run_session(str(run["id"]), "owner", "ses_uncertain")
 
-    assert store.mark_scheduled_run_ambiguous(
-        str(run["id"]), "owner", "prompt response was lost"
-    )
+    assert store.mark_scheduled_run_ambiguous(str(run["id"]), "owner", "prompt response was lost")
     assert store.get_scheduled_run(str(run["id"]))["status"] == "ambiguous"
     assert store.get_task(project_id, task_id)["status"] == "dispatching"
 
@@ -246,7 +279,9 @@ def test_search_index_ranks_titles_and_paginates_stably(tmp_path: Path) -> None:
                     "created_at": updated_at,
                     "content": "Search appears in this message",
                 }
-            ] if session_id == "ses_message" else [],
+            ]
+            if session_id == "ses_message"
+            else [],
         )
 
     first_page = store.search_history("search", [project_id], limit=2)
@@ -342,12 +377,16 @@ def test_task_session_statuses_are_scoped_to_each_execution(tmp_path: Path) -> N
             outcome,
             "run failed" if outcome == "failed" else None,
         )
+        assert not store.finish_scheduled_run(str(run["id"]), outcome)
 
     links = store.project_session_tasks(project_id)
     assert links["ses_completed"]["session_status"] == "completed"
     assert "session_error" not in links["ses_completed"]
     assert links["ses_failed"]["session_status"] == "failed"
     assert links["ses_failed"]["session_error"] == "run failed"
+    events = store.list_events(project_id=project_id)["events"]
+    assert len([item for item in events if item["kind"] == "scheduled_run_completed"]) == 1
+    assert len([item for item in events if item["kind"] == "scheduled_run_failed"]) == 1
 
     store.add_task_session(project_id, task_id, "ses_manual")
     store.update_task(

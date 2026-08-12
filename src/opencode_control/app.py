@@ -17,6 +17,7 @@ import sqlite3
 import subprocess
 import sys
 import threading
+import time
 import urllib.parse
 import zipfile
 from collections.abc import AsyncIterator, Callable
@@ -394,6 +395,8 @@ class ControlState:
         self.dashboard_cache: dict[tuple[str, str, str], tuple[datetime, dict[str, Any]]] = {}
         self.dashboard_lock = threading.RLock()
         self._command_slots = threading.BoundedSemaphore(8)
+        self._command_threads: set[threading.Thread] = set()
+        self._command_threads_lock = threading.Lock()
         self._closing = threading.Event()
 
     def submit_command(
@@ -424,14 +427,33 @@ class ControlState:
                         on_error(error)
             finally:
                 self._command_slots.release()
+                with self._command_threads_lock:
+                    self._command_threads.discard(threading.current_thread())
 
-        threading.Thread(target=run, name="control-command", daemon=True).start()
+        worker = threading.Thread(target=run, name="control-command", daemon=True)
+        with self._command_threads_lock:
+            self._command_threads.add(worker)
+        worker.start()
         return True
 
     def close(self) -> None:
         self._closing.set()
+        self._join_command_threads(timeout=1)
         self.processes.shutdown()
+        self._join_command_threads(timeout=4)
         self.store.close()
+
+    def _join_command_threads(self, *, timeout: float) -> None:
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._command_threads_lock:
+                workers = list(self._command_threads)
+            if not workers:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return
+            workers[0].join(timeout=remaining)
 
 
 def csrf_guard(
@@ -442,7 +464,13 @@ def csrf_guard(
     session_id = request.cookies.get("control_session")
     expected = state.browser_sessions.get(session_id or "")
     if expected is None or not secrets.compare_digest(expected, x_csrf_token or ""):
-        raise HTTPException(status_code=403, detail="invalid browser session or CSRF token")
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "code": "csrf_session_expired",
+                "message": "invalid browser session or CSRF token",
+            },
+        )
 
 
 WriteGuard = Annotated[None, Depends(csrf_guard)]
@@ -1374,6 +1402,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             ):
                 session_id = existing
             else:
+                if not state.store.mark_scheduled_run_creating(run_id, lease_token):
+                    raise RuntimeError("scheduled run lease changed before session creation")
                 session = client.create_session(str(task["title"]))
                 session_id = str(session["id"])
             attached = state.store.attach_scheduled_run_session(run_id, lease_token, session_id)
@@ -1555,6 +1585,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         while not scheduler_stop.is_set():
             try:
                 await asyncio.to_thread(run_scheduler_cycle)
+                for project in state.store.list_projects():
+                    await asyncio.to_thread(reconcile_project_tasks, str(project["id"]))
             except Exception:
                 logging.getLogger("uvicorn.error").exception("Scheduled task cycle failed")
             with suppress(TimeoutError):
@@ -2540,18 +2572,22 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         project = project_or_404(project_id)
         workspace = workspace_for(project)
         validate_root(workspace)
+        was_running = state.processes.status(project_id)["state"] == "running"
         status = state.processes.start(project_id, workspace)
         state.store.set_managed_enabled(project_id, True)
-        record_server_lifecycle(project, "server_started")
+        if not was_running:
+            record_server_lifecycle(project, "server_started")
         invalidate_dashboard_cache(project_id)
         return status
 
     @app.post("/api/v1/projects/{project_id}/server/stop")
     def stop_server(project_id: str, guard: WriteGuard) -> dict[str, object]:
         project = project_or_404(project_id)
+        was_running = state.processes.status(project_id)["state"] == "running"
         state.store.set_managed_enabled(project_id, False)
         status = state.processes.stop(project_id)
-        record_server_lifecycle(project, "server_stopped")
+        if was_running:
+            record_server_lifecycle(project, "server_stopped")
         invalidate_dashboard_cache(project_id)
         return status
 
@@ -2637,6 +2673,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             }
         client = client_for(project_id)
         snapshot = client.snapshot()
+        reconcile_project_tasks(project_id, snapshot)
         sessions = snapshot.get("sessions")
         if isinstance(sessions, list):
             linked = state.store.project_session_tasks(project_id)
@@ -3113,9 +3150,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         invalidate_dashboard_cache(project_id)
         return Response(status_code=204)
 
-    @app.get("/api/v1/projects/{project_id}/tasks")
-    def tasks(project_id: str) -> list[dict[str, Any]]:
-        project_or_404(project_id)
+    def reconcile_project_tasks(
+        project_id: str, snapshot: dict[str, Any] | None = None
+    ) -> None:
         result = state.store.list_tasks(project_id)
         running = [
             item
@@ -3127,41 +3164,44 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             )
         ]
         if not running:
-            return result
-        try:
-            snapshot = client_for(project_id).snapshot()
-        except (OpenCodeError, HTTPException):
-            return result
-        statuses = snapshot.get("statuses", {})
+            return
+        if snapshot is None:
+            try:
+                snapshot = client_for(project_id).snapshot()
+            except (OpenCodeError, HTTPException):
+                return
+        errors = {
+            str(error) for error in snapshot.get("errors", []) if isinstance(error, str)
+        }
+        if snapshot.get("state") == "degraded" or errors.intersection(
+            {"sessions_unavailable", "statuses_unavailable"}
+        ):
+            return
+        statuses = snapshot.get("statuses")
+        sessions = snapshot.get("sessions")
+        if not isinstance(statuses, dict) or not isinstance(sessions, list):
+            return
         session_ids = {
-            item.get("id") for item in snapshot.get("sessions", []) if isinstance(item, dict)
+            item.get("id") for item in sessions if isinstance(item, dict)
         }
         now = datetime.now(UTC)
         active_states = {"busy", "dispatching", "in_progress", "pending", "queued", "running"}
         for task in running:
-            linked_ids = task.get("session_ids") or (
-                [task["session_id"]] if task.get("session_id") else []
-            )
-            active = False
-            failed = False
+            session_id = task.get("session_id")
+            if not isinstance(session_id, str):
+                continue
+            status = statuses.get(session_id, {})
+            value = status.get("type") or status.get("status") if isinstance(status, dict) else None
+            active = value in active_states
+            failed = value in {"error", "failed"}
             failure_error: str | None = None
-            for session_id in linked_ids:
-                status = statuses.get(session_id, {}) if isinstance(statuses, dict) else {}
-                value = (
-                    status.get("type") or status.get("status") if isinstance(status, dict) else None
-                )
-                if value in active_states:
-                    active = True
-                    break
-                if value in {"error", "failed"}:
-                    failed = True
-                    if isinstance(status.get("error"), str):
-                        failure_error = status["error"]
+            if failed and isinstance(status, dict) and isinstance(status.get("error"), str):
+                failure_error = status["error"]
             try:
                 age = (now - datetime.fromisoformat(str(task["updated_at"]))).total_seconds()
             except ValueError:
                 age = 0
-            has_known_session = any(session_id in session_ids for session_id in linked_ids)
+            has_known_session = session_id in session_ids
             if has_known_session and not active and (failed or age >= 3):
                 if task.get("cron"):
                     next_status = "scheduled" if task.get("schedule_enabled") else "paused"
@@ -3173,6 +3213,11 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     status=next_status,
                     error=failure_error,
                 )
+
+    @app.get("/api/v1/projects/{project_id}/tasks")
+    def tasks(project_id: str) -> list[dict[str, Any]]:
+        project_or_404(project_id)
+        reconcile_project_tasks(project_id)
         return state.store.list_tasks(project_id)
 
     @app.get("/api/v1/projects/{project_id}/tasks/{task_id}/runs")

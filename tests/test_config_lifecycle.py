@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+import opencode_control.config_lifecycle as config_lifecycle
 from opencode_control.config_lifecycle import (
     ConfigFile,
     ConfigTransactionManager,
@@ -55,9 +56,34 @@ def test_pending_transaction_is_rolled_back_on_recovery(tmp_path: Path) -> None:
 
     recovered = ConfigTransactionManager(tmp_path / "data").recover_pending()
 
-    assert recovered == [
-        {"operation_id": transaction.operation_id, "state": "rolled_back"}
-    ]
+    assert recovered == [{"operation_id": transaction.operation_id, "state": "rolled_back"}]
+    assert target.read_text() == '{"before":true}\n'
+
+
+def test_recovery_handles_crash_after_candidate_write_before_manifest_update(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    target = project / "opencode.json"
+    target.write_text('{"before":true}\n')
+    config_file = ConfigFile(root_identity(project), Path("opencode.json"))
+    manager = ConfigTransactionManager(tmp_path / "data")
+    transaction = manager.begin("crash-after-write", [config_file])
+    original_write = config_lifecycle.write_text
+
+    def crash_after_write(*args: object, **kwargs: object) -> None:
+        original_write(*args, **kwargs)
+        raise RuntimeError("simulated crash")
+
+    monkeypatch.setattr(config_lifecycle, "write_text", crash_after_write)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        transaction.write_candidates({config_file.key: '{"after":true}\n'})
+    monkeypatch.setattr(config_lifecycle, "write_text", original_write)
+
+    recovered = ConfigTransactionManager(tmp_path / "data").recover_pending()
+
+    assert recovered == [{"operation_id": transaction.operation_id, "state": "rolled_back"}]
     assert target.read_text() == '{"before":true}\n'
 
 

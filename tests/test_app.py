@@ -233,12 +233,24 @@ def test_managed_server_start_and_stop_persist_restore_preference(
         )
         assert started.status_code == 200
         assert app.state.control.store.get_project(project_id)["managed_enabled"] == 1
+        repeated_start = client.post(
+            f"/api/v1/projects/{project_id}/server/start", headers=_csrf(client)
+        )
+        assert repeated_start.status_code == 200
+        started_events = app.state.control.store.list_events(project_id=project_id)["events"]
+        assert len([item for item in started_events if item["kind"] == "server_started"]) == 1
 
         stopped = client.post(
             f"/api/v1/projects/{project_id}/server/stop", headers=_csrf(client)
         )
         assert stopped.status_code == 200
         assert app.state.control.store.get_project(project_id)["managed_enabled"] == 0
+        repeated_stop = client.post(
+            f"/api/v1/projects/{project_id}/server/stop", headers=_csrf(client)
+        )
+        assert repeated_stop.status_code == 200
+        stopped_events = app.state.control.store.list_events(project_id=project_id)["events"]
+        assert len([item for item in stopped_events if item["kind"] == "server_stopped"]) == 1
 
 
 def test_enabled_managed_server_is_restored_on_control_start(
@@ -1265,6 +1277,7 @@ def test_task_launch_uses_dedicated_opencode_session(
     calls: list[tuple[str, Any]] = []
     created_sessions = iter(("ses_task", "ses_extra", "ses_extra_2", "ses_command"))
     runtime_statuses: dict[str, dict[str, str]] = {}
+    snapshot_errors: list[str] = []
 
     class FakeOpenCodeClient:
         def __init__(self, endpoint: str, directory: str, **kwargs: Any) -> None:
@@ -1296,7 +1309,7 @@ def test_task_launch_uses_dedicated_opencode_session(
         def snapshot(self) -> dict[str, Any]:
             return {
                 "state": "connected",
-                "errors": [],
+                "errors": snapshot_errors,
                 "sessions": [
                     {"id": "ses_task", "title": "Review auth"},
                     {"id": "ses_extra", "title": "Alternative review"},
@@ -1403,11 +1416,41 @@ def test_task_launch_uses_dedicated_opencode_session(
         ) in calls
         assert ("mentions", ["general"]) in calls
 
+        control = client.app.state.control
+        control.store.add_task_session(
+            project_id, response.json()["id"], "ses_extra"
+        )
         runtime_statuses["ses_task"] = {
             "type": "failed",
             "error": "token limit exhausted",
         }
-        failed = client.get(f"/api/v1/projects/{project_id}/tasks").json()[0]
+        snapshot_errors.append("statuses_unavailable")
+        client.get(f"/api/v1/projects/{project_id}/snapshot")
+        degraded = control.store.get_task(project_id, response.json()["id"])
+        assert degraded is not None
+        assert degraded["status"] == "running"
+        assert not any(
+            item["kind"] == "task_failed"
+            for item in control.store.list_events(project_id=project_id)["events"]
+        )
+        snapshot_errors.clear()
+        runtime_statuses["ses_task"] = {"type": "busy"}
+        runtime_statuses["ses_extra"] = {
+            "type": "failed",
+            "error": "historical failure",
+        }
+        client.get(f"/api/v1/projects/{project_id}/snapshot")
+        historical = control.store.get_task(project_id, response.json()["id"])
+        assert historical is not None
+        assert historical["status"] == "running"
+        control.store.remove_task_session(project_id, "ses_extra")
+        runtime_statuses["ses_task"] = {
+            "type": "failed",
+            "error": "token limit exhausted",
+        }
+        client.get(f"/api/v1/projects/{project_id}/snapshot")
+        failed = control.store.get_task(project_id, response.json()["id"])
+        assert failed is not None
         assert failed["status"] == "failed"
         assert failed["error"] == "token limit exhausted"
         messages = client.get(
@@ -1559,7 +1602,6 @@ def test_task_launch_uses_dedicated_opencode_session(
         assert sessions["ses_child"]["control_task"]["title"] == "Review auth"
         assert "control_task" not in sessions["ses_cli"]
 
-        control = client.app.state.control
         control.store.update_task(
             project_id,
             response.json()["id"],

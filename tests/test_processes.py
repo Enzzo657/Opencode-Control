@@ -96,6 +96,61 @@ def test_concurrent_start_owns_only_one_process(
     manager.shutdown()
 
 
+def test_new_manager_adopts_a_healthy_registered_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    spawned: list[Any] = []
+    alive = {54_000: True}
+
+    class HealthyClient:
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            return
+
+        def request(self, *args: Any, **kwargs: Any) -> dict[str, object]:
+            return {"healthy": True, "version": "1.18.5"}
+
+    class FakeProcess:
+        pid = 54_000
+        returncode: int | None = None
+
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            spawned.append(self)
+
+        def poll(self) -> int | None:
+            return self.returncode
+
+        def wait(self, timeout: float) -> int:
+            self.returncode = 0
+            alive[self.pid] = False
+            return 0
+
+    monkeypatch.setattr(process_module, "OpenCodeClient", HealthyClient)
+    monkeypatch.setattr(process_module.subprocess, "Popen", FakeProcess)
+    monkeypatch.setattr(process_module, "_pid_alive", lambda pid: alive.get(pid, False))
+    monkeypatch.setattr(
+        process_module.os,
+        "killpg",
+        lambda pid, sig: alive.__setitem__(pid, False),
+    )
+    data = tmp_path / "data"
+    root = root_identity(project)
+    first = OpenCodeProcessManager(binary="opencode", data_dir=data)
+    first_status = first.start("prj", root)
+    assert first_status["pid"] == 54_000
+
+    second = OpenCodeProcessManager(binary="opencode", data_dir=data)
+    second_status = second.start("prj", root)
+
+    assert second_status["pid"] == 54_000
+    assert second_status["version"] == "1.18.5"
+    assert len(spawned) == 1
+    assert second.registry_path.stat().st_mode & 0o777 == 0o600
+    second.stop("prj")
+    first.shutdown()
+
+
 def test_startup_failure_captures_exit_code_and_log_tail(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

@@ -127,6 +127,21 @@ signals, file locks, workspace security для reparse points и native Windows 
 
 ## Рекомендуемый порядок
 
-1. Провести stabilization pass и проверить alpha на длительной фоновой работе.
-2. Решить, готова ли alpha к public release.
-3. Возврат к Plugins и Windows только после отдельного security/platform решения.
+### Завершённый resilience pass
+
+- [x] Автоматически обновлять CSRF session открытой SPA после restart Control.
+- [x] Не завершать Tasks по degraded snapshot без sessions/statuses.
+- [x] Reconcile Task только по текущей execution Session, а не по всей истории.
+- [x] Выполнять reconciliation из snapshot-потока и фонового scheduler cycle.
+- [x] Сохранять последний полный Sessions snapshot во время reconnect.
+- [x] Не дублировать server lifecycle и scheduled terminal events при retry.
+- [x] Дожидаться background commands перед закрытием SQLite и managed OpenCode.
+- [x] Принимать healthy managed OpenCode process после `SIGKILL` без второго spawn.
+- [x] Проверять orphan через root identity и authenticated health из private registry.
+- [x] Закрыть config transaction crash-window между write и manifest update.
+- [x] Использовать at-most-once recovery для scheduled session creation.
+
+1. Провести длительный soak-test scheduler, reconnect и event retention.
+2. Проверить recovery после реального reboot/power loss.
+3. После soak-test решить, готова ли alpha к public release.
+4. Возврат к Plugins и Windows только после отдельного security/platform решения.
