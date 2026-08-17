@@ -53,12 +53,14 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    env:
-      OPENCODE_CONTROL_HOME: ${{ runner.temp }}/opencode-control
-      UV_TOOL_DIR: ${{ runner.temp }}/uv-tools
-      UV_TOOL_BIN_DIR: ${{ runner.temp }}/bin
     steps:
       - uses: actions/checkout@v6
+      - name: Configure isolated paths
+        shell: bash
+        run: |
+          echo "OPENCODE_CONTROL_HOME=$RUNNER_TEMP/opencode-control" >> "$GITHUB_ENV"
+          echo "UV_TOOL_DIR=$RUNNER_TEMP/uv-tools" >> "$GITHUB_ENV"
+          echo "UV_TOOL_BIN_DIR=$RUNNER_TEMP/bin" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v7
         with:
           node-version: "22"
