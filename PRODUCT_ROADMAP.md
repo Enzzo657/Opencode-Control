@@ -4,7 +4,7 @@
 только оставшуюся работу. Реализованные этапы приведены кратко, без старых checklist
 и вариантов реализации.
 
-Обновлено: 9 августа 2026.
+Обновлено: 17 августа 2026.
 
 ## Принципы
 
@@ -30,6 +30,8 @@
 - Ротация логов, timestamps и диагностика runtime.
 - Atomic lifecycle Control: launch/runtime locks, cleanup startup failure и
   восстановление включённых managed project servers после restart.
+- Устойчивая project root identity: обычная смена macOS device ID после reboot не
+  требует повторной регистрации, а замена корневой директории по-прежнему блокируется.
 - Durable scheduled runs: отдельные записи запусков, atomic materialization,
   lease fencing, recovery после restart, schedule revision, overlap history и
   явное состояние неопределённого dispatch.
@@ -100,7 +102,8 @@
 - Clean wheel install и start/health/assets/stop smoke test на macOS и Ubuntu.
 - `CHANGELOG.md`, SemVer, checksums и GitHub Releases.
 - PyPI trusted publishing и установка без клонирования репозитория.
-- README screenshots и воспроизводимый demo-сценарий.
+- [x] Отдельные RU/EN README и обезличенная галерея основных desktop/mobile экранов.
+- Воспроизводимый demo-сценарий для release screenshots.
 
 ### Plugins Manager
 

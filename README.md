@@ -1,282 +1,261 @@
 # OpenCode Control
 
-OpenCode Control is a local-first control plane for OpenCode. It keeps projects,
-sessions, tasks, agents, skills, MCP servers and workspace instructions in one
-clear interface while OpenCode remains the execution engine.
+<p align="center">
+  <strong>Локальная control plane для проектов, агентов и автоматизации OpenCode.</strong><br>
+  Управляйте рабочими пространствами, Sessions, Tasks, Skills, MCP, Git и артефактами
+  из одного интерфейса, не заменяя OpenCode как execution engine.
+</p>
+
+<p align="center">
+  <a href="README.md"><strong>Русский</strong></a> |
+  <a href="README_en.md">English</a>
+</p>
+
+<p align="center">
+  <img alt="Статус: local-first alpha" src="https://img.shields.io/badge/status-local--first_alpha-ff8a4c?style=flat-square">
+  <img alt="Платформы: macOS и Linux" src="https://img.shields.io/badge/platform-macOS_%7C_Linux-252a31?style=flat-square">
+  <img alt="Python 3.12+" src="https://img.shields.io/badge/python-3.12+-49c6e5?style=flat-square">
+  <a href="LICENSE"><img alt="Лицензия MIT" src="https://img.shields.io/badge/license-MIT-67e8a5?style=flat-square"></a>
+</p>
+
+![OpenCode Control Dashboard](docs/images/dashboard-ru.png)
+
+## Зачем нужен Control
+
+OpenCode отлично выполняет агентные задачи. Control добавляет слой управления вокруг
+него: несколько проектов, долгоживущие managed servers, история, расписания, безопасное
+редактирование конфигурации и локальная аналитика.
+
+- **Один интерфейс для нескольких проектов.** У каждого проекта свой runtime, Sessions,
+  Tasks и project-level настройки.
+- **Не только config editor.** Запускайте агентов, продолжайте диалоги, создавайте cron-задачи,
+  управляйте Git и открывайте созданные файлы.
+- **Локальные данные.** Control слушает только loopback, а состояние хранится на вашей машине.
+- **OpenCode остаётся главным.** Agents, Skills, Commands, MCP и `AGENTS.md` остаются
+  нативными файлами OpenCode и продолжают работать в TUI.
+- **Безопасные изменения.** Config preflight, атомарная запись, rollback, redaction и
+  восстановление после сбоев встроены в обычный workflow.
+
+## Возможности
+
+| Область | Что доступно |
+| --- | --- |
+| **Projects и Runtime** | Несколько локальных проектов, managed `opencode serve`, external loopback endpoints, автоматическое восстановление включённых серверов |
+| **Sessions** | Чат, Markdown, tool calls, attachments, todos, permissions, agents, models, reasoning variants и дочерние subagent Sessions |
+| **Tasks** | Управляемые запуски агентов, несколько Sessions на Task, rerun, abort, cron, timezone, pause/resume и история запусков |
+| **Configuration** | Project/global Agents, Skills, Commands, MCP, providers, secrets, `AGENTS.md` и `opencode.json/jsonc` |
+| **Dashboard** | Tokens, cache reuse, cost, Sessions и breakdown по моделям, providers, agents и проектам |
+| **Search** | Локальный полнотекстовый поиск по названиям Sessions и user/assistant messages, global scope и permanent deep links |
+| **Artifacts** | Images, PDF, CSV, JSON, Markdown, text, logs и ZIP; preview, Finder, bulk archive и системная Корзина |
+| **Git** | Status, diff, stage/unstage, commit, revert и защищённый reset с backup branch |
+| **Events** | Единый 30-дневный поток ошибок, завершений, permissions и server lifecycle с unread state |
+| **Interface** | Русский и английский языки, адаптивная навигация, темы и lazy-loaded экраны |
+
+## Интерфейс
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="docs/images/session-en.png" alt="OpenCode Control Session">
+      <br><strong>Sessions</strong>: сообщения, runtime MCP, выбор agent/model/variant и продолжение диалога.
+    </td>
+    <td width="50%">
+      <img src="docs/images/tasks-en.png" alt="OpenCode Control Tasks">
+      <br><strong>Tasks</strong>: ручные и запланированные запуски с отдельной историей Sessions.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="docs/images/search-en.png" alt="OpenCode Control Search">
+      <br><strong>Search</strong>: поиск по локальной истории текущего или всех проектов.
+    </td>
+    <td width="50%">
+      <img src="docs/images/artifacts-en.png" alt="OpenCode Control Artifacts">
+      <br><strong>Artifacts</strong>: безопасный preview результатов агента без сканирования всего workspace.
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2">
+      <img src="docs/images/mcp-en.png" alt="OpenCode Control MCP configuration">
+      <br><strong>MCP</strong>: отдельно показаны global config, project override и реальное состояние соединения в OpenCode.
+    </td>
+  </tr>
+</table>
+
+<p align="center">
+  <img src="docs/images/events-mobile-ru.png" width="390" alt="Мобильный центр событий OpenCode Control"><br>
+  <strong>Event Center и адаптивный мобильный интерфейс</strong>
+</p>
+
+Скриншоты созданы на изолированном демонстрационном наборе данных. Они не содержат
+реальных путей, credentials или пользовательской истории.
+
+## Архитектура
+
+```mermaid
+flowchart LR
+    Browser[Browser UI] --> Control[OpenCode Control]
+    Control --> SQLite[(Local SQLite)]
+    Control --> Config[OpenCode config and project files]
+    Control --> A[Managed OpenCode: Project A]
+    Control --> B[Managed OpenCode: Project B]
+    A --> Providers[Configured providers]
+    B --> Providers
+```
+
+Control не реализует собственный agent runtime. Он запускает или подключает OpenCode,
+вызывает его API и сохраняет только собственное orchestration-состояние, индексы и события.
 
 ## Требования
 
 - macOS или Linux;
-- `uv` с доступным Python 3.12;
-- Node.js и npm для локальной сборки alpha-версии;
-- OpenCode CLI в `PATH` для запуска managed project servers.
+- [`uv`](https://docs.astral.sh/uv/) с доступным Python 3.12;
+- Node.js и npm для сборки текущей alpha-версии;
+- OpenCode CLI в `PATH` для managed project servers.
 
-Control работает только на loopback. Проекты с external OpenCode endpoint можно
-настраивать и без локального OpenCode CLI.
+External OpenCode endpoint можно подключить и без локального CLI, но Control не будет
+управлять жизненным циклом чужого процесса.
 
 ## Установка
 
-После клонирования репозитория выполните из его корня:
-
 ```bash
+git clone https://github.com/Enzzo657/Opencode-Studio.git OpenCode-Control
+cd OpenCode-Control
 ./install.sh
 ```
 
-Installer выполнит `npm ci`, соберёт frontend и wheel, установит его в отдельное
-окружение через `uv tool install` и запустит Control. Node.js нужен только во
-время локальной сборки; установленное приложение запускается без Node.js.
-Если каталог команд `uv` отсутствует в `PATH`, installer предложит добавить его
-через `uv tool update-shell`; изменение применяется в новом Terminal.
+Installer:
 
-Если Control уже работает, installer спросит, перезапускать ли его. Отказ не
-прерывает активные managed OpenCode sessions: новая версия установится, а
-перезапуск можно выполнить позже.
+1. устанавливает frontend-зависимости через `npm ci`;
+2. собирает frontend и Python wheel;
+3. устанавливает `opencode-control` в отдельное окружение через `uv tool`;
+4. запускает Control и открывает `http://127.0.0.1:8765`.
 
-Если команда `opencode-control` не появилась в новом Terminal:
+Node.js нужен только для сборки. Установленный Control запускается без Node.js.
+
+Если команда не появилась в новом Terminal:
 
 ```bash
 uv tool update-shell
 ```
 
-## Управление
+## Быстрый старт
+
+1. Запустите `opencode-control start`.
+2. Добавьте директорию проекта через переключатель в sidebar.
+3. Нажмите **Запустить сервер** для managed mode или задайте external loopback endpoint.
+4. Откройте **Sessions** для диалога или **Tasks** для управляемого запуска.
+5. Настройте project/global Agents, Skills, Commands, MCP и инструкции при необходимости.
+
+Managed server читает global OpenCode config, затем project config выбранного workspace.
+Project-файлы остаются обычными файлами репозитория и могут храниться в Git.
+
+## Основные сценарии
+
+### Sessions и Tasks
+
+Control показывает основные и дочерние Sessions отдельно, умеет продолжать диалог,
+останавливать активный run и отвечать на permission requests. В prompt можно выбрать
+agent, `provider/model`, reasoning variant, Slash Command, `@subagent` и вложения.
+
+Task создаёт управляемую основную Session и может владеть несколькими независимыми
+Sessions. Расписание задаётся понятным конструктором или cron-выражением с IANA timezone.
+Каждый запуск может создавать новую Session или продолжать предыдущую.
+
+При неопределённом результате отправки Control сохраняет состояние `ambiguous` и не
+делает blind retry. Это предотвращает скрытый повтор внешней агентной работы.
+
+### Agents, Skills и Commands
+
+- Agents: project/global scope, mode, model, permissions и prompt.
+- Skills: ручное создание, HTTPS/GitHub import с preview, commit pinning и bundle manifest.
+- Commands: нативные Markdown Slash Commands с `$ARGUMENTS`, `$1`, agent/model/variant.
+- Instructions: project и global `AGENTS.md`.
+
+При добавлении проекта Control создаёт редактируемые стартовые команды `/fix`, `/test`,
+`/plan`, `/explain` и `/commit-check`, не перезаписывая существующие файлы.
+
+### MCP, providers и secrets
+
+Для MCP одновременно видны три состояния:
+
+- **global**: базовая конфигурация для всех проектов;
+- **project**: локальная настройка или override;
+- **runtime**: реальное состояние соединения в запущенном OpenCode.
+
+Изменения проходят проверку реальным `opencode --pure debug config`, записываются
+атомарно и перезапускают только ранее работавшие managed servers. При ошибке исходные
+файлы восстанавливаются byte-for-byte.
+
+Secrets хранятся в отдельных plaintext-файлах с mode `0600`. Их значения не возвращаются
+в browser API; конфигурация использует ссылки `{file:...}` или `{env:...}`.
+
+### Search и Artifacts
+
+Search поддерживает project/global scope, ranked pagination, `Cmd+K` / `Ctrl+K` и deep
+links к конкретному сообщению. Индексируются только titles и текст user/assistant messages;
+tool output, reasoning и attachments не копируются в индекс.
+
+Artifacts собирает файлы, явно упомянутые агентом, и содержимое `.opencode/artifacts`.
+Весь project root намеренно не сканируется. Traversal, symlink, hard-link и неподходящие
+сигнатуры файлов отклоняются.
+
+## CLI
+
+| Команда | Назначение |
+| --- | --- |
+| `opencode-control start` | Запустить Control в фоне и открыть браузер |
+| `opencode-control start --no-open` | Запустить без открытия браузера |
+| `opencode-control restart` | Перезапустить Control и включённые managed servers |
+| `opencode-control stop` | Остановить Control и managed servers |
+| `opencode-control status` | Показать состояние Control |
+| `opencode-control logs --follow` | Читать runtime log |
+| `opencode-control soak --cycles 1000` | Запустить изолированный scheduler/recovery stress pass |
+| `opencode-control uninstall` | Удалить приложение, сохранив данные |
+| `opencode-control uninstall --purge-data` | Удалить приложение и данные после подтверждения |
+
+## Безопасность и данные
+
+- HTTP server принимает только loopback host/client/origin.
+- Write API защищён browser session и CSRF token.
+- Managed OpenCode servers используют случайный пароль и недоступны как общий backend.
+- Project-файлы открываются через descriptor-relative операции с проверкой root identity.
+- Config и workspace writes атомарны; незавершённые транзакции восстанавливаются при старте.
+- Логи и ошибки проходят redaction известных credentials, headers, cookies и URL values.
+- Preview не публикует произвольный filesystem и не распаковывает ZIP.
+
+| Данные | Путь |
+| --- | --- |
+| Control SQLite, registry и logs | `~/.opencode-control/` |
+| Global OpenCode config | `~/.config/opencode/` |
+| OpenCode history | `~/.local/share/opencode/` |
+| Project Agents, Skills, Commands | `<project>/.opencode/` |
+
+Каталог Control можно изменить через `OPENCODE_CONTROL_HOME`.
+
+### Backup
 
 ```bash
+opencode-control stop
+cp ~/.opencode-control/control.sqlite ~/opencode-control-backup.sqlite
 opencode-control start
-opencode-control status
-opencode-control restart
-opencode-control stop
-opencode-control logs
 ```
 
-`start` и `restart` запускают Control в фоне на `http://127.0.0.1:8765` и
-открывают браузер. Чтобы не открывать браузер:
+Project-файлы и global OpenCode config резервируются отдельно.
 
-```bash
-opencode-control start --no-open
-```
+## Ограничения alpha
 
-Control защищён от параллельного запуска file lock-ами и удаляет незавершённый
-дочерний процесс, если startup не завершился. Managed project servers запоминают
-состояние: Start включает автоматическое восстановление при следующем запуске
-Control, а Stop для конкретного проекта отключает его. Поэтому общий restart
-Control временно перезапускает ранее включённые project servers автоматически.
+- Поддерживаются macOS и Linux; Windows пока не поддерживается.
+- API доступен только локально; отдельный runtime access token ещё запланирован до public release.
+- Secrets защищены filesystem permissions, но не зашифрованы и не используют OS keychain.
+- Exactly-once dispatch невозможен без idempotency key в OpenCode API.
+- Plugins Manager отложен: plugin является исполняемым JS/TS-кодом и требует отдельной security model.
+- Системные desktop notifications не используются; события остаются внутри Control.
+- Текущая alpha устанавливается из клонированного репозитория.
 
-## Дашборд и usage
+Актуальный план: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md).
 
-Главный экран `Дашборд` объединяет Runtime выбранного проекта и аналитику OpenCode.
-Можно переключаться между текущим проектом и всеми проектами, а также выбирать период:
-сегодня, 7 дней, 30 дней или всё доступное время. При открытии выбран период `Сегодня`.
-Usage считается по assistant messages
-с дедупликацией message ID и группируется в timezone браузера.
-
-Дашборд показывает input/output/reasoning tokens, cache read, стоимость, Sessions,
-динамику и breakdown по моделям, providers, agents и проектам. Основной total, график,
-полоса распределения и рейтинги считают только input + output + reasoning. Cache read
-показан отдельной карточкой и не раздувает обычные токены; cache write сохраняется в API,
-но не выводится в Dashboard. Для периода `Всё время` доступны автоматическая, дневная,
-недельная и месячная группировки, а длинный график прокручивается горизонтально.
-OpenCode рассчитывает стоимость отдельно по тарифам input, output, reasoning и cache.
-В global scope недоступный проект не ломает всю сводку: интерфейс показывает частичный
-результат и явное предупреждение. Аналитика строится по истории, которая ещё доступна
-в OpenCode; после удаления Session или Task её usage сразу удаляется из totals.
-Дочерние subagent Sessions учитываются в токенах и стоимости родительской Session, но
-не увеличивают число пользовательских Sessions в карточках и рейтингах.
-
-## Поиск по истории
-
-Экран `Поиск` находит названия Sessions и текст user/assistant messages в текущем
-проекте или сразу во всех добавленных проектах. Результат открывает найденную Session,
-при необходимости сначала переключая активный проект. URL сохраняет project, Session,
-message и query, поэтому найденное место переживает reload и browser history. Внутри
-Session доступны переходы к предыдущему и следующему совпадающему сообщению. `Cmd+K`
-или `Ctrl+K` открывает Search из любого экрана; длинная выдача загружается страницами.
-Недоступный OpenCode server не ломает global search: Control показывает сохранённые
-совпадения и отмечает partial result.
-
-OpenCode не предоставляет полнотекстовый message search, поэтому Control поддерживает
-локальный индекс в `control.sqlite`. При запросе обновляются только новые или изменившиеся
-Sessions по `time.updated`; удалённые Sessions удаляются из индекса. Tool output,
-reasoning и attachments не индексируются. Индекс содержит копию текста сообщений и
-защищён теми же правами `0600`, что и остальная локальная база Control.
-
-## Локальные изображения в Sessions
-
-Если ответ агента содержит Markdown-ссылку или image на локальный raster-файл внутри
-project root, Control показывает изображение прямо в сообщении. Клик открывает встроенный
-полноэкранный viewer; несколько изображений одного сообщения листаются стрелками и с
-клавиатуры. На карточке и во viewer файл можно показать в Finder или безопасно переместить
-в системную Корзину с подтверждением. Поддерживаются PNG, JPEG, GIF, WebP, AVIF и ICO
-размером до 50 MB. Remote images не загружаются автоматически.
-
-Экран `Артефакты` собирает существующие локальные файлы, на которые агенты явно
-сослались в сообщениях, а также содержимое специальной папки `.opencode/artifacts`.
-Поддерживаются изображения, PDF, CSV, JSON, ZIP, TXT, Markdown и LOG. По умолчанию
-показывается текущий проект; scope `Все проекты` объединяет артефакты всех добавленных
-проектов. Клик по карточке открывает единый viewer: изображения и PDF показываются inline,
-CSV — таблицей, JSON/TXT/LOG — searchable source preview, Markdown имеет вкладки
-`Preview / Source`, ZIP показывает список содержимого без распаковки. Весь project root
-не сканируется.
-
-Выдачу можно фильтровать по категориям `Все / Изображения / Документы / Данные / Архивы`
-и сортировать по дате, размеру или имени. Scope, filter и sort сохраняются в URL. Viewer,
-`Выбрать все` и bulk-действия работают только с текущей видимой выдачей. На карточке и
-во viewer файл можно показать в Finder или переместить в системную Корзину. Удаление
-файла не меняет сообщение и историю Session.
-
-Режим `Выбрать` добавляет круглые галочки как в Photos: и карточка, и сам круг являются
-кликабельными и keyboard-доступными. Можно отметить до 100 файлов и скачать их одним
-`opencode-artifacts.zip`. Общий несжатый размер ограничен 100 MB; архив сохраняет project
-name и относительные пути, чтобы одинаковые filename не перезаписывали друг друга.
-Выбранные файлы также можно одним подтверждением переместить в Корзину.
-
-### События
-
-Колокольчик в верхней панели собирает локальную историю Tasks, scheduled runs,
-OpenCode server lifecycle и запросов permissions. Ошибки и ожидающие permissions
-попадают в unread-счётчик; успешные завершения сохраняются в истории без badge.
-События можно фильтровать по текущему или всем проектам и открывать связанную Session.
-История хранится в локальной SQLite базе 30 дней и не содержит prompt, message text или
-secrets. Системные уведомления macOS/Linux намеренно не используются.
-
-### Restart и reconnect
-
-Открытая SPA переживает restart Control без перезагрузки страницы: просроченная CSRF
-session автоматически обновляется, а исходный write-запрос повторяется один раз. При
-временной недоступности OpenCode экраны Sessions и Tasks сохраняют последний полный
-snapshot, показывают reconnect banner и временно блокируют destructive actions. Статусы
-активных Tasks сверяются с текущей execution Session в snapshot-потоке и фоновом цикле;
-частичный snapshot без sessions/statuses не может ложно завершить Task.
-
-При аварийном завершении Control managed OpenCode процессы не дублируются. PID, endpoint,
-project root identity, process generation и server password хранятся в приватном registry
-с mode `0600`; новый Control принимает процесс только после authenticated health check.
-Config transactions записывают candidate hash до изменения файла, поэтому rollback
-восстанавливает snapshot при crash до или сразу после записи. Scheduled run переходит в
-durable `creating_session` до внешнего вызова и после crash не запускается повторно вслепую.
-
-### Soak и reboot
-
-Изолированный recovery harness не использует добавленные в Control проекты:
-
-```bash
-opencode-control soak --cycles 1000
-opencode-control soak --cycles 43200 --interval 1 --data-dir ~/opencode-control-soak
-```
-
-Первая команда выполняет быстрый stress pass. Вторая работает около 12 часов и сохраняет
-SQLite для последующей диагностики. Harness чередует completed/failed/skipped runs,
-симулирует crash в `creating_session`, периодически переоткрывает SQLite и в конце проверяет
-`PRAGMA integrity_check`, отсутствие активных runs и точное количество событий.
-
-После reboot проверьте:
-
-```bash
-opencode-control status
-opencode-control start --no-open
-```
-
-Затем откройте Control и убедитесь, что managed проекты снова `running`, старые PID registry
-очищены, пропущенные более чем на две минуты scheduled runs отмечены `skipped`, а новые
-запуски продолжаются только с ближайшего будущего времени.
-
-Text preview ограничен 1 MiB, CSV — 1000 строками и 100 колонками, ZIP listing — 1000
-записями. Preview никогда не распаковывает архив и помечает небезопасные entry names.
-
-Файлы отдаются только через проверяемый route выбранного проекта. Выход за project root,
-symlink, hard-link и файл с неподходящей сигнатурой отклоняются; произвольный filesystem
-не публикуется через SPA.
-
-## Версия, JSONC и redaction
-
-Версия продукта хранится в `src/opencode_control/__init__.py`. Hatch использует её для
-wheel metadata, FastAPI и `/health` возвращают то же значение, HTTP User-Agent и sidebar
-Control также получают версию из этого источника. Версия private frontend package не
-является версией продукта.
-
-Точечные изменения MCP, providers и structured configuration используют позиционный
-JSONC patcher. Он сохраняет комментарии, отступы, порядок ключей, trailing commas,
-пустые строки и CRLF/LF, изменяя только нужные values или object members. Duplicate
-keys и неоднозначный JSONC блокируют операцию до записи; полной сериализации как
-fallback нет. Preflight, backup и rollback продолжают применяться после patching.
-
-Общий redaction layer очищает cookies, Basic/Bearer authorization, известные API token
-formats, credentials и query values в URL, secret CLI arguments, provider/tool errors,
-startup diagnostics и log tail. Ссылки вида `{env:NAME}` и `{file:path}` остаются
-видимыми, поскольку не содержат literal secret.
-
-Для другого loopback-порта:
-
-```bash
-opencode-control start --port 8876
-```
-
-Последние 100 строк основного лога:
-
-```bash
-opencode-control logs
-```
-
-Непрерывный просмотр до `Ctrl+C` и другой размер истории:
-
-```bash
-opencode-control logs --follow --lines 250
-```
-
-## Обновление alpha-версии
-
-Получите изменения репозитория и повторно запустите:
-
-```bash
-./install.sh
-```
-
-Проекты, задачи, сессии и конфигурация хранятся отдельно в
-`~/.opencode-control` и при переустановке wheel не удаляются.
-Каталог данных можно переопределить переменной `OPENCODE_CONTROL_HOME`.
-
-Интерактивное удаление отдельно спросит, нужно ли удалить локальные данные:
-
-```bash
-opencode-control uninstall
-```
-
-Для автоматизированного безопасного вызова без вопросов используйте
-`opencode-control uninstall --yes`: данные сохранятся. Явное полное удаление:
-
-```bash
-opencode-control uninstall --yes --purge-data
-```
-
-Purge удаляет только проверенное содержимое `~/.opencode-control`.
-
-## Ручная копия данных
-
-Project-файлы, Agents, Skills, Commands и `AGENTS.md` уже находятся в директории
-проекта и переносятся через Git или обычное копирование. Отдельный export Control
-для них не нужен. Внутреннее состояние Tasks и расписаний хранится в SQLite.
-
-Перед копированием SQLite остановите Control, чтобы последние WAL-изменения были
-записаны в основной файл:
-
-```bash
-opencode-control stop
-cp ~/.opencode-control/control.sqlite ~/control-backup.sqlite
-opencode-control start --no-open
-```
-
-Для восстановления остановите Control, верните файл на место, установите права
-`0600` и снова запустите его. История сообщений OpenCode хранится отдельно в
-`~/.local/share/opencode/`, а global config — в `~/.config/opencode/`.
-
-## Логи
-
-Основной лог находится в `~/.opencode-control/control.log`, project logs — в
-`~/.opencode-control/logs/`. Перед каждым запуском файл больше 10 MB ротируется;
-сохраняются три backup-файла `.1`, `.2`, `.3`. В активный лог попадает только
-новый запуск, поэтому старый большой лог не продолжает бесконечно расти. Строки
-основного runtime-лога содержат локальные дату и время.
-
-## Development
+## Разработка
 
 ```bash
 uv sync --extra dev
@@ -285,234 +264,18 @@ npm run build --prefix web
 uv run uvicorn opencode_control.app:create_app --host 127.0.0.1 --port 8765
 ```
 
-### Что именно запускается
+Проверки:
 
-- `opencode-control` — локальный веб-интерфейс на порту `8765`. Он хранит список
-  добавленных проектов и показывает Sessions, Tasks, Agents, Skills и MCP.
-- Кнопка `Start server` внутри Control запускает для выбранного проекта отдельный
-  процесс `opencode serve` на случайном локальном порту.
-- Этот отдельный OpenCode server читает global config из
-  `~/.config/opencode/`, затем добавляет настройки выбранного проекта.
-- TUI, запущенный отдельно в Terminal, и managed server внутри Control — два
-  разных процесса. У них общие конфигурационные файлы, но отдельные текущие MCP
-  соединения и состояние запуска.
-- После изменения Agent или Skill Control автоматически обновляет работающий
-  managed OpenCode server выбранного проекта.
-- Проектные инструкции лежат в `<project>/AGENTS.md`. Нативные project Skills
-  сохраняются в `<project>/.opencode/skills/<name>/SKILL.md`; отдельный
-  `skills.paths` для этого не требуется.
-
-## Как импортировать Skill по HTTPS
-
-Ручное создание Skills осталось доступно без изменений. На экране `Навыки` нажмите
-`Создать навык` и выберите одну из вкладок:
-
-- `Вручную` открывает обычный редактор `SKILL.md`.
-- `По HTTPS` скачивает готовый Skill только после безопасной проверки и сначала
-  показывает полный preview.
-
-Проще всего взять ссылку на GitHub. Если рядом с `SKILL.md` есть `scripts/`,
-`references/`, `data/`, `templates/` или другие файлы, скопируйте URL всего каталога:
-
-```text
-https://github.com/owner/repository/tree/main/path/to/skill
+```bash
+uv run ruff check src tests
+uv run mypy
+uv run pytest
+npm run lint --prefix web
+npm run typecheck --prefix web
+npm run test --prefix web
+npm run build --prefix web
 ```
 
-Control зафиксирует branch/tag на конкретный commit SHA и импортирует полный каталог.
-Обычная GitHub-ссылка на `blob/.../SKILL.md` также автоматически импортирует весь
-родительский каталог. Только прямой Raw URL используется как явный однофайловый импорт:
+## Лицензия
 
-```text
-https://github.com/owner/repository/blob/main/path/SKILL.md
-https://raw.githubusercontent.com/owner/repository/main/path/SKILL.md
-```
-
-Также подходит прямая HTTPS-ссылка с другого сайта, если она возвращает Markdown или
-plain text. До подтверждения Control ничего не записывает и не перезапускает. Он
-проверяет публичный DNS/IP, каждый redirect, TLS, MIME type, максимум 200 файлов,
-лимит 1 MiB на файл и 10 MiB на bundle, строгий UTF-8 для `SKILL.md` и обязательные
-`name`/`description` в frontmatter. Localhost, private networks, HTTP downgrade,
-symlinks, submodules, credentials в URL и compressed responses отклоняются.
-
-В preview видны исходный URL, конечный URL после redirects, путь назначения, SHA-256,
-rendered Markdown, полный исходный `SKILL.md` и manifest всех файлов bundle. При
-конфликте можно:
-
-- пропустить импорт;
-- явно перезаписать native Skill выбранного scope;
-- переименовать одновременно каталог и поле `name`, после чего проверить новый
-  итоговый preview.
-
-Project Skill сохраняется в `<project>/.opencode/skills/<name>/SKILL.md`, global Skill
-в `~/.config/opencode/skills/<name>/SKILL.md`. Skills из `.claude/skills` и
-`.agents/skills` не перезаписываются импортом. Загруженный Markdown не выполняется во
-время preview. Скрипты сохраняются с bundle рядом с `SKILL.md`, но Control их не
-запускает. После установки Skill становится инструкцией для агента, поэтому источник,
-manifest и содержимое нужно проверить перед подтверждением.
-
-Собственный native Skill можно переименовать или перенести между project/global scope
-через основные поля редактора. Control переносит весь каталог вместе с sidecar-файлами,
-а не только `SKILL.md`.
-
-## Как работают MCP-настройки
-
-Control показывает три связанных, но разных состояния MCP:
-
-- **Для всех проектов** — полное базовое описание из global config в
-  `~/.config/opencode/opencode.json(c)`: тип, команда или URL, headers и
-  `enabled`.
-- **Для проекта** — локальная запись из `<project>/opencode.json(c)`. OpenCode
-  глубоко объединяет ее с одноименной общей настройкой, поэтому для локального
-  включения или выключения достаточно `{ "enabled": false }` либо
-  `{ "enabled": true }`.
-- **Сейчас в OpenCode** — не третья настройка, а фактическое состояние MCP в
-  уже запущенном OpenCode server: подключен, отключен или завершился с ошибкой.
-
-Если общий MCP включен, а пользователь выключает его только для проекта, Control
-создает минимальное локальное переопределение:
-
-```json
-{
-  "mcp": {
-    "context7": {
-      "enabled": false
-    }
-  }
-}
-```
-
-При повторном включении Control не оставляет лишнее `{ "enabled": true }`, если
-оно совпадает с общей настройкой. Локальная запись удаляется, и проект снова
-наследует глобальное состояние. Кнопка `Использовать общую настройку` также
-явно удаляет project override. Если в локальной записи есть другие поля, Control
-удаляет только избыточный `enabled`, сохраняя остальные проектные настройки.
-
-Изменения записываются сразу. Уже работающий managed OpenCode server Control
-автоматически быстро перезапускает, поэтому пользователь ничего не должен делать
-вручную. Остановленный managed server остается остановленным до обычного запуска.
-Если пользователь сам подключил отдельно запущенный external endpoint, Control
-изменит конфигурационный файл, но не будет управлять жизненным циклом чужого
-процесса.
-
-## Как работает запуск задачи
-
-1. В переключателе проектов выберите нужную директорию.
-2. Убедитесь, что для проекта показан статус `Server online`.
-3. Откройте `Задачи` и нажмите `Запустить задачу`.
-4. Control создаст основную OpenCode-сессию с рабочей директорией выбранного
-   проекта. Агент будет читать и изменять файлы именно там.
-5. OpenCode применит global config и global `AGENTS.md`, затем настройки,
-   `AGENTS.md`, Agents и Skills выбранного проекта.
-6. Если агент и модель не выбраны явно, используется `default_agent`, модель
-   агента, последняя модель сессии или provider default — в таком порядке.
-7. Control сохраняет фактическую модель задачи и подставляет её при продолжении
-   связанных диалогов. Для следующего сообщения модель можно поменять вручную.
-8. Task может владеть несколькими самостоятельными OpenCode-сессиями. Реальные
-   вызовы подагентов остаются дочерними сессиями OpenCode.
-9. Удаление Task удаляет все связанные с ней сессии и их дочерние subagent runs.
-   Сессии, созданные напрямую в Control или CLI, не привязываются к Task.
-10. Task можно повторно запустить вручную либо создать через понятный конструктор:
-    каждые N минут, каждые N часов, каждый день или каждые N дней. Control сам
-    формирует пяти-польный cron с выбранной IANA timezone. По умолчанию каждый
-    автоматический запуск получает новую Session без истории прошлых запусков;
-     при необходимости в редакторе расписания можно продолжать предыдущую Session.
-     Расписание проверяется раз в 15 секунд, пока Control работает. Параллельный
-     cron-run пропускается.
-11. Каждый cron occurrence сначала атомарно сохраняется в SQLite и только затем
-    отправляется в OpenCode. Run использует lease token, поэтому два scheduler worker
-    не выполнят один и тот же сохранённый запуск одновременно. После restart Control
-    восстанавливает claim, если внешние действия ещё не начинались.
-12. Если соединение оборвалось в момент отправки prompt и нельзя доказать, принял ли
-    его OpenCode, run получает состояние `ambiguous`: Control проверяет Session и не
-    делает blind retry, который мог бы продублировать работу. Результат последнего
-    запуска и причины `failed`, `skipped` или `cancelled` видны в карточке Task.
-
-Файлы можно выбрать кнопкой или перетащить в форму или чат. Cron-задачи не принимают
-вложения, потому что Control не сохраняет base64-вложения в SQLite для будущих
-запусков.
-
-## Slash Commands
-
-Slash Command — нативный prompt-шаблон OpenCode. Project Commands хранятся в
-`<project>/.opencode/commands/<name>.md`, global Commands — в
-`~/.config/opencode/commands/<name>.md`. Они доступны одновременно в Control и
-OpenCode TUI.
-
-При добавлении проекта Control один раз создаёт в нём стартовые `/fix`, `/test`,
-`/plan`, `/explain` и `/commit-check`. Это обычные project-файлы: их можно менять
-или удалять, и после удаления Control не создаёт их повторно. Существующие файлы с
-такими именами не перезаписываются. `/review` предоставляет сам OpenCode как runtime
-Command; при необходимости её можно переопределить собственным project- или global-файлом.
-
-В текущей Session введите команду и аргументы:
-
-```text
-/review авторизация и хранение токенов
-```
-
-Control вызывает нативный endpoint OpenCode `/session/{id}/command`; OpenCode сам
-применяет `agent`, `model`, `variant`, `subtask`, `$ARGUMENTS` и `$1`, `$2`.
-Неизвестная команда не отправляется как обычный prompt. Конструкция
-`` !`shell command` `` выполняется самим OpenCode без дополнительного подтверждения;
-в editor она помечается как Shell, а сохранение Command её не запускает.
-
-Системная `/init` изучает репозиторий и создаёт или обновляет project `AGENTS.md`;
-обычно она нужна один раз при первичной настройке проекта. Некоторые версии
-OpenCode также публикуют Skills (`/customize-opencode`, `/context7-mcp` и project
-Skills) через command API. Control показывает их отдельным сворачиваемым списком и
-в обычном `/` palette, поэтому Skill можно выбрать вручную или оставить выбор агенту.
-
-## Безопасное изменение конфигурации
-
-Изменения MCP, providers и ручного `opencode.json/jsonc` проходят единый lifecycle:
-
-1. Control создаёт candidate и проверяет его реальным `opencode --pure debug config`.
-2. Global candidate должен пройти проверку для каждого зарегистрированного проекта.
-3. До записи сохраняются точные bytes, mode и наличие затронутых файлов.
-4. Candidate записывается атомарно, после чего перезапускаются только ранее работавшие
-   managed servers.
-5. При ошибке исходные файлы восстанавливаются byte-for-byte, а уже затронутые серверы
-   запускаются на предыдущей конфигурации.
-
-Pending backup существует только до commit или rollback в
-`~/.opencode-control/config-transactions/`. После аварийного завершения Control
-восстанавливает незавершённую транзакцию до запуска project servers. OpenCode старше
-проверенной release line разрешается после preflight с предупреждением; версия без
-обязательных config/API capabilities блокирует изменение. Недоступный внешний MCP не
-откатывает healthy OpenCode server: он отображается как отдельная runtime-ошибка.
-
-Список моделей в Control намеренно ограничен провайдерами, которые OpenCode
-считает подключёнными или настроенными. Полный встроенный каталог `models.dev`
-не показывается. Для текущей конфигурации это:
-
-- OpenAI, подключённый через авторизацию OpenCode;
-- встроенный OpenCode Zen;
-- `ollama-home` из global `opencode.jsonc`.
-
-Наличие custom/local provider в списке означает, что он настроен. Это не
-гарантирует, что локальный Ollama-сервер сейчас включён и отвечает.
-
-## Capabilities
-
-- Register multiple local projects.
-- Start and stop one managed `opencode serve` process per project.
-- Inspect main sessions separately from child subagent sessions, including models,
-  tokens, cost and live state.
-- Create sessions, link multiple sessions to one Task, dispatch tasks, abort runs
-  and remove individual sessions or a Task together with its sessions. Tasks can
-  be rerun manually or scheduled with cron.
-- Render session messages as safe GitHub-flavored Markdown and accept image
-  attachments through file selection or drag-and-drop.
-- See and edit project/global definitions for agents, skills and MCP servers while
-  keeping effective configuration separate from live runtime connection state.
-- Edit project `AGENTS.md`, `.opencode/agents/*.md`, `.opencode/skills/*/SKILL.md`
-  and safe sections of `opencode.json`.
-- Choose an available OpenCode agent and `provider/model` override when launching
-  a task or session; leaving either empty uses the effective merged defaults.
-- Choose a persistent Control palette from the searchable OpenCode-style theme list.
-- Managed servers use an in-memory random password and are private to Control.
-  To share one backend with a terminal TUI, start `opencode web` yourself,
-  attach the TUI to it, and register that loopback URL as an external endpoint.
-
-Project content stays local. OpenCode Control accepts only registered project
-identifiers after registration and uses loopback-only OpenCode endpoints.
+[MIT](LICENSE)
