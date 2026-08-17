@@ -759,6 +759,34 @@ describe("OpenCode Control", () => {
     expect(dialog.querySelector('.status[data-status="failed"]')).not.toBeInTheDocument();
   });
 
+  it("shows a recovered session as completed after an earlier provider failure", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.includes("/snapshot")) {
+        const original = await fallback(input, init);
+        const payload = await original.json();
+        payload.statuses = {};
+        payload.sessions[0].control_task = { ...payload.sessions[0].control_task, status: "scheduled", session_status: "failed", session_error: "server unavailable", session_updated_at: new Date(Date.now() - 45_000).toISOString() };
+        return response(payload);
+      }
+      if (path.includes("/sessions/ses_1/messages")) return response([
+        { info: { id: "msg_failed", role: "assistant", error: "server unavailable", time: { created: Date.now() - 60_000 } }, parts: [{ type: "text", text: "" }] },
+        { info: { id: "msg_user", role: "user", time: { created: Date.now() - 30_000 } }, parts: [{ type: "text", text: "continue" }] },
+        { info: { id: "msg_done", role: "assistant", finish: "stop", time: { created: Date.now() - 20_000, completed: Date.now() - 10_000 } }, parts: [{ type: "text", text: "Done" }, { type: "step-finish" }] },
+      ]);
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(await screen.findByText("Fix checkout"));
+    const dialog = await screen.findByRole("dialog", { name: "Сессия Fix checkout" });
+    await waitFor(() => expect(dialog.querySelector('.status[data-status="completed"]')).toHaveTextContent("Завершена"));
+    expect(screen.getByText("server unavailable")).toBeInTheDocument();
+  });
+
   it("replaces send with stop while the agent is active", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {

@@ -31,12 +31,15 @@ def _session_task_link(row: sqlite3.Row, run: sqlite3.Row | None) -> dict[str, s
     task_is_newer = run is None or str(row["updated_at"]) > str(run["updated_at"])
     status: str | None = None
     error: str | None = None
+    updated_at: str | None = None
     if task_is_current and task_is_newer:
         status = task_status
         error = str(row["error"]) if row["error"] else None
+        updated_at = str(row["updated_at"])
     elif run is not None:
         status = str(run["status"])
         error = str(run["error"]) if run["error"] else None
+        updated_at = str(run["updated_at"])
     normalized = {
         "claimed": "dispatching",
         "session_created": "dispatching",
@@ -54,6 +57,8 @@ def _session_task_link(row: sqlite3.Row, run: sqlite3.Row | None) -> dict[str, s
         result["session_status"] = normalized
     if error:
         result["session_error"] = error
+    if updated_at:
+        result["session_updated_at"] = updated_at
     return result
 
 
@@ -1239,6 +1244,44 @@ class ControlStore:
                 "SELECT * FROM scheduled_runs WHERE id = ?", (run_id,)
             ).fetchone()
         return dict(row) if row else None
+
+    def reopen_failed_scheduled_run(self, project_id: str, session_id: str) -> str | None:
+        timestamp = _now()
+        with self._lock, self._connection:
+            run = self._connection.execute(
+                """
+                SELECT * FROM scheduled_runs
+                WHERE project_id = ? AND session_id = ? AND status = 'failed'
+                ORDER BY updated_at DESC, id DESC LIMIT 1
+                """,
+                (project_id, session_id),
+            ).fetchone()
+            if run is None:
+                return None
+            run_id = str(run["id"])
+            self._connection.execute(
+                """
+                UPDATE scheduled_runs SET status = 'running', error = NULL,
+                    lease_token = NULL, lease_expires_at = NULL, finished_at = NULL,
+                    updated_at = ? WHERE id = ?
+                """,
+                (timestamp, run_id),
+            )
+            self._connection.execute(
+                """
+                UPDATE tasks SET status = 'running', error = NULL, updated_at = ?
+                WHERE project_id = ? AND id = ?
+                """,
+                (timestamp, project_id, run["task_id"]),
+            )
+            self._connection.execute(
+                """
+                UPDATE control_events SET read_at = COALESCE(read_at, ?)
+                WHERE run_id = ? AND kind = 'scheduled_run_failed'
+                """,
+                (timestamp, run_id),
+            )
+        return run_id
 
     def list_scheduled_runs(
         self, project_id: str, task_id: str, *, limit: int = 50

@@ -273,8 +273,9 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
   const liveStatus = runtimeStatus(messages.data ?? [], now);
   const displayedStatus = taskStatusOverride ?? taskStatus ?? status;
   const stopped = aborted || displayedStatus === "aborted";
-  const failed = displayedStatus === "failed" || displayedStatus === "error" || liveStatus === "failed";
-  const observedStatus = failed ? "failed" : activeSessionStatus(displayedStatus) ? displayedStatus : liveStatus ?? displayedStatus;
+  const recovered = (displayedStatus === "failed" || displayedStatus === "error") && successfulAssistantAfter(messages.data ?? [], session.control_task?.session_updated_at);
+  const failed = liveStatus === "failed" || (!recovered && (displayedStatus === "failed" || displayedStatus === "error"));
+  const observedStatus = failed ? "failed" : recovered ? "completed" : activeSessionStatus(displayedStatus) ? displayedStatus : liveStatus ?? displayedStatus;
   const effectiveStatus = stopped ? "aborted" : busy || pendingFrom ? "busy" : observedStatus;
   const responseActive = !stopped && (busy || aborting || pendingFrom !== null || activeSessionStatus(observedStatus));
   const gitVisible = git.data?.available === true && (gitVisibility === "shown" || (gitVisibility === "auto" && git.data.changes.length > 0));
@@ -512,6 +513,7 @@ function clearSearchHighlight() {
 }
 function messageFinished(message: SessionMessage) { return message.info?.time?.completed !== undefined || Boolean(message.info?.error) || Boolean(message.parts?.some((part) => part.type === "step-finish")); }
 function runtimeStatus(messages: SessionMessage[], now: number) { for (let index = messages.length - 1; index >= 0; index -= 1) { const entry = messages[index]; if (entry.info?.error) return "failed"; const unfinished = entry.info?.role === "user" || (entry.info?.role === "assistant" && !messageFinished(entry)); if (!unfinished) { if (entry.info?.role === "assistant") return null; continue; } const created = entry.info?.time?.created; return created !== undefined && now > 0 && now - created > 15 * 60 * 1000 ? null : "busy"; } return null; }
+function successfulAssistantAfter(messages: SessionMessage[], updatedAt?: string) { const cutoff = updatedAt ? Date.parse(updatedAt) : Number.NaN; if (!Number.isFinite(cutoff)) return false; return messages.some((entry) => { if (entry.info?.role !== "assistant" || entry.info.error || !messageFinished(entry)) return false; const occurred = entry.info.time?.completed ?? entry.info.time?.created; if (occurred === undefined) return false; const milliseconds = occurred > 100_000_000_000 ? occurred : occurred * 1000; return milliseconds > cutoff; }); }
 function latestUserSelection(messages: SessionMessage[]) { for (let index = messages.length - 1; index >= 0; index -= 1) { const info = messages[index].info; if (info?.role !== "user") continue; return { agent: info.agent, model: info.providerID && info.modelID ? `${info.providerID}/${info.modelID}` : undefined, variant: info.variant }; } return null; }
 function activeSessionStatus(value: string | null) { return value !== null && ["busy", "queued", "dispatching", "running", "pending", "retry"].includes(value); }
 function scrollAtBottom(element: HTMLElement) { return element.scrollHeight - element.scrollTop - element.clientHeight < 48; }

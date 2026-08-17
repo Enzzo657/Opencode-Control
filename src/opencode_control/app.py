@@ -3016,6 +3016,15 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         messages = client.session_messages(session_id)
         reconcile_task_session_messages(project_id, session_id, messages)
         task = state.store.session_task(project_id, session_id)
+        recovered = task is not None and _successful_assistant_after(
+            messages, task.get("session_updated_at")
+        )
+        if recovered:
+            run_id = state.store.reopen_failed_scheduled_run(project_id, session_id)
+            if run_id is not None:
+                state.store.finish_scheduled_run(run_id, "completed")
+                task = state.store.session_task(project_id, session_id)
+                invalidate_dashboard_cache(project_id)
         if (
             task is not None
             and task.get("session_status") == "failed"
@@ -3027,6 +3036,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 and message["info"].get("error")
                 for message in messages
             )
+            and not recovered
         ):
             messages.append(
                 {
@@ -3176,6 +3186,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         task = state.store.task_for_session(project_id, session_id)
         if task is not None:
             scheduled = bool(task.get("cron"))
+            if scheduled:
+                state.store.reopen_failed_scheduled_run(project_id, session_id)
             state.store.record_task_prompt(
                 project_id,
                 str(task["id"]),
@@ -4481,6 +4493,37 @@ def _local_host(value: str | None) -> bool:
         return ipaddress.ip_address(value).is_loopback
     except ValueError:
         return False
+
+
+def _successful_assistant_after(messages: list[Any], updated_at: Any) -> bool:
+    if not isinstance(updated_at, str):
+        return False
+    try:
+        cutoff_ms = datetime.fromisoformat(updated_at).timestamp() * 1000
+    except ValueError:
+        return False
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        info = message.get("info")
+        if not isinstance(info, dict) or info.get("role") != "assistant" or info.get("error"):
+            continue
+        raw_time = info.get("time")
+        message_time = raw_time if isinstance(raw_time, dict) else {}
+        raw_parts = message.get("parts")
+        parts = raw_parts if isinstance(raw_parts, list) else []
+        finished = (
+            bool(message_time.get("completed"))
+            or info.get("finish") == "stop"
+            or any(isinstance(part, dict) and part.get("type") == "step-finish" for part in parts)
+        )
+        occurred = message_time.get("completed") or message_time.get("created")
+        if not finished or not isinstance(occurred, (int, float)):
+            continue
+        occurred_ms = float(occurred) if occurred > 100_000_000_000 else float(occurred) * 1000
+        if occurred_ms > cutoff_ms:
+            return True
+    return False
 
 
 def _next_cron_run(

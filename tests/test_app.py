@@ -154,6 +154,26 @@ def test_control_branding_and_browser_session_cookie(tmp_path: Path) -> None:
         assert "control_session=" in session.headers["set-cookie"]
 
 
+def test_successful_continuation_supersedes_earlier_control_failure() -> None:
+    messages = [
+        {
+            "info": {
+                "role": "assistant",
+                "time": {"completed": 1_786_965_469_659},
+                "finish": "stop",
+            },
+            "parts": [{"type": "text", "text": "Completed after restart"}],
+        }
+    ]
+
+    assert app_module._successful_assistant_after(
+        messages, "2026-08-17T11:15:00+00:00"
+    )
+    assert not app_module._successful_assistant_after(
+        messages, "2026-08-17T12:00:00+00:00"
+    )
+
+
 def test_runtime_access_token_guards_api_and_authorizes_browser(tmp_path: Path) -> None:
     app = create_app(ControlConfig(data_dir=tmp_path / "data"))
     token = app.state.control.access_token

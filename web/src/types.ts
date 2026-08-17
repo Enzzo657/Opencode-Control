@@ -70,6 +70,7 @@ export type Session = {
     status?: string;
     session_status?: string;
     session_error?: string;
+    session_updated_at?: string;
   };
 };
 

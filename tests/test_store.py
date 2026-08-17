@@ -445,6 +445,7 @@ def test_task_session_statuses_are_scoped_to_each_execution(tmp_path: Path) -> N
     assert "session_error" not in links["ses_completed"]
     assert links["ses_failed"]["session_status"] == "failed"
     assert links["ses_failed"]["session_error"] == "run failed"
+    assert links["ses_failed"]["session_updated_at"]
     events = store.list_events(project_id=project_id)["events"]
     assert len([item for item in events if item["kind"] == "scheduled_run_completed"]) == 1
     assert len([item for item in events if item["kind"] == "scheduled_run_failed"]) == 1
@@ -462,6 +463,46 @@ def test_task_session_statuses_are_scoped_to_each_execution(tmp_path: Path) -> N
     assert links["ses_manual"]["session_error"] == "server unavailable"
     assert links["ses_completed"]["session_status"] == "completed"
     assert store.session_task(project_id, "ses_failed") == links["ses_failed"]
+    store.close()
+
+
+def test_failed_scheduled_run_can_complete_after_manual_continuation(tmp_path: Path) -> None:
+    store = ControlStore(tmp_path / "data")
+    project_id, task_id = _scheduled_task(store, tmp_path)
+    run = store.materialize_scheduled_run(
+        project_id,
+        task_id,
+        expected_run_at="2026-07-27T09:00:00+00:00",
+        next_run_at="2026-07-28T09:00:00+00:00",
+        created_at="2026-07-27T09:00:01+00:00",
+    )
+    assert run is not None
+    run_id = str(run["id"])
+    assert store.claim_scheduled_run(
+        run_id,
+        lease_token="owner",
+        lease_expires_at="2026-07-27T09:02:00+00:00",
+        claimed_at="2026-07-27T09:00:02+00:00",
+    )
+    assert store.attach_scheduled_run_session(run_id, "owner", "ses_recovered")
+    assert store.mark_scheduled_run_running(run_id, "owner")
+    assert store.finish_scheduled_run(run_id, "failed", "server unavailable")
+
+    assert store.reopen_failed_scheduled_run(project_id, "ses_recovered") == run_id
+    assert store.get_scheduled_run(run_id)["status"] == "running"
+    assert store.finish_scheduled_run(run_id, "completed")
+
+    recovered = store.session_task(project_id, "ses_recovered")
+    assert recovered is not None
+    assert recovered["session_status"] == "completed"
+    assert "session_error" not in recovered
+    failed_events = [
+        item
+        for item in store.list_events(project_id=project_id)["events"]
+        if item["kind"] == "scheduled_run_failed"
+    ]
+    assert len(failed_events) == 1
+    assert failed_events[0]["read_at"] is not None
     store.close()
 
 
