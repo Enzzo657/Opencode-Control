@@ -358,7 +358,7 @@ describe("OpenCode Control", () => {
     fireEvent.click(screen.getByRole("button", { name: "Выбрать report.pdf" }));
     fireEvent.click(screen.getByRole("button", { name: "Экспортировать ZIP (2)" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).includes("/api/v1/artifacts/archive") && String(init?.body).includes("artifact-2"))).toBe(true));
-    expect(anchorClick).toHaveBeenCalled();
+    await waitFor(() => expect(anchorClick).toHaveBeenCalled(), { timeout: 3000 });
     fireEvent.click(screen.getByRole("button", { name: "В Корзину (2)" }));
     expect(await screen.findByRole("dialog", { name: "Переместить 2 артефактов в Корзину?" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Переместить в Корзину" }));
