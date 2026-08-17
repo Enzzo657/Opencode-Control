@@ -119,7 +119,7 @@ External OpenCode endpoint можно подключить и без локал�
 ## Установка
 
 ```bash
-git clone https://github.com/Enzzo657/Opencode-Studio.git OpenCode-Control
+git clone https://github.com/Enzzo657/Opencode-Control.git OpenCode-Control
 cd OpenCode-Control
 ./install.sh
 ```

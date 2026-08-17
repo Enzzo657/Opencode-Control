@@ -118,7 +118,7 @@ manage the lifecycle of that process.
 ## Installation
 
 ```bash
-git clone https://github.com/Enzzo657/Opencode-Studio.git OpenCode-Control
+git clone https://github.com/Enzzo657/Opencode-Control.git OpenCode-Control
 cd OpenCode-Control
 ./install.sh
 ```

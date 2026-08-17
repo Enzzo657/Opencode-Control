@@ -130,6 +130,16 @@ signals, file locks, workspace security для reparse points и native Windows 
 
 ## Рекомендуемый порядок
 
+### Подтверждённые проверки
+
+- [x] 12-часовой scheduler/recovery soak завершён 13 августа 2026: 43 200 циклов
+  за 44 429,884 секунды, 43 200 terminal events, 3 021 crash recovery,
+  0 активных runs и `PRAGMA integrity_check = ok`.
+- [x] Выполнен реальный reboot macOS с сохранением Control SQLite, Tasks, Sessions и
+  managed project registry. Обнаруженная смена APFS device ID исправлена через
+  устойчивую root identity и закрыта regression-тестами.
+- Проверка после внезапного power loss отдельно не проводилась.
+
 ### Завершённый resilience pass
 
 - [x] Автоматически обновлять CSRF session открытой SPA после restart Control.
@@ -146,7 +156,7 @@ signals, file locks, workspace security для reparse points и native Windows 
 - [x] Пропускать downtime cron runs старше двух минут без массового catch-up.
 - [x] Добавить изолированный scheduler/recovery soak harness с SQLite integrity check.
 
-1. Провести длительный soak-test scheduler, reconnect и event retention.
-2. Проверить recovery после реального reboot/power loss.
-3. После soak-test решить, готова ли alpha к public release.
+1. Добавить runtime access token перед публичным распространением.
+2. Подключить GitHub Actions и clean wheel smoke tests на macOS и Ubuntu.
+3. После release checks решить, готова ли alpha к public release.
 4. Возврат к Plugins и Windows только после отдельного security/platform решения.
