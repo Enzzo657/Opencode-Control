@@ -18,6 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
       - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
         with:
           python-version: "3.12"
@@ -25,6 +30,9 @@ jobs:
       - run: uv sync --extra dev --frozen
       - run: uv run ruff check src tests
       - run: uv run mypy
+      - name: Build frontend for integration tests
+        working-directory: web
+        run: npm ci && npm run build
       - run: uv run pytest -q
 
   frontend:

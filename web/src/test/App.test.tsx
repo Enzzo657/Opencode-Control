@@ -56,7 +56,7 @@ describe("OpenCode Control", () => {
       if (path.includes("/api/v1/events/") && init?.method === "POST") return response(path.endsWith("/read-all") ? { read: 0 } : { read: true });
       if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
       if (path.includes("/api/v1/search")) { const offset = Number(new URL(path, "http://localhost").searchParams.get("offset") ?? 0); return response({ query: "deploy", scope: path.includes("scope=global") ? "global" : "project", partial: false, unavailable_projects: [], indexed_sessions: offset ? 0 : 1, offset, has_more: offset === 0, results: [{ kind: "message", project_id: project.id, project_name: project.name, session_id: "ses_1", session_title: "Fix checkout", message_id: offset ? "msg_2" : "msg_1", role: "user", created_at: Date.now(), snippet: offset ? "Deploy through the release pipeline" : "Rotate deployment token" }] }); }
-      if (path.includes("/api/v1/artifacts/archive")) return new Response(new Blob(["zip"]), { status: 200, headers: { "Content-Type": "application/zip" } });
+      if (path.includes("/api/v1/artifacts/archive")) return new Response("zip", { status: 200, headers: { "Content-Type": "application/zip" } });
       if (path.endsWith("/api/v1/artifacts/trash")) return response({ trashed_ids: ["artifact-1", "artifact-2"], errors: [] });
       if (/\/api\/v1\/artifacts\/[^/]+\/(?:reveal|trash)$/.test(path)) return response({ revealed: path.endsWith("/reveal"), trashed: path.endsWith("/trash") });
       if (/\/api\/v1\/projects\/[^/]+\/artifact\/(?:reveal|trash)$/.test(path)) return response({ revealed: path.endsWith("/reveal"), trashed: path.endsWith("/trash") });
