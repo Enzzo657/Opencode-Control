@@ -276,6 +276,7 @@ class ConfigTransaction:
                     "root": str(item.config_file.root.path),
                     "device": item.config_file.root.device,
                     "inode": item.config_file.root.inode,
+                    "birthtime_ns": item.config_file.root.birthtime_ns,
                     "relative": item.config_file.relative.as_posix(),
                     "existed": item.snapshot.existed,
                     "mode": item.snapshot.mode,
@@ -367,6 +368,9 @@ class ConfigTransactionManager:
                     Path(str(value["root"])),
                     int(value["device"]),
                     int(value["inode"]),
+                    int(value["birthtime_ns"])
+                    if value.get("birthtime_ns") is not None
+                    else None,
                 ),
                 Path(str(value["relative"])),
             )

@@ -746,9 +746,15 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     def workspace_for(project: dict[str, Any]) -> WorkspaceRoot:
         device = project.get("root_device")
         inode = project.get("root_inode")
+        birthtime_ns = project.get("root_birthtime_ns")
         if not isinstance(device, int) or not isinstance(inode, int):
             raise HTTPException(status_code=409, detail="project root identity is unavailable")
-        return WorkspaceRoot(Path(str(project["root"])), device, inode)
+        return WorkspaceRoot(
+            Path(str(project["root"])),
+            device,
+            inode,
+            birthtime_ns if isinstance(birthtime_ns, int) else None,
+        )
 
     def ensure_project_commands(project: dict[str, Any]) -> None:
         version = project.get("starter_commands_version")

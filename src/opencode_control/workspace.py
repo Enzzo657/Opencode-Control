@@ -54,6 +54,7 @@ class WorkspaceRoot:
     path: Path
     device: int
     inode: int
+    birthtime_ns: int | None = None
 
 
 @dataclass(frozen=True)
@@ -99,7 +100,7 @@ def root_identity(root: Path) -> WorkspaceRoot:
         info = root.stat()
     except OSError as error:
         raise WorkspaceError("project root is unavailable") from error
-    return WorkspaceRoot(root, info.st_dev, info.st_ino)
+    return WorkspaceRoot(root, info.st_dev, info.st_ino, _birthtime_ns(info))
 
 
 def validate_root(root: WorkspaceRoot) -> None:
@@ -116,10 +117,24 @@ def open_root_descriptor(root: WorkspaceRoot) -> int:
     except OSError as error:
         raise WorkspaceError("project root is unavailable or unsafe") from error
     info = os.fstat(descriptor)
-    if info.st_dev != root.device or info.st_ino != root.inode:
+    birthtime_ns = _birthtime_ns(info)
+    stable_identity = (
+        root.birthtime_ns is not None
+        and birthtime_ns is not None
+        and birthtime_ns == root.birthtime_ns
+        and info.st_ino == root.inode
+    )
+    if (info.st_dev != root.device or info.st_ino != root.inode) and not stable_identity:
         os.close(descriptor)
         raise WorkspaceError("project root identity changed; register it again")
     return descriptor
+
+
+def _birthtime_ns(info: os.stat_result) -> int | None:
+    value = getattr(info, "st_birthtime", None)
+    if not isinstance(value, (int, float)):
+        return None
+    return round(value * 1_000_000_000)
 
 
 def read_text(root: WorkspaceRoot, relative: Path, *, missing: str = "") -> str:

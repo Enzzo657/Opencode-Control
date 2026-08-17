@@ -1,8 +1,37 @@
 from __future__ import annotations
 
+import os
+import sqlite3
 from pathlib import Path
 
 from opencode_control.store import ControlStore
+
+
+def test_existing_project_identity_is_migrated_without_recreating_project(
+    tmp_path: Path,
+) -> None:
+    data_dir = tmp_path / "data"
+    root = tmp_path / "project"
+    root.mkdir()
+    store = ControlStore(data_dir)
+    project = store.create_project(name="Existing", root=root, endpoint=None)
+    store.close()
+    connection = sqlite3.connect(data_dir / "control.sqlite")
+    with connection:
+        connection.execute("ALTER TABLE projects DROP COLUMN root_birthtime_ns")
+        connection.execute(
+            "UPDATE projects SET root_device = ? WHERE id = ?",
+            (root.stat().st_dev + 1, project["id"]),
+        )
+    connection.close()
+
+    migrated = ControlStore(data_dir)
+    projects = migrated.list_projects()
+
+    assert len(projects) == 1
+    assert projects[0]["id"] == project["id"]
+    assert projects[0]["root_device"] == os.stat(root).st_dev
+    migrated.close()
 
 
 def _scheduled_task(store: ControlStore, tmp_path: Path) -> tuple[str, str]:

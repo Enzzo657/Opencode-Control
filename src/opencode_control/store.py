@@ -10,6 +10,13 @@ from pathlib import Path
 from typing import Any
 
 
+def _birthtime_ns(info: os.stat_result) -> int | None:
+    value = getattr(info, "st_birthtime", None)
+    if not isinstance(value, (int, float)):
+        return None
+    return round(value * 1_000_000_000)
+
+
 def _now() -> str:
     return datetime.now(UTC).isoformat()
 
@@ -71,6 +78,7 @@ class ControlStore:
                     endpoint TEXT,
                     root_device INTEGER,
                     root_inode INTEGER,
+                    root_birthtime_ns INTEGER,
                     starter_commands_version INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL,
                     updated_at TEXT NOT NULL
@@ -199,6 +207,11 @@ class ControlStore:
                 self._connection.execute("ALTER TABLE projects ADD COLUMN root_device INTEGER")
             if "root_inode" not in columns:
                 self._connection.execute("ALTER TABLE projects ADD COLUMN root_inode INTEGER")
+            migrate_birthtime = "root_birthtime_ns" not in columns
+            if migrate_birthtime:
+                self._connection.execute(
+                    "ALTER TABLE projects ADD COLUMN root_birthtime_ns INTEGER"
+                )
             if "managed_enabled" not in columns:
                 self._connection.execute(
                     "ALTER TABLE projects ADD COLUMN managed_enabled INTEGER NOT NULL DEFAULT 0"
@@ -240,8 +253,11 @@ class ControlStore:
                 ON tasks(schedule_enabled, next_run_at)
                 """
             )
+            identity_filter = (
+                "1 = 1" if migrate_birthtime else "root_device IS NULL OR root_inode IS NULL"
+            )
             rows = self._connection.execute(
-                "SELECT id, root FROM projects WHERE root_device IS NULL OR root_inode IS NULL"
+                f"SELECT id, root FROM projects WHERE {identity_filter}"
             ).fetchall()
             for row in rows:
                 try:
@@ -249,8 +265,9 @@ class ControlStore:
                 except OSError:
                     continue
                 self._connection.execute(
-                    "UPDATE projects SET root_device = ?, root_inode = ? WHERE id = ?",
-                    (stat.st_dev, stat.st_ino, row["id"]),
+                    "UPDATE projects SET root_device = ?, root_inode = ?, "
+                    "root_birthtime_ns = ? WHERE id = ?",
+                    (stat.st_dev, stat.st_ino, _birthtime_ns(stat), row["id"]),
                 )
             self._connection.execute(
                 "DELETE FROM control_events WHERE occurred_at < ?",
@@ -283,8 +300,9 @@ class ControlStore:
             self._connection.execute(
                 """
                 INSERT INTO projects
-                    (id, name, root, endpoint, root_device, root_inode, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, name, root, endpoint, root_device, root_inode,
+                     root_birthtime_ns, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     project_id,
@@ -293,6 +311,7 @@ class ControlStore:
                     endpoint,
                     stat.st_dev,
                     stat.st_ino,
+                    _birthtime_ns(stat),
                     timestamp,
                     timestamp,
                 ),
