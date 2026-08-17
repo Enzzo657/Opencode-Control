@@ -87,9 +87,6 @@ OpenCode отлично выполняет агентные задачи. Contro
   <strong>Event Center и адаптивный мобильный интерфейс</strong>
 </p>
 
-Скриншоты созданы на изолированном демонстрационном наборе данных. Они не содержат
-реальных путей, credentials или пользовательской истории.
-
 ## Архитектура
 
 ```mermaid
@@ -189,6 +186,8 @@ Sessions. Расписание задаётся понятным констру�
 
 Secrets хранятся в отдельных plaintext-файлах с mode `0600`. Их значения не возвращаются
 в browser API; конфигурация использует ссылки `{file:...}` или `{env:...}`.
+Runtime access token также хранится локально с mode `0600`, передаётся браузеру только
+во fragment URL и после авторизации остаётся в `HttpOnly` cookie.
 
 ### Search и Artifacts
 
@@ -217,6 +216,7 @@ Artifacts собирает файлы, явно упомянутые агент�
 ## Безопасность и данные
 
 - HTTP server принимает только loopback host/client/origin.
+- Runtime access token выдаёт доступ API только браузеру, открытому через CLI.
 - Write API защищён browser session и CSRF token.
 - Managed OpenCode servers используют случайный пароль и недоступны как общий backend.
 - Project-файлы открываются через descriptor-relative операции с проверкой root identity.
@@ -246,14 +246,12 @@ Project-файлы и global OpenCode config резервируются отде
 ## Ограничения alpha
 
 - Поддерживаются macOS и Linux; Windows пока не поддерживается.
-- API доступен только локально; отдельный runtime access token ещё запланирован до public release.
+- API доступен только локально и защищён отдельным runtime access token.
 - Secrets защищены filesystem permissions, но не зашифрованы и не используют OS keychain.
 - Exactly-once dispatch невозможен без idempotency key в OpenCode API.
 - Plugins Manager отложен: plugin является исполняемым JS/TS-кодом и требует отдельной security model.
 - Системные desktop notifications не используются; события остаются внутри Control.
 - Текущая alpha устанавливается из клонированного репозитория.
-
-Актуальный план: [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md).
 
 ## Разработка
 

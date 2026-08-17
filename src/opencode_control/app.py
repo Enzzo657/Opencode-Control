@@ -35,6 +35,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from send2trash import send2trash
 
 from opencode_control import __version__
+from opencode_control.access import load_or_create_access_token
 from opencode_control.command_catalog import (
     LEGACY_REVIEW_COMMAND_CONTENT,
     STARTER_COMMANDS,
@@ -381,6 +382,11 @@ class ControlState:
     def __init__(self, config: ControlConfig) -> None:
         self.config = config
         self.store = ControlStore(config.data_dir)
+        try:
+            self.access_token = load_or_create_access_token(config.data_dir)
+        except Exception:
+            self.store.close()
+            raise
         self.processes = OpenCodeProcessManager(
             binary=config.opencode_binary,
             data_dir=config.data_dir,
@@ -712,6 +718,26 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             parsed = urllib.parse.urlsplit(origin)
             if not _local_host(parsed.hostname):
                 return JSONResponse({"detail": "cross-origin request rejected"}, status_code=403)
+        public_api = request.url.path == "/api/v1/health" or (
+            request.url.path == "/api/v1/access" and request.method == "POST"
+        )
+        if request.url.path.startswith("/api/v1/") and not public_api:
+            authorization = request.headers.get("authorization", "")
+            bearer = authorization[7:] if authorization.startswith("Bearer ") else ""
+            cookie = request.cookies.get("control_access", "")
+            if not (
+                secrets.compare_digest(cookie, state.access_token)
+                or secrets.compare_digest(bearer, state.access_token)
+            ):
+                return JSONResponse(
+                    {
+                        "detail": {
+                            "code": "access_required",
+                            "message": "runtime access token is required",
+                        }
+                    },
+                    status_code=401,
+                )
         content_length = request.headers.get("content-length")
         try:
             body_size = int(content_length) if content_length else 0
@@ -1654,12 +1680,33 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         )
         return {"csrf_token": state.browser_sessions[session_id], "product": "OpenCode Control"}
 
+    @app.post("/api/v1/access", status_code=204)
+    def authorize_runtime(authorization: Annotated[str | None, Header()] = None) -> Response:
+        value = authorization or ""
+        supplied = value[7:] if value.startswith("Bearer ") else ""
+        if not secrets.compare_digest(supplied, state.access_token):
+            raise HTTPException(status_code=403, detail="invalid runtime access token")
+        response = Response(status_code=204)
+        response.set_cookie(
+            "control_access",
+            state.access_token,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+            max_age=365 * 24 * 60 * 60,
+            path="/",
+        )
+        return response
+
+    @app.get("/api/v1/access")
+    def runtime_access() -> dict[str, bool]:
+        return {"authenticated": True}
+
     @app.get("/api/v1/health")
     def health() -> dict[str, Any]:
         return {
             "healthy": True,
             "version": __version__,
-            "projects": len(state.store.list_projects()),
         }
 
     @app.get("/api/v1/events")

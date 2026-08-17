@@ -2,6 +2,22 @@ import { translate } from "./i18n";
 
 let csrfToken: string | null = null;
 
+export async function bootstrapAccess(): Promise<boolean> {
+  const fragment = new URLSearchParams(location.hash.slice(1));
+  const accessToken = fragment.get("access_token");
+  if (accessToken) {
+    history.replaceState({}, "", `${location.pathname}${location.search}`);
+    const response = await fetch("/api/v1/access", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${accessToken}` },
+      credentials: "same-origin",
+    });
+    if (!response.ok) return false;
+  }
+  const response = await fetch("/api/v1/access", { credentials: "same-origin" });
+  return response.ok;
+}
+
 export class ApiError extends Error {
   constructor(message: string, readonly status: number, readonly detail?: unknown) {
     super(message);

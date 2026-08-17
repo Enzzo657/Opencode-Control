@@ -8,6 +8,7 @@ from types import SimpleNamespace
 import pytest
 
 import opencode_control.cli as cli_module
+from opencode_control.access import AccessTokenError, load_or_create_access_token
 from opencode_control.cli import _build_parser, main
 from opencode_control.config import ControlConfig
 from opencode_control.store import ControlStore
@@ -39,6 +40,40 @@ def test_prepare_data_creates_private_control_directory(tmp_path: Path) -> None:
 
     assert data_dir.is_dir()
     assert data_dir.stat().st_mode & 0o777 == 0o700
+
+
+def test_runtime_access_token_is_private_and_stable(tmp_path: Path) -> None:
+    data_dir = tmp_path / "control"
+    cli_module._prepare_data(ControlConfig(data_dir=data_dir))
+
+    first = load_or_create_access_token(data_dir)
+    second = load_or_create_access_token(data_dir)
+
+    assert first == second
+    assert len(first) >= 43
+    assert (data_dir / "access-token").stat().st_mode & 0o777 == 0o600
+
+
+def test_runtime_access_token_rejects_symlink(tmp_path: Path) -> None:
+    data_dir = tmp_path / "control"
+    cli_module._prepare_data(ControlConfig(data_dir=data_dir))
+    outside = tmp_path / "outside-token"
+    outside.write_text("x" * 43)
+    (data_dir / "access-token").symlink_to(outside)
+
+    with pytest.raises(AccessTokenError, match="could not open"):
+        load_or_create_access_token(data_dir)
+
+
+def test_browser_access_token_stays_in_url_fragment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    opened: list[str] = []
+    monkeypatch.setattr("webbrowser.open", opened.append)
+
+    cli_module._open_browser("127.0.0.1", 8765, "secret_value")
+
+    assert opened == ["http://127.0.0.1:8765/#access_token=secret_value"]
 
 
 @pytest.mark.parametrize("unsafe_kind", ["file", "symlink"])

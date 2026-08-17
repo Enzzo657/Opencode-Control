@@ -47,10 +47,11 @@ def _client(tmp_path: Path) -> TestClient:
             '#!/bin/sh\nif [ "$1" = "--version" ]; then echo 1.18.5; else echo "{}"; fi\n'
         )
         os.chmod(binary, 0o700)
+    app = create_app(
+        ControlConfig(data_dir=tmp_path / "data", opencode_binary=str(binary))
+    )
     return TestClient(
-        create_app(
-            ControlConfig(data_dir=tmp_path / "data", opencode_binary=str(binary))
-        )
+        app, headers={"Authorization": f"Bearer {app.state.control.access_token}"}
     )
 
 
@@ -153,6 +154,31 @@ def test_control_branding_and_browser_session_cookie(tmp_path: Path) -> None:
         assert "control_session=" in session.headers["set-cookie"]
 
 
+def test_runtime_access_token_guards_api_and_authorizes_browser(tmp_path: Path) -> None:
+    app = create_app(ControlConfig(data_dir=tmp_path / "data"))
+    token = app.state.control.access_token
+    with TestClient(app) as client:
+        assert client.get("/api/v1/health").status_code == 200
+        rejected = client.get("/api/v1/projects")
+        assert rejected.status_code == 401
+        assert rejected.json()["detail"]["code"] == "access_required"
+        invalid = client.post(
+            "/api/v1/access", headers={"Authorization": "Bearer bad"}
+        )
+        assert invalid.status_code == 403
+
+        authorized = client.post(
+            "/api/v1/access", headers={"Authorization": f"Bearer {token}"}
+        )
+        assert authorized.status_code == 204
+        cookie = authorized.headers["set-cookie"]
+        assert "control_access=" in cookie
+        assert "HttpOnly" in cookie
+        assert "SameSite=strict" in cookie
+        assert client.get("/api/v1/access").json() == {"authenticated": True}
+        assert client.get("/api/v1/projects").status_code == 200
+
+
 def test_upstream_not_found_stays_not_found(tmp_path: Path) -> None:
     app = create_app(ControlConfig(data_dir=tmp_path / "data"))
     handler = app.exception_handlers[OpenCodeError]
@@ -226,7 +252,9 @@ def test_managed_server_start_and_stop_persist_restore_preference(
     root.mkdir()
     app = create_app(ControlConfig(data_dir=tmp_path / "data"))
 
-    with TestClient(app) as client:
+    with TestClient(
+        app, headers={"Authorization": f"Bearer {app.state.control.access_token}"}
+    ) as client:
         project_id = _project(client, root)["id"]
         started = client.post(
             f"/api/v1/projects/{project_id}/server/start", headers=_csrf(client)

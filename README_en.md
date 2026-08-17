@@ -87,8 +87,6 @@ editing, and local analytics.
   <strong>Event Center and responsive mobile UI</strong>
 </p>
 
-Screenshots use an isolated demo dataset. They contain no real paths, credentials, or user history.
-
 ## Architecture
 
 ```mermaid
@@ -189,6 +187,8 @@ byte-for-byte.
 
 Secrets are plaintext files with mode `0600`. Their values are never returned through the
 browser API; configuration uses `{file:...}` or `{env:...}` references.
+The runtime access token is also stored locally with mode `0600`, reaches the browser only
+through a URL fragment, and remains in an `HttpOnly` cookie after authorization.
 
 ### Search and Artifacts
 
@@ -217,6 +217,7 @@ symlinks, hard links, and mismatched file signatures are rejected.
 ## Security and Data
 
 - The HTTP server accepts loopback host, client, and origin only.
+- A runtime access token grants API access only to a browser opened through the CLI.
 - Write APIs require a browser session and CSRF token.
 - Managed OpenCode servers use a random password and are not exposed as a shared backend.
 - Project files use descriptor-relative operations guarded by root identity checks.
@@ -246,14 +247,12 @@ Back up project resources and global OpenCode configuration separately.
 ## Alpha Limitations
 
 - macOS and Linux are supported; Windows is not supported yet.
-- The API is local-only; a separate runtime access token is planned before public release.
+- The API is local-only and protected by a dedicated runtime access token.
 - Secrets rely on filesystem permissions and are not encrypted or stored in an OS keychain.
 - Exactly-once dispatch is impossible without an idempotency key in the OpenCode API.
 - Plugins Manager is deferred because plugins are executable JS/TS and need a separate security model.
 - There are no system desktop notifications; events stay inside Control.
 - The current alpha is installed from a cloned repository.
-
-See [PRODUCT_ROADMAP.md](PRODUCT_ROADMAP.md) for the current plan.
 
 ## Development
 

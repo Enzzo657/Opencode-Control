@@ -11,6 +11,7 @@ import subprocess
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from collections.abc import Iterator
 from contextlib import contextmanager, suppress
@@ -20,6 +21,11 @@ from typing import Any
 
 import uvicorn
 
+from opencode_control.access import (
+    ACCESS_TOKEN_FILE,
+    AccessTokenError,
+    load_or_create_access_token,
+)
 from opencode_control.app import create_app
 from opencode_control.config import ControlConfig
 from opencode_control.log_rotation import LogRotationError, rotate_log
@@ -75,12 +81,14 @@ def main(argv: list[str] | None = None) -> None:
         _remember_running_servers(config, arguments.host, arguments.port)
         _stop(pid_path, "OpenCode Control", "opencode_control.cli", quiet=True)
     _prepare_data(config)
+    access_token = load_or_create_access_token(config.data_dir)
     _start_background(
         arguments.host,
         arguments.port,
         not arguments.no_open,
         pid_path,
         log_path,
+        access_token,
     )
 
 
@@ -249,6 +257,7 @@ def _control_data_purge_plan(path: Path) -> tuple[list[Path], list[Path]]:
         "control.log.3",
         "managed-processes.json",
         "managed-processes.tmp",
+        ACCESS_TOKEN_FILE,
     }
     files: list[Path] = []
     directories: list[Path] = []
@@ -306,11 +315,14 @@ def _runtime_paths(config: ControlConfig) -> tuple[Path, Path]:
 
 def _remember_running_servers(config: ControlConfig, host: str, port: int) -> None:
     try:
-        with urllib.request.urlopen(
-            f"{_endpoint(host, port)}/api/v1/projects", timeout=1
-        ) as response:
+        token = load_or_create_access_token(config.data_dir)
+        request = urllib.request.Request(
+            f"{_endpoint(host, port)}/api/v1/projects",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        with urllib.request.urlopen(request, timeout=1) as response:
             projects = json.load(response)
-    except (OSError, ValueError, urllib.error.URLError):
+    except (AccessTokenError, OSError, ValueError, urllib.error.URLError):
         return
     if not isinstance(projects, list):
         return
@@ -415,13 +427,14 @@ def _start_background(
     open_browser: bool,
     pid_path: Path,
     log_path: Path,
+    access_token: str,
 ) -> None:
     with _exclusive_lock(pid_path.with_name("control.start.lock")):
         current = _read_pid(pid_path)
         if current and _is_managed_process(current, "opencode_control.cli"):
             print(f"OpenCode Control is already running (PID {current})")
             if open_browser:
-                _open_browser(host, port)
+                _open_browser(host, port, access_token)
             return
         with suppress(FileNotFoundError):
             pid_path.unlink()
@@ -463,7 +476,7 @@ def _start_background(
                 ) as response:
                     if response.status == 200:
                         if open_browser:
-                            _open_browser(host, port)
+                            _open_browser(host, port, access_token)
                         print(
                             f"OpenCode Control running in background (PID {process.pid}) "
                             f"at {endpoint}"
@@ -561,10 +574,11 @@ def _endpoint(host: str, port: int) -> str:
     return f"http://{browser_host}:{port}"
 
 
-def _open_browser(host: str, port: int) -> None:
+def _open_browser(host: str, port: int, access_token: str) -> None:
     import webbrowser
 
-    webbrowser.open(_endpoint(host, port))
+    fragment = urllib.parse.urlencode({"access_token": access_token})
+    webbrowser.open(f"{_endpoint(host, port)}/#{fragment}")
 
 
 if __name__ == "__main__":

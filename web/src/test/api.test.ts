@@ -1,8 +1,32 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { ApiError, api } from "../api";
+import { ApiError, api, bootstrapAccess } from "../api";
 
 describe("api", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    history.replaceState({}, "", "/");
+  });
+
+  it("exchanges a fragment token for an HttpOnly browser session", async () => {
+    history.replaceState({}, "", "/#access_token=runtime-secret");
+    const calls: Array<{ path: string; authorization: string | null; method: string }> = [];
+    vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({
+        path: String(input),
+        authorization: new Headers(init?.headers).get("Authorization"),
+        method: init?.method ?? "GET",
+      });
+      return new Response(null, { status: init?.method === "POST" ? 204 : 200 });
+    }));
+
+    await expect(bootstrapAccess()).resolves.toBe(true);
+
+    expect(location.hash).toBe("");
+    expect(calls).toEqual([
+      { path: "/api/v1/access", authorization: "Bearer runtime-secret", method: "POST" },
+      { path: "/api/v1/access", authorization: null, method: "GET" },
+    ]);
+  });
 
   it("preserves an HTTP status on API errors", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(

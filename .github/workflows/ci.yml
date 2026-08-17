@@ -1,0 +1,106 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - run: uv sync --extra dev --frozen
+      - run: uv run ruff check src tests
+      - run: uv run mypy
+      - run: uv run pytest -q
+
+  frontend:
+    name: Frontend
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run typecheck
+      - run: npm run test
+      - run: npm run build
+
+  clean-wheel-smoke:
+    name: Clean wheel smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    env:
+      OPENCODE_CONTROL_HOME: ${{ runner.temp }}/opencode-control
+      UV_TOOL_DIR: ${{ runner.temp }}/uv-tools
+      UV_TOOL_BIN_DIR: ${{ runner.temp }}/bin
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          python-version: "3.12"
+          enable-cache: true
+      - name: Build frontend
+        working-directory: web
+        run: npm ci && npm run build
+      - name: Build and install wheel
+        shell: bash
+        run: |
+          uv build --wheel
+          wheels=(dist/opencode_control-*.whl)
+          test "${#wheels[@]}" = "1"
+          uv tool install --force "${wheels[0]}"
+      - name: Start, authenticate, and smoke test
+        shell: bash
+        run: |
+          control="$UV_TOOL_BIN_DIR/opencode-control"
+          cleanup() {
+            "$control" stop || true
+          }
+          trap cleanup EXIT
+
+          "$control" start --no-open
+          curl --fail --silent --show-error http://127.0.0.1:8765/api/v1/health
+          curl --fail --silent --show-error http://127.0.0.1:8765/
+          curl --fail --silent --show-error http://127.0.0.1:8765/favicon.svg
+
+          status="$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8765/api/v1/projects)"
+          test "$status" = "401"
+
+          token="$(<"$OPENCODE_CONTROL_HOME/access-token")"
+          curl --fail --silent --show-error \
+            --request POST \
+            --header "Authorization: Bearer $token" \
+            --cookie-jar "$RUNNER_TEMP/control-cookies" \
+            http://127.0.0.1:8765/api/v1/access
+          curl --fail --silent --show-error \
+            --cookie "$RUNNER_TEMP/control-cookies" \
+            http://127.0.0.1:8765/api/v1/projects
