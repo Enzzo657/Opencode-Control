@@ -980,6 +980,10 @@ class ControlStore:
         next_run_at: str | None,
         prompt: str | None = None,
         mentions: list[str] | None = None,
+        update_execution: bool = False,
+        agent: str | None = None,
+        model: str | None = None,
+        variant: str | None = None,
     ) -> dict[str, Any] | None:
         with self._lock, self._connection:
             row = self._connection.execute(
@@ -999,6 +1003,9 @@ class ControlStore:
                 UPDATE tasks SET cron = ?, timezone = ?, schedule_enabled = ?,
                     cron_session_mode = COALESCE(?, cron_session_mode), next_run_at = ?,
                     prompt = COALESCE(?, prompt), mentions = COALESCE(?, mentions),
+                    agent = CASE WHEN ? THEN ? ELSE agent END,
+                    model = CASE WHEN ? THEN ? ELSE model END,
+                    variant = CASE WHEN ? THEN ? ELSE variant END,
                     schedule_revision = schedule_revision + 1, status = ?, updated_at = ?
                 WHERE project_id = ? AND id = ?
                 """,
@@ -1010,6 +1017,12 @@ class ControlStore:
                     next_run_at,
                     prompt,
                     json.dumps(mentions, ensure_ascii=False) if mentions is not None else None,
+                    int(update_execution),
+                    agent,
+                    int(update_execution),
+                    model,
+                    int(update_execution),
+                    variant,
                     status,
                     _now(),
                     project_id,
@@ -1245,13 +1258,15 @@ class ControlStore:
             ).fetchone()
         return dict(row) if row else None
 
-    def reopen_failed_scheduled_run(self, project_id: str, session_id: str) -> str | None:
+    def complete_interrupted_scheduled_run(
+        self, project_id: str, session_id: str
+    ) -> str | None:
         timestamp = _now()
         with self._lock, self._connection:
             run = self._connection.execute(
                 """
                 SELECT * FROM scheduled_runs
-                WHERE project_id = ? AND session_id = ? AND status = 'failed'
+                WHERE project_id = ? AND session_id = ? AND status IN ('failed', 'stalled')
                 ORDER BY updated_at DESC, id DESC LIMIT 1
                 """,
                 (project_id, session_id),
@@ -1261,26 +1276,57 @@ class ControlStore:
             run_id = str(run["id"])
             self._connection.execute(
                 """
-                UPDATE scheduled_runs SET status = 'running', error = NULL,
-                    lease_token = NULL, lease_expires_at = NULL, finished_at = NULL,
-                    updated_at = ? WHERE id = ?
+                UPDATE scheduled_runs SET status = 'completed', error = NULL,
+                    lease_token = NULL, lease_expires_at = NULL, finished_at = ?,
+                    updated_at = ? WHERE id = ? AND status IN ('failed', 'stalled')
                 """,
-                (timestamp, run_id),
+                (timestamp, timestamp, run_id),
             )
-            self._connection.execute(
+            other_active = self._connection.execute(
                 """
-                UPDATE tasks SET status = 'running', error = NULL, updated_at = ?
-                WHERE project_id = ? AND id = ?
+                SELECT 1 FROM scheduled_runs
+                WHERE project_id = ? AND task_id = ? AND id != ?
+                    AND status IN (
+                        'claimed', 'creating_session', 'session_created', 'running', 'ambiguous'
+                    )
+                LIMIT 1
                 """,
-                (timestamp, project_id, run["task_id"]),
-            )
+                (project_id, run["task_id"], run_id),
+            ).fetchone()
+            if other_active is None:
+                self._connection.execute(
+                    """
+                    UPDATE tasks SET status = CASE WHEN schedule_enabled = 1
+                        THEN 'scheduled' ELSE 'paused' END,
+                        error = NULL, updated_at = ? WHERE project_id = ? AND id = ?
+                    """,
+                    (timestamp, project_id, run["task_id"]),
+                )
             self._connection.execute(
                 """
                 UPDATE control_events SET read_at = COALESCE(read_at, ?)
-                WHERE run_id = ? AND kind = 'scheduled_run_failed'
+                WHERE run_id = ? AND kind IN ('scheduled_run_failed', 'scheduled_run_stalled')
                 """,
                 (timestamp, run_id),
             )
+            task = self._connection.execute(
+                "SELECT title FROM tasks WHERE project_id = ? AND id = ?",
+                (project_id, run["task_id"]),
+            ).fetchone()
+            if task is not None:
+                self._record_event_locked(
+                    dedupe_key=f"run:{run_id}:completed",
+                    project_id=project_id,
+                    kind="scheduled_run_completed",
+                    severity="info",
+                    resource_title=str(task["title"]),
+                    detail=None,
+                    task_id=str(run["task_id"]),
+                    session_id=session_id,
+                    run_id=run_id,
+                    occurred_at=timestamp,
+                    unread=False,
+                )
         return run_id
 
     def list_scheduled_runs(
@@ -1414,7 +1460,14 @@ class ControlStore:
         return True
 
     def finish_scheduled_run(self, run_id: str, status: str, error: str | None = None) -> bool:
-        if status not in {"completed", "failed", "skipped", "cancelled", "aborted"}:
+        if status not in {
+            "completed",
+            "failed",
+            "stalled",
+            "skipped",
+            "cancelled",
+            "aborted",
+        }:
             raise ValueError(f"invalid scheduled run status: {status}")
         timestamp = _now()
         with self._lock, self._connection:
@@ -1424,6 +1477,7 @@ class ControlStore:
             if run is None or run["status"] in {
                 "completed",
                 "failed",
+                "stalled",
                 "skipped",
                 "cancelled",
                 "aborted",
@@ -1461,18 +1515,23 @@ class ControlStore:
                 (run["project_id"], run["task_id"]),
             ).fetchone()
             if task is not None:
+                severity = (
+                    "error"
+                    if status == "failed"
+                    else "warning" if status == "stalled" else "info"
+                )
                 self._record_event_locked(
                     dedupe_key=f"run:{run_id}:{status}",
                     project_id=str(run["project_id"]),
                     kind=f"scheduled_run_{status}",
-                    severity="error" if status == "failed" else "info",
+                    severity=severity,
                     resource_title=str(task["title"]),
                     detail=error,
                     task_id=str(run["task_id"]),
                     session_id=str(run["session_id"]) if run["session_id"] else None,
                     run_id=run_id,
                     occurred_at=timestamp,
-                    unread=status == "failed",
+                    unread=status in {"failed", "stalled"},
                 )
         return True
 

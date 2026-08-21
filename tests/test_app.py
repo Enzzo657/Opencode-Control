@@ -1897,6 +1897,9 @@ def test_scheduled_task_can_be_paused_and_resumed(
                 "enabled": True,
                 "prompt": "@general Prepare a revised report",
                 "mentions": ["general"],
+                "agent": "build",
+                "model": "ollama-cloud/deepseek-v4-flash",
+                "variant": "high",
             },
         )
         assert scheduled_again.status_code == 200
@@ -1905,6 +1908,9 @@ def test_scheduled_task_can_be_paused_and_resumed(
         assert scheduled_again.json()["cron_session_mode"] == "reuse"
         assert scheduled_again.json()["prompt"] == "@general Prepare a revised report"
         assert scheduled_again.json()["mentions"] == ["general"]
+        assert scheduled_again.json()["agent"] == "build"
+        assert scheduled_again.json()["model"] == "ollama-cloud/deepseek-v4-flash"
+        assert scheduled_again.json()["variant"] == "high"
         assert scheduled_again.json()["status"] == "scheduled"
         assert scheduled_again.json()["next_run_at"]
 
@@ -1926,9 +1932,9 @@ def test_scheduled_task_can_be_paused_and_resumed(
         assert persisted is not None
         assert persisted["prompt"] == "@general Prepare a revised report"
         assert persisted["mentions"] == ["general"]
-        assert persisted["agent"] is None
-        assert persisted["model"] is None
-        assert persisted["variant"] is None
+        assert persisted["agent"] == "build"
+        assert persisted["model"] == "ollama-cloud/deepseek-v4-flash"
+        assert persisted["variant"] == "high"
 
         bad_timezone = client.patch(
             f"/api/v1/projects/{project_id}/tasks/{task['id']}/schedule",

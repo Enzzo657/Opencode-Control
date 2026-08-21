@@ -488,9 +488,9 @@ def test_failed_scheduled_run_can_complete_after_manual_continuation(tmp_path: P
     assert store.mark_scheduled_run_running(run_id, "owner")
     assert store.finish_scheduled_run(run_id, "failed", "server unavailable")
 
-    assert store.reopen_failed_scheduled_run(project_id, "ses_recovered") == run_id
-    assert store.get_scheduled_run(run_id)["status"] == "running"
-    assert store.finish_scheduled_run(run_id, "completed")
+    assert store.complete_interrupted_scheduled_run(project_id, "ses_recovered") == run_id
+    assert store.get_scheduled_run(run_id)["status"] == "completed"
+    assert store.complete_interrupted_scheduled_run(project_id, "ses_recovered") is None
 
     recovered = store.session_task(project_id, "ses_recovered")
     assert recovered is not None
@@ -503,6 +503,53 @@ def test_failed_scheduled_run_can_complete_after_manual_continuation(tmp_path: P
     ]
     assert len(failed_events) == 1
     assert failed_events[0]["read_at"] is not None
+    store.close()
+
+
+def test_stalled_run_does_not_block_next_schedule_and_can_complete_late(
+    tmp_path: Path,
+) -> None:
+    store = ControlStore(tmp_path / "data")
+    project_id, task_id = _scheduled_task(store, tmp_path)
+    first = store.materialize_scheduled_run(
+        project_id,
+        task_id,
+        expected_run_at="2026-07-27T09:00:00+00:00",
+        next_run_at="2026-07-28T09:00:00+00:00",
+        created_at="2026-07-27T09:00:01+00:00",
+    )
+    assert first is not None
+    first_id = str(first["id"])
+    assert store.claim_scheduled_run(
+        first_id,
+        lease_token="owner",
+        lease_expires_at="2026-07-27T09:02:00+00:00",
+        claimed_at="2026-07-27T09:00:02+00:00",
+    )
+    assert store.attach_scheduled_run_session(first_id, "owner", "ses_stalled")
+    assert store.mark_scheduled_run_running(first_id, "owner")
+    assert store.finish_scheduled_run(first_id, "stalled", "no message progress")
+    assert not store.has_active_scheduled_run(project_id, task_id)
+
+    second = store.materialize_scheduled_run(
+        project_id,
+        task_id,
+        expected_run_at="2026-07-28T09:00:00+00:00",
+        next_run_at="2026-07-29T09:00:00+00:00",
+        created_at="2026-07-28T09:00:01+00:00",
+    )
+    assert second is not None
+    assert second["status"] == "pending"
+
+    assert store.complete_interrupted_scheduled_run(project_id, "ses_stalled") == first_id
+    assert store.get_scheduled_run(first_id)["status"] == "completed"
+    stalled_events = [
+        item
+        for item in store.list_events(project_id=project_id)["events"]
+        if item["kind"] == "scheduled_run_stalled"
+    ]
+    assert len(stalled_events) == 1
+    assert stalled_events[0]["read_at"] is not None
     store.close()
 
 

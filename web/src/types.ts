@@ -310,7 +310,7 @@ export type Task = {
   last_scheduled_run?: {
     id: string;
     scheduled_for: string;
-    status: "pending" | "claimed" | "session_created" | "running" | "ambiguous" | "completed" | "failed" | "skipped" | "cancelled" | "aborted";
+    status: "pending" | "claimed" | "session_created" | "running" | "ambiguous" | "completed" | "failed" | "stalled" | "skipped" | "cancelled" | "aborted";
     attempt_count: number;
     session_id: string | null;
     error: string | null;

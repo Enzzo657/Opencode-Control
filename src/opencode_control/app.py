@@ -205,6 +205,9 @@ class TaskScheduleUpdate(StrictModel):
     cron: str | None = Field(default=None, min_length=9, max_length=100)
     timezone: str | None = Field(default=None, min_length=1, max_length=100)
     cron_session_mode: Literal["new", "reuse"] | None = None
+    agent: str | None = Field(default=None, max_length=128)
+    model: str | None = Field(default=None, max_length=256)
+    variant: str | None = Field(default=None, max_length=128)
 
     @model_validator(mode="after")
     def validate_schedule(self) -> TaskScheduleUpdate:
@@ -1484,7 +1487,14 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
 
     def reconcile_scheduled_runs() -> None:
         logger = logging.getLogger("uvicorn.error")
-        active_states = {"busy", "dispatching", "in_progress", "pending", "queued", "running"}
+        active_states = {
+            "busy",
+            "dispatching",
+            "in_progress",
+            "pending",
+            "queued",
+            "running",
+        }
         now = datetime.now(UTC)
         for run in state.store.active_scheduled_runs():
             project_id = str(run["project_id"])
@@ -1510,6 +1520,14 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             value = status.get("type") or status.get("status") if isinstance(status, dict) else None
             if value in active_states:
                 state.store.reconcile_scheduled_run_running(str(run["id"]))
+                continue
+            if value == "stalled":
+                detail = status.get("error") if isinstance(status, dict) else None
+                state.store.finish_scheduled_run(
+                    str(run["id"]),
+                    "stalled",
+                    str(detail or "OpenCode session has no message progress"),
+                )
                 continue
             if value in {"error", "failed"}:
                 failure = status.get("error") if isinstance(status, dict) else None
@@ -2774,6 +2792,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     "pending",
                     "queued",
                     "running",
+                    "stalled",
                 }
                 for session_id, raw_status in statuses.items():
                     if not isinstance(session_id, str) or not isinstance(raw_status, dict):
@@ -3020,9 +3039,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             messages, task.get("session_updated_at")
         )
         if recovered:
-            run_id = state.store.reopen_failed_scheduled_run(project_id, session_id)
+            run_id = state.store.complete_interrupted_scheduled_run(project_id, session_id)
             if run_id is not None:
-                state.store.finish_scheduled_run(run_id, "completed")
                 task = state.store.session_task(project_id, session_id)
                 invalidate_dashboard_cache(project_id)
         if (
@@ -3186,8 +3204,6 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         task = state.store.task_for_session(project_id, session_id)
         if task is not None:
             scheduled = bool(task.get("cron"))
-            if scheduled:
-                state.store.reopen_failed_scheduled_run(project_id, session_id)
             state.store.record_task_prompt(
                 project_id,
                 str(task["id"]),
@@ -3210,13 +3226,13 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         assert client is not None
         client.request("POST", f"/session/{_segment(session_id)}/abort", body={})
         task = state.store.task_for_session(project_id, session_id)
-        if task is not None and task["status"] in {"queued", "dispatching", "running"}:
+        if task is not None:
             run = state.store.active_scheduled_run_for_task(
                 project_id, str(task["id"]), session_id=session_id
             )
             if run is not None:
                 state.store.finish_scheduled_run(str(run["id"]), "aborted")
-            else:
+            elif task["status"] in {"queued", "dispatching", "running"}:
                 state.store.update_task(project_id, str(task["id"]), status="aborted")
         return {"aborted": True}
 
@@ -3264,7 +3280,15 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             item.get("id") for item in sessions if isinstance(item, dict)
         }
         now = datetime.now(UTC)
-        active_states = {"busy", "dispatching", "in_progress", "pending", "queued", "running"}
+        active_states = {
+            "busy",
+            "dispatching",
+            "in_progress",
+            "pending",
+            "queued",
+            "running",
+            "stalled",
+        }
         for task in running:
             session_id = task.get("session_id")
             if not isinstance(session_id, str):
@@ -3367,6 +3391,12 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 next_run_at=None,
                 prompt=payload.prompt,
                 mentions=payload.mentions,
+                update_execution=bool(
+                    {"agent", "model", "variant"} & payload.model_fields_set
+                ),
+                agent=payload.agent,
+                model=payload.model,
+                variant=payload.variant,
             )
             assert updated is not None
             return updated
@@ -3383,6 +3413,12 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 next_run_at=(_next_cron_run(payload.cron, payload.timezone) if enabled else None),
                 prompt=payload.prompt,
                 mentions=payload.mentions,
+                update_execution=bool(
+                    {"agent", "model", "variant"} & payload.model_fields_set
+                ),
+                agent=payload.agent,
+                model=payload.model,
+                variant=payload.variant,
             )
             assert updated is not None
             return updated

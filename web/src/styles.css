@@ -160,6 +160,7 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .event-icon { width: 34px; height: 34px; display: grid; place-items: center; color: var(--muted); background: var(--surface-2); border: 1px solid var(--line); border-radius: 9px; }
 .event-icon svg { width: 15px; height: 15px; }
 .event-icon.error { color: var(--danger); background: color-mix(in srgb, var(--danger) 9%, var(--surface-2)); border-color: color-mix(in srgb, var(--danger) 30%, var(--line)); }
+.event-icon.warning { color: var(--accent); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 32%, var(--line)); }
 .event-icon.action { color: var(--accent-2); background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 32%, var(--line)); }
 .event-icon.info { color: var(--green); }
 .event-row > span:nth-child(2) { min-width: 0; }
@@ -304,6 +305,8 @@ button:disabled { cursor: not-allowed; opacity: .5; }
 .status[data-status="running"] i, .status[data-status="busy"] i, .status[data-status="in_progress"] i, .status[data-status="queued"] i, .status[data-status="pending"] i, .status[data-status="retry"] i { background: var(--accent); }
 .status[data-status="failed"], .status[data-status="aborted"] { color: var(--danger); }
 .status[data-status="failed"] i, .status[data-status="aborted"] i { background: var(--danger); }
+.status[data-status="stalled"] { color: var(--accent); }
+.status[data-status="stalled"] i { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 .status[data-status="idle"] { color: var(--green); }
 .status[data-status="idle"] i { background: var(--green); box-shadow: 0 0 0 3px color-mix(in srgb, var(--green) 10%, transparent); }
 

@@ -180,18 +180,60 @@ class OpenCodeClient:
             for session_id, status in _statuses(raw["statuses"]).items()
             if session_id in session_ids
         }
+        observed_at = time.time() * 1000
+        sessions_by_id = {str(item["id"]): item for item in sessions}
+        checked_stale: set[str] = set()
+        active_states = {"busy", "dispatching", "in_progress", "pending", "queued", "running"}
+        for session_id, status in list(statuses.items()):
+            session = sessions_by_id.get(session_id)
+            raw_time = session.get("time") if isinstance(session, dict) else None
+            updated_at = raw_time.get("updated") if isinstance(raw_time, dict) else None
+            value = status.get("type") or status.get("status")
+            if (
+                value not in active_states
+                or not isinstance(updated_at, (int, float))
+                or observed_at - float(updated_at) <= _STATUSLESS_ACTIVE_TTL_MS
+            ):
+                continue
+            try:
+                latest = self.request(
+                    "GET",
+                    f"/session/{_segment(session_id)}/message",
+                    query={"limit": 1},
+                    max_response_bytes=1024 * 1024,
+                )
+            except OpenCodeError:
+                continue
+            checked_stale.add(session_id)
+            message_status, message_error = _latest_message_status(latest)
+            if message_status == "busy":
+                if _latest_message_has_active_tool(latest):
+                    continue
+                statuses[session_id] = {
+                    "type": "stalled",
+                    "status": None,
+                    "error": "OpenCode session has no message progress for more than 15 minutes",
+                }
+            elif message_status == "failed":
+                statuses[session_id] = {
+                    "type": "failed",
+                    "status": None,
+                    "error": message_error or "OpenCode session failed",
+                }
+            else:
+                statuses.pop(session_id, None)
         statusless = sorted(
             (
                 item
                 for item in sessions
                 if item["id"] not in statuses
+                and item["id"] not in checked_stale
                 and isinstance(item.get("time"), dict)
                 and isinstance(item["time"].get("updated"), (int, float))
             ),
             key=lambda item: item["time"]["updated"],
             reverse=True,
         )
-        observed_at = time.time() * 1000
         for session in statusless[:5]:
             try:
                 latest = self.request(
@@ -211,7 +253,16 @@ class OpenCodeClient:
                 }
             elif message_status == "busy":
                 updated_at = float(session["time"]["updated"])
-                if observed_at - updated_at <= _STATUSLESS_ACTIVE_TTL_MS:
+                stale = observed_at - updated_at > _STATUSLESS_ACTIVE_TTL_MS
+                if stale and not _latest_message_has_active_tool(latest):
+                    statuses[str(session["id"])] = {
+                        "type": "stalled",
+                        "status": None,
+                        "error": (
+                            "OpenCode session has no message progress for more than 15 minutes"
+                        ),
+                    }
+                else:
                     statuses[str(session["id"])] = {"type": "busy", "status": None}
         return {
             "state": "connected" if not errors else "degraded",
@@ -590,6 +641,21 @@ def _latest_message_status(raw: Any) -> tuple[str | None, str]:
     if isinstance(message_time, dict) and isinstance(message_time.get("created"), (int, float)):
         return "busy", ""
     return None, ""
+
+
+def _latest_message_has_active_tool(raw: Any) -> bool:
+    if not isinstance(raw, list) or not raw:
+        return False
+    entry = raw[-1]
+    if not isinstance(entry, dict) or not isinstance(entry.get("parts"), list):
+        return False
+    for part in entry["parts"]:
+        if not isinstance(part, dict) or part.get("type") != "tool":
+            continue
+        state = part.get("state")
+        if isinstance(state, dict) and state.get("status") in {"pending", "running"}:
+            return True
+    return False
 
 
 def _messages(raw: Any) -> list[dict[str, Any]]:

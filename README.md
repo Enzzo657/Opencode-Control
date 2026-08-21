@@ -277,3 +277,5 @@ npm run build --prefix web
 ## Лицензия
 
 [MIT](LICENSE)
+
+История выпусков: [CHANGELOG.md](CHANGELOG.md).

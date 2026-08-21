@@ -824,7 +824,52 @@ def test_snapshot_derives_busy_status_from_external_session_messages(
     assert ("/session/ses_done/message", {"limit": 1}) in calls
 
 
-def test_snapshot_ignores_stale_unfinished_messages_but_preserves_errors(
+def test_snapshot_reclassifies_stale_explicit_busy_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
+    monkeypatch.setattr("opencode_control.opencode_client.time.time", lambda: 2_000.0)
+    fixtures: dict[str, Any] = {
+        "/global/health": {"healthy": True},
+        "/session": [
+            {
+                "id": "ses_stale",
+                "directory": "/tmp/project",
+                "time": {"updated": 1_000},
+            }
+        ],
+        "/session/status": {"ses_stale": {"type": "busy"}},
+        "/agent": [],
+        "/mcp": {},
+        "/provider": {},
+        "/config": {},
+        "/session/ses_stale/message": [
+            {
+                "info": {
+                    "id": "msg_user",
+                    "role": "user",
+                    "time": {"created": 1_000},
+                },
+                "parts": [{"type": "text", "text": "Continue"}],
+            }
+        ],
+    }
+
+    def fake_request(method: str, path: str, **kwargs: Any) -> Any:
+        return fixtures[path]
+
+    monkeypatch.setattr(client, "request", fake_request)
+
+    assert client.snapshot()["statuses"] == {
+        "ses_stale": {
+            "type": "stalled",
+            "status": None,
+            "error": "OpenCode session has no message progress for more than 15 minutes",
+        }
+    }
+
+
+def test_snapshot_marks_stale_unfinished_messages_but_preserves_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
@@ -876,5 +921,43 @@ def test_snapshot_ignores_stale_unfinished_messages_but_preserves_errors(
             "type": "failed",
             "status": None,
             "error": "token limit exhausted",
-        }
+        },
+        "ses_stale": {
+            "type": "stalled",
+            "status": None,
+            "error": "OpenCode session has no message progress for more than 15 minutes",
+        },
+    }
+
+
+def test_snapshot_keeps_old_running_tool_busy(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
+    monkeypatch.setattr("opencode_control.opencode_client.time.time", lambda: 2_000.0)
+    fixtures: dict[str, Any] = {
+        "/global/health": {"healthy": True},
+        "/session": [
+            {
+                "id": "ses_tool",
+                "directory": "/tmp/project",
+                "time": {"updated": 1_000},
+            }
+        ],
+        "/session/status": {"ses_tool": {"type": "busy"}},
+        "/agent": [],
+        "/mcp": {},
+        "/provider": {},
+        "/config": {},
+        "/session/ses_tool/message": [
+            {
+                "info": {"role": "assistant", "time": {"created": 1_000}},
+                "parts": [
+                    {"type": "tool", "state": {"status": "running"}}
+                ],
+            }
+        ],
+    }
+    monkeypatch.setattr(client, "request", lambda method, path, **kwargs: fixtures[path])
+
+    assert client.snapshot()["statuses"] == {
+        "ses_tool": {"type": "busy", "status": None}
     }

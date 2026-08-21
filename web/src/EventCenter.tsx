@@ -12,6 +12,7 @@ const eventLabels: Record<string, TranslationKey> = {
   task_aborted: "events.kind.taskAborted",
   scheduled_run_completed: "events.kind.runCompleted",
   scheduled_run_failed: "events.kind.runFailed",
+  scheduled_run_stalled: "events.kind.runStalled",
   scheduled_run_aborted: "events.kind.runAborted",
   scheduled_run_cancelled: "events.kind.runCancelled",
   scheduled_run_skipped: "events.kind.runSkipped",
@@ -96,5 +97,6 @@ function EventIcon({ event }: { event: ControlEvent }) {
   if (event.kind === "permission_requested") return <span className="event-icon action"><ShieldAlert /></span>;
   if (event.kind.startsWith("server_")) return <span className={`event-icon ${event.severity}`}><Server /></span>;
   if (event.severity === "error") return <span className="event-icon error"><AlertTriangle /></span>;
+  if (event.severity === "warning") return <span className="event-icon warning"><AlertTriangle /></span>;
   return <span className="event-icon info"><CircleCheck /></span>;
 }
