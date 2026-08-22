@@ -78,6 +78,15 @@ def test_favicon_is_served_as_svg(tmp_path: Path) -> None:
     assert "#ff8a4c" in response.text
 
 
+def test_spa_shell_is_never_cached(tmp_path: Path) -> None:
+    with _client(tmp_path) as client:
+        response = client.get("/tasks")
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/html")
+    assert response.headers["cache-control"] == "no-store"
+
+
 def _project(client: TestClient, root: Path, *, endpoint: str | None = None) -> dict[str, Any]:
     response = client.post(
         "/api/v1/projects",

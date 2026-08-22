@@ -104,6 +104,7 @@ function ControlApp() {
   const [theme, setTheme] = useState(() => normalizeTheme(window.localStorage.getItem("control-theme")));
   const [refreshKey, setRefreshKey] = useState(0);
   const [sessionTarget, setSessionTarget] = useState<SessionTarget | null>(() => sessionTargetFromLocation());
+  const [loadedControlVersion, setLoadedControlVersion] = useState<string | null>(null);
   const controlHealth = useResource<{ healthy: boolean; version: string }>(
     "/api/v1/health",
     refreshKey,
@@ -140,6 +141,10 @@ function ControlApp() {
   useEffect(() => {
     if (activeId) window.localStorage.setItem("control-project", activeId);
   }, [activeId]);
+
+  useEffect(() => {
+    if (loadedControlVersion === null && controlHealth.data?.version) setLoadedControlVersion(controlHealth.data.version);
+  }, [controlHealth.data?.version, loadedControlVersion]);
 
   useEffect(() => {
     function popstate() {
@@ -209,6 +214,7 @@ function ControlApp() {
   }
 
   const project = projects.find((item) => item.id === activeId) ?? null;
+  const availableControlVersion = loadedControlVersion && controlHealth.data?.version !== loadedControlVersion ? controlHealth.data?.version : null;
 
   if (loading) return <FullState icon={<RefreshCw className="spin" />} title={t("app.starting")} detail={t("app.loading")} />;
   if (error && projects.length === 0) return <FullState icon={<CircleStop />} title={t("app.unavailable")} detail={error} />;
@@ -265,6 +271,8 @@ function ControlApp() {
           </div>
         </header>
 
+        {availableControlVersion && <div className="control-update-banner" role="status"><span>{t("app.updateAvailable", { current: loadedControlVersion ?? "—", next: availableControlVersion })}</span><button onClick={() => location.reload()}><RefreshCw size={14} /> {t("app.reload")}</button></div>}
+
         <div className="content">
           {project?.server.last_error && <details className="server-diagnostic"><summary>{project.server.last_error.summary}</summary><div><span>{t("app.phase", { phase: project.server.last_error.phase })}{project.server.last_error.exit_code != null ? ` · exit ${project.server.last_error.exit_code}` : ""}</span>{project.server.last_error.detail && <pre>{project.server.last_error.detail}</pre>}<code>{project.server.last_error.log_path}</code></div></details>}
           {!project ? (
@@ -290,10 +298,23 @@ function ScreenLoading() {
 class ViewErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
   state = { error: null as string | null };
   static getDerivedStateFromError(error: Error) { return { error: error.message || translate("app.unknownViewError") }; }
-  componentDidCatch(error: Error, info: ErrorInfo) { console.error("OpenCode Control view failed", error, info); }
+  componentDidCatch(error: Error, info: ErrorInfo) { if (prepareChunkReload(error)) { location.reload(); return; } console.error("OpenCode Control view failed", error, info); }
   render() {
     if (!this.state.error) return this.props.children;
     return <div className="view-error"><CircleStop /><h1>{translate("app.viewFailed")}</h1><p>{this.state.error}</p><button className="primary-button" onClick={() => location.reload()}><RefreshCw size={15} /> {translate("app.reload")}</button></div>;
+  }
+}
+
+export function prepareChunkReload(error: unknown, storage: Pick<Storage, "getItem" | "setItem"> = sessionStorage) {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (!/(Failed to fetch dynamically imported module|Importing a module script failed|error loading dynamically imported module|ChunkLoadError|Loading chunk .+ failed)/i.test(detail)) return false;
+  try {
+    const key = "control.chunk-reload";
+    if (storage.getItem(key) === detail) return false;
+    storage.setItem(key, detail);
+    return true;
+  } catch {
+    return false;
   }
 }
 

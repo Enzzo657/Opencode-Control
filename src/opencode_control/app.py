@@ -4398,7 +4398,9 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     "detail": "Frontend bundle is missing. Run npm run build --prefix web.",
                 }
             )
-        return FileResponse(index, media_type="text/html")
+        return FileResponse(
+            index, media_type="text/html", headers={"Cache-Control": "no-store"}
+        )
 
     return app
 

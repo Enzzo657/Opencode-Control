@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { App, contrastText, themes } from "../App";
+import { App, contrastText, prepareChunkReload, themes } from "../App";
 
 const project = {
   id: "prj_test",
@@ -51,7 +51,7 @@ describe("OpenCode Control", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/api/v1/projects")) return response([project]);
-      if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.2.3", projects: 1 });
+      if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.2.4", projects: 1 });
       if (path.includes("/api/v1/events") && (!init?.method || init.method === "GET")) return response({ events: [], unread: 0 });
       if (path.includes("/api/v1/events/") && init?.method === "POST") return response(path.endsWith("/read-all") ? { read: 0 } : { read: true });
       if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
@@ -97,7 +97,32 @@ describe("OpenCode Control", () => {
     expect(screen.getByText("Подключен")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Текущий проект.*Checkout API/ }));
     expect(screen.getAllByText("Подключен")).toHaveLength(2);
-    expect(screen.getByText("Control 0.2.3")).toBeInTheDocument();
+    expect(screen.getByText("Control 0.2.4")).toBeInTheDocument();
+  });
+
+  it("announces a backend update without interrupting the open interface", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    let healthCalls = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/api/v1/health")) return response({ healthy: true, version: healthCalls++ === 0 ? "0.2.3" : "0.2.4", projects: 1 });
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    expect(await screen.findByText("Control 0.2.3")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Обновить данные" }));
+    expect(await screen.findByText("Control обновлён: 0.2.3 → 0.2.4.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Обновить интерфейс" })).toBeInTheDocument();
+  });
+
+  it("reloads a failed dynamic import only once per chunk error", () => {
+    const values = new Map<string, string>();
+    const storage = { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => { values.set(key, value); } };
+    const chunkError = new TypeError("Failed to fetch dynamically imported module: http://127.0.0.1:8765/assets/Tasks-old.js");
+    expect(prepareChunkReload(chunkError, storage)).toBe(true);
+    expect(prepareChunkReload(chunkError, storage)).toBe(false);
+    expect(prepareChunkReload(new Error("server unavailable"), storage)).toBe(false);
+    expect(prepareChunkReload(new Error("Failed to fetch dynamically imported module: http://127.0.0.1:8765/assets/Tasks-new.js"), storage)).toBe(true);
   });
 
   it("opens unread events and deep-links to their session", async () => {

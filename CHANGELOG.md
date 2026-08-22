@@ -5,6 +5,19 @@ All notable changes to OpenCode Control are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/). The current release line is
 an alpha and may still change its local data model and API before `1.0.0`.
 
+## [0.2.4] - 2026-08-23
+
+### Fixed
+
+- Automatically reloads the interface once when an open tab requests a stale lazy-loaded
+  frontend chunk after a Control update.
+- Shows a non-disruptive update banner when the backend version changes while a tab is
+  open.
+- Prevents the SPA shell from being cached so a manual reload always receives current
+  asset hashes.
+- Clarifies that the view recovery action reloads the interface rather than restarting
+  the Control backend.
+
 ## [0.2.3] - 2026-08-23
 
 ### Fixed
@@ -103,3 +116,4 @@ First release checkpoint for the local-first alpha.
 [0.2.1]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.0...v0.2.1
 [0.2.2]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.1...v0.2.2
 [0.2.3]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.2...v0.2.3
+[0.2.4]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.3...v0.2.4
