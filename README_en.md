@@ -49,19 +49,19 @@ editing, and local analytics.
 | **Artifacts** | Images, PDF, CSV, JSON, Markdown, text, logs, and ZIP; preview, Finder, bulk archive, and system Trash |
 | **Git** | Status, diff, stage/unstage, commit, revert, and guarded reset with a backup branch |
 | **Events** | A unified 30-day stream of failures, completions, permissions, and server lifecycle events with unread state |
-| **Interface** | English and Russian, responsive navigation, themes, and lazy-loaded screens |
+| **Interface** | English and Russian, desktop navigation, themes, and lazy-loaded screens |
 
 ## Interface
 
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/images/session-en.png" alt="OpenCode Control Session">
-      <br><strong>Sessions</strong>: messages, runtime MCP, agent/model/variant selection, and conversation continuation.
+      <img src="docs/images/sessions-en.png" alt="OpenCode Control Sessions">
+      <br><strong>Sessions</strong>: grouped Task run history with exact timestamps, status, and usage.
     </td>
     <td width="50%">
       <img src="docs/images/tasks-en.png" alt="OpenCode Control Tasks">
-      <br><strong>Tasks</strong>: manual and scheduled runs with a dedicated Session history.
+      <br><strong>Tasks</strong>: manual and scheduled runs, grouped Sessions, and a compact action menu.
     </td>
   </tr>
   <tr>
@@ -82,10 +82,9 @@ editing, and local analytics.
   </tr>
 </table>
 
-<p align="center">
-  <img src="docs/images/events-mobile-ru.png" width="390" alt="OpenCode Control mobile event center"><br>
-  <strong>Event Center and responsive mobile UI</strong>
-</p>
+![OpenCode Control Event Center](docs/images/events-en.png)
+
+**Event Center**: permissions, Task completions, and runtime recovery in one desktop feed.
 
 ## Architecture
 

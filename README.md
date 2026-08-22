@@ -49,43 +49,42 @@ OpenCode отлично выполняет агентные задачи. Contro
 | **Artifacts** | Images, PDF, CSV, JSON, Markdown, text, logs и ZIP; preview, Finder, bulk archive и системная Корзина |
 | **Git** | Status, diff, stage/unstage, commit, revert и защищённый reset с backup branch |
 | **Events** | Единый 30-дневный поток ошибок, завершений, permissions и server lifecycle с unread state |
-| **Interface** | Русский и английский языки, адаптивная навигация, темы и lazy-loaded экраны |
+| **Interface** | Русский и английский языки, desktop-навигация, темы и lazy-loaded экраны |
 
 ## Интерфейс
 
 <table>
   <tr>
     <td width="50%">
-      <img src="docs/images/session-en.png" alt="OpenCode Control Session">
-      <br><strong>Sessions</strong>: сообщения, runtime MCP, выбор agent/model/variant и продолжение диалога.
+      <img src="docs/images/sessions-ru.png" alt="Sessions OpenCode Control">
+      <br><strong>Sessions</strong>: сгруппированная история запусков Task, точные даты, статусы и usage.
     </td>
     <td width="50%">
-      <img src="docs/images/tasks-en.png" alt="OpenCode Control Tasks">
-      <br><strong>Tasks</strong>: ручные и запланированные запуски с отдельной историей Sessions.
+      <img src="docs/images/tasks-ru.png" alt="Tasks OpenCode Control">
+      <br><strong>Tasks</strong>: ручные и запланированные запуски, сгруппированные Sessions и компактное меню действий.
     </td>
   </tr>
   <tr>
     <td width="50%">
-      <img src="docs/images/search-en.png" alt="OpenCode Control Search">
+      <img src="docs/images/search-ru.png" alt="Поиск OpenCode Control">
       <br><strong>Search</strong>: поиск по локальной истории текущего или всех проектов.
     </td>
     <td width="50%">
-      <img src="docs/images/artifacts-en.png" alt="OpenCode Control Artifacts">
+      <img src="docs/images/artifacts-ru.png" alt="Артефакты OpenCode Control">
       <br><strong>Artifacts</strong>: безопасный preview результатов агента без сканирования всего workspace.
     </td>
   </tr>
   <tr>
     <td colspan="2">
-      <img src="docs/images/mcp-en.png" alt="OpenCode Control MCP configuration">
+      <img src="docs/images/mcp-ru.png" alt="Настройка MCP в OpenCode Control">
       <br><strong>MCP</strong>: отдельно показаны global config, project override и реальное состояние соединения в OpenCode.
     </td>
   </tr>
 </table>
 
-<p align="center">
-  <img src="docs/images/events-mobile-ru.png" width="390" alt="Мобильный центр событий OpenCode Control"><br>
-  <strong>Event Center и адаптивный мобильный интерфейс</strong>
-</p>
+![Центр событий OpenCode Control](docs/images/events-ru.png)
+
+**Event Center**: permissions, завершения Tasks и восстановление runtime в едином desktop-потоке.
 
 ## Архитектура
 
