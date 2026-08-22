@@ -350,7 +350,7 @@ def test_store_backfills_legacy_task_session_links(tmp_path: Path) -> None:
     store.close()
     connection = sqlite3.connect(data / "control.sqlite")
     with connection:
-        connection.execute("DELETE FROM task_sessions")
+        connection.execute("DROP TABLE task_sessions")
     connection.close()
 
     reopened = ControlStore(data)
@@ -2871,3 +2871,157 @@ def test_command_runs_natively_and_rejects_busy_session(
         assert completed is not None
         assert completed["status"] == "completed"
         assert completed["error"] is None
+
+
+def test_deleted_command_session_ignores_late_background_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    started = threading.Event()
+    release = threading.Event()
+    calls: list[tuple[str, str]] = []
+
+    class FakeOpenCodeClient:
+        def __init__(self, endpoint: str, directory: str, **kwargs: Any) -> None:
+            return
+
+        def request(self, method: str, path: str, **kwargs: Any) -> dict[str, Any]:
+            calls.append((method, path))
+            return {"worktree": str(root)}
+
+        def ensure_session_directory(
+            self, session_id: str, *, missing_ok: bool = False
+        ) -> bool:
+            return True
+
+        def commands(self) -> list[dict[str, Any]]:
+            return [{"id": "review", "description": "Review", "content": "Review"}]
+
+        def snapshot(self) -> dict[str, Any]:
+            return {
+                "state": "connected",
+                "errors": [],
+                "sessions": [{"id": "ses_deleted"}],
+                "statuses": {"ses_deleted": {"type": "idle"}},
+            }
+
+        def run_command(self, *args: Any, **kwargs: Any) -> None:
+            started.set()
+            release.wait(timeout=2)
+            raise OpenCodeError("OpenCode server is unavailable")
+
+        def delete_session(self, session_id: str, *, missing_ok: bool = False) -> None:
+            calls.append(("DELETE", session_id))
+
+    monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
+    with _client(tmp_path) as client:
+        project_id = _project(client, root, endpoint="http://127.0.0.1:4096")["id"]
+        control = client.app.state.control
+        task = control.store.create_task(
+            project_id,
+            title="Scheduled review",
+            prompt="/review",
+            agent="build",
+            model="openai/gpt-test",
+            cron="0 14 * * *",
+            timezone="Europe/Moscow",
+            next_run_at=(datetime.now(UTC) + timedelta(days=1)).isoformat(),
+        )
+        task_id = str(task["id"])
+        control.store.add_task_session(project_id, task_id, "ses_deleted")
+        control.store.update_task(
+            project_id, task_id, status="scheduled", session_id="ses_deleted"
+        )
+        endpoint = (
+            f"/api/v1/projects/{project_id}/sessions/ses_deleted/commands/review"
+        )
+
+        response = client.post(endpoint, headers=_csrf(client), json={"arguments": ""})
+        assert response.status_code == 202
+        assert started.wait(timeout=1)
+        assert control.store.get_task(project_id, task_id)["status"] == "running"
+
+        deleted = client.delete(
+            f"/api/v1/projects/{project_id}/sessions/ses_deleted",
+            headers=_csrf(client),
+        )
+        assert deleted.status_code == 204
+        release.set()
+        for _ in range(100):
+            with control._command_threads_lock:
+                if not control._command_threads:
+                    break
+            time.sleep(0.01)
+
+        current = control.store.get_task(project_id, task_id)
+        assert current is not None
+        assert current["status"] == "scheduled"
+        assert current["error"] is None
+        assert current["session_ids"] == []
+        assert not any(
+            event["kind"] == "task_failed"
+            for event in control.store.list_events(project_id=project_id)["events"]
+        )
+        assert ("POST", "/session/ses_deleted/abort") in calls
+        assert ("DELETE", "ses_deleted") in calls
+
+        control.store.add_task_session(project_id, task_id, "ses_failed")
+        control.store.update_task(
+            project_id, task_id, status="scheduled", session_id="ses_failed"
+        )
+        failed = client.post(
+            f"/api/v1/projects/{project_id}/sessions/ses_failed/commands/review",
+            headers=_csrf(client),
+            json={"arguments": ""},
+        )
+        assert failed.status_code == 202
+        for _ in range(100):
+            with control._command_threads_lock:
+                if not control._command_threads:
+                    break
+            time.sleep(0.01)
+        current = control.store.get_task(project_id, task_id)
+        assert current is not None
+        assert current["status"] == "scheduled"
+        assert current["error"] is None
+        failed_events = [
+            event
+            for event in control.store.list_events(project_id=project_id)["events"]
+            if event["kind"] == "task_failed"
+        ]
+        assert len(failed_events) == 1
+        assert failed_events[0]["session_id"] == "ses_failed"
+        assert failed_events[0]["detail"] == "OpenCode server is unavailable"
+
+        control.store.add_task_session(project_id, task_id, "ses_stale")
+        control.store.update_task(
+            project_id, task_id, status="running", session_id="ses_stale"
+        )
+        control.store.update_task(
+            project_id,
+            task_id,
+            status="failed",
+            session_id="ses_stale",
+            error="late failure",
+        )
+        repaired = client.get(f"/api/v1/projects/{project_id}/tasks").json()[0]
+        assert repaired["status"] == "scheduled"
+        assert repaired["error"] is None
+        assert "ses_stale" not in repaired["session_ids"]
+
+        control.store.record_event(
+            dedupe_key="stale-session-event",
+            project_id=project_id,
+            kind="task_failed",
+            severity="error",
+            resource_title="Scheduled review",
+            task_id=task_id,
+            session_id="ses_missing",
+            unread=True,
+        )
+        feed = client.get(f"/api/v1/events?sync_project_id={project_id}").json()
+        stale_event = next(
+            event for event in feed["events"] if event["detail"] is None
+        )
+        assert stale_event["session_id"] is None

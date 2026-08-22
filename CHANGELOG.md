@@ -5,6 +5,20 @@ All notable changes to OpenCode Control are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/). The current release line is
 an alpha and may still change its local data model and API before `1.0.0`.
 
+## [0.2.3] - 2026-08-23
+
+### Fixed
+
+- Prevented late background command failures from changing a Task after its Session was
+  deleted.
+- Aborted active OpenCode work before deleting a Session and restored the parent Task to
+  its scheduled, paused, or aborted state.
+- Preserved scheduled Task state when one manually continued Session fails.
+- Prevented the legacy Task Session backfill from recreating deleted links after restart.
+- Repaired stale scheduled Tasks that still referenced an already deleted Session.
+- Opened the related Task instead of a broken Session drawer when an Event references a
+  deleted Session.
+
 ## [0.2.2] - 2026-08-22
 
 ### Fixed
@@ -88,3 +102,4 @@ First release checkpoint for the local-first alpha.
 [0.2.0]: https://github.com/Enzzo657/Opencode-Control/compare/v0.1.0...v0.2.0
 [0.2.1]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.0...v0.2.1
 [0.2.2]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.1...v0.2.2
+[0.2.3]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.2...v0.2.3

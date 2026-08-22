@@ -20,7 +20,7 @@ import {
   Zap,
 } from "lucide-react";
 import { Component, lazy, Suspense, useEffect, useState, type ErrorInfo, type ReactNode } from "react";
-import { api } from "./api";
+import { api, ApiError } from "./api";
 import { AgentCoreMark } from "./AgentCoreMark";
 import { EventCenter } from "./EventCenter";
 import { I18nProvider, translate, useI18n, type TranslationKey } from "./i18n";
@@ -187,10 +187,18 @@ function ControlApp() {
     setMobileOpen(false);
   }
 
-  function openEvent(event: ControlEvent) {
+  async function openEvent(event: ControlEvent) {
     if (event.session_id) {
-      openSearchSession(event.project_id, event.session_id, null, "");
-      return;
+      try {
+        await api(`/api/v1/projects/${encodeURIComponent(event.project_id)}/sessions/${encodeURIComponent(event.session_id)}/messages`);
+        openSearchSession(event.project_id, event.session_id, null, "");
+        return;
+      } catch (reason) {
+        if (!(reason instanceof ApiError) || reason.status !== 404) {
+          openSearchSession(event.project_id, event.session_id, null, "");
+          return;
+        }
+      }
     }
     const next: View = event.task_id ? "tasks" : "overview";
     setActiveId(event.project_id);

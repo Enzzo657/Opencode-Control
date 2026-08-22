@@ -71,6 +71,9 @@ class ControlStore:
         os.chmod(database_path, 0o600)
         self._connection.row_factory = sqlite3.Row
         self._lock = threading.RLock()
+        task_sessions_existed = self._connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'task_sessions'"
+        ).fetchone() is not None
         with self._connection:
             self._connection.executescript(
                 """
@@ -198,12 +201,17 @@ class ControlStore:
                 );
                 CREATE INDEX IF NOT EXISTS search_artifacts_recent
                     ON search_artifacts(project_id, created_at DESC);
-                INSERT INTO task_sessions (project_id, task_id, session_id, created_at)
-                SELECT project_id, id, session_id, created_at FROM tasks
-                WHERE session_id IS NOT NULL
-                ON CONFLICT(project_id, session_id) DO NOTHING;
                 """
             )
+            if not task_sessions_existed:
+                self._connection.execute(
+                    """
+                    INSERT INTO task_sessions (project_id, task_id, session_id, created_at)
+                    SELECT project_id, id, session_id, created_at FROM tasks
+                    WHERE session_id IS NOT NULL
+                    ON CONFLICT(project_id, session_id) DO NOTHING
+                    """
+                )
             columns = {
                 str(row[1])
                 for row in self._connection.execute("PRAGMA table_info(projects)").fetchall()
@@ -861,7 +869,7 @@ class ControlStore:
                 """
                 SELECT session_id FROM task_sessions
                 WHERE project_id = ? AND task_id = ?
-                ORDER BY created_at, session_id LIMIT 1
+                ORDER BY created_at DESC, session_id DESC LIMIT 1
                 """,
                 (project_id, task_id),
             ).fetchone()

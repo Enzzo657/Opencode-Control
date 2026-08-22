@@ -23,7 +23,7 @@ const eventLabels: Record<string, TranslationKey> = {
   server_failed: "events.kind.serverFailed",
 };
 
-export function EventCenter({ project, onOpen }: { project: Project | null; onOpen: (event: ControlEvent) => void }) {
+export function EventCenter({ project, onOpen }: { project: Project | null; onOpen: (event: ControlEvent) => void | Promise<void> }) {
   const { t } = useI18n();
   const feed = useResource<EventFeed>(`/api/v1/events?limit=100${project ? `&sync_project_id=${encodeURIComponent(project.id)}` : ""}`, project?.id ?? "events", 5000);
   const [open, setOpen] = useState(false);
@@ -54,7 +54,7 @@ export function EventCenter({ project, onOpen }: { project: Project | null; onOp
       setError(null);
       setOpen(false);
       feed.reload();
-      onOpen(event);
+      await onOpen(event);
     } catch (reason) { setError(message(reason)); }
   }
 

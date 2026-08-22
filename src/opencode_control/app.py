@@ -1733,13 +1733,34 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         sync_project_id: str | None = None,
         limit: Annotated[int, Query(ge=1, le=100)] = 40,
     ) -> dict[str, Any]:
+        available_session_ids: set[str] | None = None
         if project_id is not None:
             project_or_404(project_id)
         if sync_project_id is not None:
             project_or_404(sync_project_id)
             with suppress(HTTPException, OpenCodeError, ProcessError):
-                project_snapshot(sync_project_id)
-        return state.store.list_events(project_id=project_id, limit=limit)
+                snapshot = project_snapshot(sync_project_id)
+                sessions = snapshot.get("sessions")
+                if isinstance(sessions, list):
+                    available_session_ids = {
+                        str(item["id"])
+                        for item in sessions
+                        if isinstance(item, dict) and isinstance(item.get("id"), str)
+                    }
+        result = state.store.list_events(project_id=project_id, limit=limit)
+        if sync_project_id is not None and available_session_ids is not None:
+            result["events"] = [
+                {
+                    **event,
+                    "session_id": None,
+                }
+                if event.get("project_id") == sync_project_id
+                and isinstance(event.get("session_id"), str)
+                and event["session_id"] not in available_session_ids
+                else event
+                for event in result["events"]
+            ]
+        return result
 
     @app.post("/api/v1/events/{event_id}/read")
     def read_event(event_id: str, guard: WriteGuard) -> dict[str, bool]:
@@ -3239,9 +3260,34 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     @app.delete("/api/v1/projects/{project_id}/sessions/{session_id}", status_code=204)
     def delete_session(project_id: str, session_id: str, guard: WriteGuard) -> Response:
         client = client_for_session(project_id, session_id, missing_ok=True)
-        if client is not None:
-            client.delete_session(session_id, missing_ok=True)
+        task = state.store.task_for_session(project_id, session_id)
+        was_current = task is not None and task.get("session_id") == session_id
         state.store.remove_task_session(project_id, session_id)
+        if was_current and task is not None and task.get("status") in {
+            "queued",
+            "dispatching",
+            "running",
+            "pending",
+        }:
+            next_status = (
+                "scheduled"
+                if task.get("cron") and task.get("schedule_enabled")
+                else "paused"
+                if task.get("cron")
+                else "aborted"
+            )
+            state.store.update_task(
+                project_id,
+                str(task["id"]),
+                status=next_status,
+                error=None,
+            )
+        if client is not None:
+            with suppress(Exception):
+                client.request(
+                    "POST", f"/session/{_segment(session_id)}/abort", body={}
+                )
+            client.delete_session(session_id, missing_ok=True)
         invalidate_dashboard_cache(project_id)
         return Response(status_code=204)
 
@@ -3249,6 +3295,60 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         project_id: str, snapshot: dict[str, Any] | None = None
     ) -> None:
         result = state.store.list_tasks(project_id)
+        failed_scheduled = [
+            item
+            for item in result
+            if item.get("cron")
+            and item.get("status") == "failed"
+            and isinstance(item.get("session_id"), str)
+        ]
+        if failed_scheduled and snapshot is None:
+            try:
+                snapshot = client_for(project_id).snapshot()
+            except (OpenCodeError, HTTPException):
+                snapshot = None
+        snapshot_session_ids: set[str] | None = None
+        if snapshot is not None:
+            snapshot_errors = {
+                str(error)
+                for error in snapshot.get("errors", [])
+                if isinstance(error, str)
+            }
+            snapshot_sessions = snapshot.get("sessions")
+            if (
+                snapshot.get("state") != "degraded"
+                and not snapshot_errors.intersection(
+                    {"sessions_unavailable", "statuses_unavailable"}
+                )
+                and isinstance(snapshot_sessions, list)
+            ):
+                snapshot_session_ids = {
+                    str(item["id"])
+                    for item in snapshot_sessions
+                    if isinstance(item, dict) and isinstance(item.get("id"), str)
+                }
+        repaired = False
+        for item in failed_scheduled:
+            current_session_id = item.get("session_id")
+            assert isinstance(current_session_id, str)
+            missing_link = current_session_id not in item.get("session_ids", [])
+            missing_runtime = (
+                snapshot_session_ids is not None
+                and current_session_id not in snapshot_session_ids
+            )
+            if not missing_link and not missing_runtime:
+                continue
+            if missing_runtime:
+                state.store.remove_task_session(project_id, current_session_id)
+            state.store.update_task(
+                project_id,
+                str(item["id"]),
+                status="scheduled" if item.get("schedule_enabled") else "paused",
+                error=None,
+            )
+            repaired = True
+        if repaired:
+            result = state.store.list_tasks(project_id)
         running = [
             item
             for item in result
@@ -3641,13 +3741,23 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             raise HTTPException(status_code=409, detail="session is already active")
         task = state.store.task_for_session(project_id, session_id)
         scheduled = bool(task and task.get("cron"))
+        invocation_id = secrets.token_hex(12)
+
+        def current_task() -> dict[str, Any] | None:
+            if task is None:
+                return None
+            current = state.store.task_for_session(project_id, session_id)
+            if current is None or current.get("id") != task.get("id"):
+                return None
+            return current
 
         def mark_task_running() -> None:
-            if task is None:
+            current = current_task()
+            if current is None:
                 return
             state.store.record_task_prompt(
                 project_id,
-                str(task["id"]),
+                str(current["id"]),
                 session_id=session_id,
                 prompt=None,
                 agent=payload.agent,
@@ -3661,11 +3771,32 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             invalidate_dashboard_cache(project_id)
 
         def mark_task_failed(error: Exception) -> None:
-            if task is None:
+            current = current_task()
+            if current is None:
+                return
+            if scheduled:
+                state.store.record_event(
+                    dedupe_key=f"task-command:{invocation_id}:failed",
+                    project_id=project_id,
+                    kind="task_failed",
+                    severity="error",
+                    resource_title=str(current["title"]),
+                    detail=str(error),
+                    task_id=str(current["id"]),
+                    session_id=session_id,
+                    unread=True,
+                )
+                state.store.update_task(
+                    project_id,
+                    str(current["id"]),
+                    status="scheduled" if current.get("schedule_enabled") else "paused",
+                    error=None,
+                )
+                invalidate_dashboard_cache(project_id)
                 return
             state.store.update_task(
                 project_id,
-                str(task["id"]),
+                str(current["id"]),
                 status="failed",
                 session_id=session_id,
                 error=str(error),

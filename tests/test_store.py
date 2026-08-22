@@ -34,6 +34,33 @@ def test_existing_project_identity_is_migrated_without_recreating_project(
     migrated.close()
 
 
+def test_removed_task_session_is_not_restored_on_restart(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data"
+    root = tmp_path / "project"
+    root.mkdir()
+    store = ControlStore(data_dir)
+    project = store.create_project(name="Project", root=root, endpoint=None)
+    project_id = str(project["id"])
+    task = store.create_task(
+        project_id,
+        title="Task",
+        prompt="Work",
+        agent=None,
+        model=None,
+    )
+    task_id = str(task["id"])
+    store.add_task_session(project_id, task_id, "ses_deleted")
+    store.update_task(
+        project_id, task_id, status="failed", session_id="ses_deleted"
+    )
+    store.remove_task_session(project_id, "ses_deleted")
+    store.close()
+
+    reopened = ControlStore(data_dir)
+    assert reopened.task_session_ids(project_id, task_id) == []
+    reopened.close()
+
+
 def _scheduled_task(store: ControlStore, tmp_path: Path) -> tuple[str, str]:
     root = tmp_path / "project"
     root.mkdir(exist_ok=True)

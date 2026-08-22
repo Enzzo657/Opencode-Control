@@ -51,7 +51,7 @@ describe("OpenCode Control", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/api/v1/projects")) return response([project]);
-      if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.2.2", projects: 1 });
+      if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.2.3", projects: 1 });
       if (path.includes("/api/v1/events") && (!init?.method || init.method === "GET")) return response({ events: [], unread: 0 });
       if (path.includes("/api/v1/events/") && init?.method === "POST") return response(path.endsWith("/read-all") ? { read: 0 } : { read: true });
       if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
@@ -97,7 +97,7 @@ describe("OpenCode Control", () => {
     expect(screen.getByText("Подключен")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Текущий проект.*Checkout API/ }));
     expect(screen.getAllByText("Подключен")).toHaveLength(2);
-    expect(screen.getByText("Control 0.2.2")).toBeInTheDocument();
+    expect(screen.getByText("Control 0.2.3")).toBeInTheDocument();
   });
 
   it("opens unread events and deep-links to their session", async () => {
@@ -121,6 +121,24 @@ describe("OpenCode Control", () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/api/v1/events/evt_failed/read") && init?.method === "POST")).toBe(true));
     expect(await screen.findByRole("dialog", { name: "Сессия Fix checkout" })).toBeInTheDocument();
     expect(new URLSearchParams(location.search).get("session")).toBe("ses_1");
+  });
+
+  it("opens the Task instead of a deleted Session from an event", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.includes("/api/v1/events") && (!init?.method || init.method === "GET")) return response({ unread: 1, events: [{ id: "evt_stale", project_id: project.id, project_name: project.name, task_id: "task_1", session_id: "ses_missing", run_id: null, permission_id: null, kind: "task_failed", severity: "error", resource_title: "Fix checkout", detail: "server unavailable", occurred_at: new Date().toISOString(), read_at: null }] });
+      if (path.includes("/sessions/ses_missing/messages")) return response({ detail: "session not found" }, 404);
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(await screen.findByRole("button", { name: "Открыть центр событий" }));
+    fireEvent.click(await screen.findByRole("button", { name: /Fix checkout.*Задача завершилась с ошибкой/ }));
+    expect(await screen.findByRole("heading", { name: "Задачи" })).toBeInTheDocument();
+    expect(location.pathname).toBe("/tasks");
+    expect(new URLSearchParams(location.search).has("session")).toBe(false);
   });
 
   it("keeps per-session task outcomes consistent on Dashboard and Sessions", async () => {
