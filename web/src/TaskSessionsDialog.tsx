@@ -1,5 +1,5 @@
-import { CalendarDays, Clock3, MessageSquareText, Trash2 } from "lucide-react";
-import { absoluteDateTime, compact, modelOf, relativeTime, sessionDuration, sessionLifetimeTokens, sessionStatus } from "./sessionUtils";
+import { CalendarDays, MessageSquareText, Trash2 } from "lucide-react";
+import { absoluteDateTime, compact, modelOf, relativeTime, sessionLifetimeTokens, sessionStatus } from "./sessionUtils";
 import type { Session, Snapshot } from "./types";
 import { translate } from "./i18n";
 import { Empty, Modal, Status } from "./ui";
@@ -14,12 +14,11 @@ export function TaskSessionsDialog({ taskTitle, sessionIds, sessions, snapshot, 
     <div className="task-session-browser">
       {linked.map((session) => {
         const created = session.time?.created;
-        const duration = sessionDuration(session);
         return <article className="task-session-browser-row" key={session.id} role="button" tabIndex={0} onClick={() => onOpen(session)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") onOpen(session); }}>
           <span className="task-session-sequence">#{positions.get(session.id)}</span>
           <span className="task-session-identity"><strong>{session.title ?? translate("common.unnamedSession")}</strong><small><CalendarDays size={12} /> {absoluteDateTime(created)} · {relativeTime(created)}</small></span>
           <span className="task-session-runtime"><strong>{session.agent ?? translate("common.default")}</strong><small>{modelOf(session)}</small></span>
-          <span className="task-session-usage"><strong>{translate("sessions.tokens", { count: compact(sessionLifetimeTokens(session)) })}</strong><small><Clock3 size={12} /> {duration ?? translate("common.timeUnknown")}</small></span>
+          <span className="task-session-usage"><strong>{translate("sessions.tokens", { count: compact(sessionLifetimeTokens(session)) })}</strong><small>{translate("sessions.allTimeCost", { cost: (session.cost ?? 0).toFixed(4) })}</small></span>
           <Status value={sessionStatus(snapshot, session)} />
           {onDelete && <button className="icon-button danger" title={translate("sessions.delete")} aria-label={translate("sessions.delete")} onClick={(event) => { event.stopPropagation(); onDelete(session); }}><Trash2 size={14} /></button>}
         </article>;

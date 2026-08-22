@@ -5,6 +5,15 @@ All notable changes to OpenCode Control are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/). The current release line is
 an alpha and may still change its local data model and API before `1.0.0`.
 
+## [0.2.1] - 2026-08-22
+
+### Fixed
+
+- Stopped presenting a Session's full lifetime as the duration of one Task run.
+- Marked unfinished tools as stopped when a later message supersedes them.
+- Bounded superseded message and tool durations by the next message timestamp instead of
+  continuously accumulating elapsed time.
+
 ## [0.2.0] - 2026-08-22
 
 ### Added
@@ -69,3 +78,4 @@ First release checkpoint for the local-first alpha.
 
 [0.1.0]: https://github.com/Enzzo657/Opencode-Control/releases/tag/v0.1.0
 [0.2.0]: https://github.com/Enzzo657/Opencode-Control/compare/v0.1.0...v0.2.0
+[0.2.1]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.0...v0.2.1
