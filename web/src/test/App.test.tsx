@@ -139,8 +139,8 @@ describe("OpenCode Control", () => {
         const original = await fallback(input, init);
         const payload = await original.json();
         payload.sessions = [
-          { ...payload.sessions[0], id: "ses_failed", title: "Failed run", control_task: { id: "task_1", title: "Daily task", status: "failed", session_status: "failed", session_error: "server unavailable" } },
-          { ...payload.sessions[0], id: "ses_completed", title: "Completed run", control_task: { id: "task_1", title: "Daily task", status: "failed", session_status: "completed" } },
+          { ...payload.sessions[0], id: "ses_failed", title: "Failed run", time: { created: Date.parse("2026-01-02T10:00:00Z"), updated: Date.parse("2026-01-02T10:02:00Z") }, control_task: { id: "task_1", title: "Daily task", status: "failed", session_status: "failed", session_error: "server unavailable" } },
+          { ...payload.sessions[0], id: "ses_completed", title: "Completed run", time: { created: Date.parse("2026-01-01T10:00:00Z"), updated: Date.parse("2026-01-01T10:01:00Z") }, control_task: { id: "task_1", title: "Daily task", status: "failed", session_status: "completed" } },
         ];
         payload.statuses = {};
         return response(payload);
@@ -154,8 +154,13 @@ describe("OpenCode Control", () => {
     expect(screen.getByText("Completed run").closest(".dashboard-session-rows > div")).toHaveTextContent("Завершена");
 
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
-    expect((await screen.findByText("Failed run")).closest(".table-row")).toHaveTextContent("Ошибка");
-    expect(screen.getByText("Completed run").closest(".table-row")).toHaveTextContent("Завершена");
+    const group = await screen.findByRole("button", { name: /Daily task.*Сессии · 2/ });
+    expect(group).toHaveTextContent("Задача Control · 2 сессий");
+    fireEvent.click(group);
+    const sessionDialog = await screen.findByRole("dialog", { name: "Сессии задачи" });
+    expect(sessionDialog).toHaveTextContent("Daily task · 2 сессий");
+    expect(screen.getByText("Failed run").closest(".task-session-browser-row")).toHaveTextContent(/2026.*2 мин 00 с.*Ошибка/);
+    expect(screen.getByText("Completed run").closest(".task-session-browser-row")).toHaveTextContent(/2026.*1 мин 00 с.*Завершена/);
   });
 
   it("switches Dashboard usage between project, global scope, and periods", async () => {
@@ -574,6 +579,8 @@ describe("OpenCode Control", () => {
     fireEvent.click(screen.getByRole("button", { name: "Модель: openai/gpt-test" }));
     expect(screen.getByPlaceholderText("Поиск модели")).toBeInTheDocument();
     expect(screen.getByRole("option", { name: /openai\/gpt-test/ })).toBeInTheDocument();
+    expect(screen.getByPlaceholderText("Поиск модели").closest(".picker-menu")).toHaveClass("picker-portal");
+    expect(screen.getByRole("button", { name: "Рассуждение: по умолчанию" })).toBeInTheDocument();
   });
 
   it("keeps the selected agent, model, and reasoning level for the next task", async () => {
@@ -871,7 +878,9 @@ describe("OpenCode Control", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Fix checkout" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Сессии · 1" }));
+    const sessionList = await screen.findByRole("dialog", { name: "Сессии задачи" });
+    fireEvent.click(sessionList.querySelector<HTMLElement>(".task-session-browser-row")!);
     const dialog = await screen.findByRole("dialog", { name: "Сессия Fix checkout" });
     expect(dialog.querySelector('.status[data-status="aborted"]')).toHaveTextContent("Остановлено");
     expect(screen.getByRole("button", { name: "Отправить в эту сессию" })).toBeInTheDocument();
@@ -1411,7 +1420,12 @@ describe("OpenCode Control", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
-    fireEvent.click(await screen.findByRole("button", { name: "Настроить запуск" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Другие действия" }));
+    expect(screen.getByRole("menuitem", { name: "Удалить задачу и связанные сессии" })).toBeInTheDocument();
+    fireEvent.keyDown(document, { key: "Escape" });
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Другие действия" }));
+    fireEvent.click(await screen.findByRole("menuitem", { name: "Настроить запуск" }));
     const prompt = screen.getByLabelText("Задание для каждого запуска");
     fireEvent.change(prompt, { target: { value: "/h" } });
     fireEvent.click(await screen.findByRole("option", { name: /\/hacker-news-summary/ }));

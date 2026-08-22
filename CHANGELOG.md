@@ -5,6 +5,34 @@ All notable changes to OpenCode Control are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/). The current release line is
 an alpha and may still change its local data model and API before `1.0.0`.
 
+## [0.2.0] - 2026-08-22
+
+### Added
+
+- Grouped Task-linked Sessions on both the Tasks and Sessions screens.
+- Added a reusable Task Sessions browser with exact creation dates, relative time,
+  duration, model, agent, usage, status, direct open, and delete actions.
+- Added exact message timestamps and clock times for reasoning, tool, and completion steps.
+- Added a compact accessible Task overflow menu for configuration, schedule state, and delete.
+- Added localized `stalled` Session/run state and Event Center warnings.
+
+### Changed
+
+- Replaced repeated Session chips on Task cards with a single `Sessions · N` action.
+- Separated Task schedule state from individual Session outcomes across every screen.
+- Allowed scheduled Task execution settings to move away from removed provider models.
+- A scheduled run with no message progress becomes terminal `stalled` without aborting
+  its OpenCode execution, so the next cron occurrence remains available.
+- A late successful response changes the old run from `stalled` to `completed`.
+
+### Fixed
+
+- Prevented stale synthetic errors and inconsistent status labels after continuation.
+- Made scheduled-run recovery atomic and aborted each matching run independently.
+- Preserved genuinely running or pending tools regardless of elapsed time.
+- Made frontend archive-download tests portable across Node.js Blob implementations.
+- Built frontend assets before backend integration tests in clean CI checkouts.
+
 ## [0.1.0] - 2026-08-17
 
 First release checkpoint for the local-first alpha.
@@ -25,25 +53,11 @@ First release checkpoint for the local-first alpha.
 - CLI lifecycle commands, isolated scheduler soak runner, and automatic managed-server recovery.
 - GitHub Actions for backend, frontend, and clean-wheel smoke tests on Ubuntu and macOS.
 
-### Changed
-
-- Scheduled Task state and per-Session execution outcome are tracked independently.
-- A manually continued failed scheduled Session becomes completed only after a later
-  assistant response has actually finished.
-- macOS project root identity survives APFS device ID changes after reboot while still
-  rejecting a replaced workspace root.
-
 ### Fixed
 
 - Restored managed projects after Control restart without losing Task or Session history.
-- Prevented stale synthetic errors and failed labels after a successful Session continuation.
-- Made scheduled-run recovery atomic to prevent premature completion during reconciliation.
-- Reported non-terminal `stalled` state after 15 minutes without message progress while
-  preserving genuinely running or pending tools and preventing schedule overlap.
-- Allowed scheduled Task execution settings to move away from removed provider models.
-- Aborted each matching scheduled run independently when several Sessions were active.
-- Made frontend archive-download tests portable across Node.js Blob implementations.
-- Built frontend assets before backend integration tests in clean CI checkouts.
+- Made macOS project root identity survive APFS device ID changes after reboot while still
+  rejecting a replaced workspace root.
 
 ### Security
 
@@ -54,3 +68,4 @@ First release checkpoint for the local-first alpha.
   credential redaction.
 
 [0.1.0]: https://github.com/Enzzo657/Opencode-Control/releases/tag/v0.1.0
+[0.2.0]: https://github.com/Enzzo657/Opencode-Control/compare/v0.1.0...v0.2.0

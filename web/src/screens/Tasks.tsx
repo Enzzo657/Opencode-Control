@@ -1,9 +1,10 @@
-import { Bot, BrainCircuit, CircleStop, Cpu, MessageSquareText, Play, Plus, Settings, Sparkles, SquareTerminal, Trash2, Zap } from "lucide-react";
-import { useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { Bot, BrainCircuit, CircleStop, Cpu, MessageSquareText, MoreHorizontal, Pause, Play, Plus, Settings, Sparkles, SquareTerminal, Trash2, Zap } from "lucide-react";
+import { useEffect, useRef, useState, type FormEvent, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { api, jsonBody } from "../api";
 import { commandDisplayDescription } from "../commands";
 import { localizedStatus, translate, useI18n } from "../i18n";
 import { PromptBox } from "../PromptBox";
+import { TaskSessionsDialog } from "../TaskSessionsDialog";
 import { describeCron, formatScheduleTime, parseScheduleCron, scheduleCron, scheduledRunLabel, type ScheduleKind } from "../schedule";
 import { mentionedAgents, modelIdOf, relativeTime, rememberComposerSelection, rememberedComposerSelection, selectedDefaultModel, sessionStatus, slashCommand, taskSessionIds } from "../sessionUtils";
 import type { Agent, Attachment, CommandItem, Project, ProviderSummary, RuntimeConfig, Session, Task } from "../types";
@@ -22,6 +23,7 @@ export function Tasks({ project, refreshKey }: { project: Project; refreshKey: n
   const [sessionTask, setSessionTask] = useState<Task | null>(null);
   const [scheduleTask, setScheduleTask] = useState<Task | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
+  const [sessionListTask, setSessionListTask] = useState<Task | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   async function abort(task: Task) {
     try {
@@ -85,8 +87,8 @@ export function Tasks({ project, refreshKey }: { project: Project; refreshKey: n
               <span className="task-fact"><MessageSquareText size={15} /><small>{t("tasks.sessions")}</small><strong>{taskSessionIds(task).length}</strong></span>
             </div>
             <div className="task-card-footer">
-              <div className="task-session-links">{taskSessionIds(task).map((sessionId, index) => { const session = snapshot.data?.sessions.find((item) => item.id === sessionId); return <button className="secondary-button compact-button" key={sessionId} onClick={() => setSelectedSessionId(sessionId)}>{session?.title ?? t("tasks.sessionNumber", { number: index + 1 })}</button>; })}</div>
-              <div className="task-actions"><button className="secondary-button compact-button" onClick={() => setSessionTask(task)}><Plus size={13} /> {t("tasks.newSession")}</button><button className="secondary-button compact-button" onClick={() => setScheduleTask(task)}><Settings size={13} /> {t("tasks.configureLaunch")}</button>{task.cron && <button className="secondary-button compact-button" onClick={() => void toggleSchedule(task)}>{t(task.schedule_enabled ? "tasks.pauseSchedule" : "tasks.resumeSchedule")}</button>}{["queued", "dispatching", "running"].includes(task.status) ? <button className="danger-button compact-button" onClick={() => void abort(task)}><CircleStop size={13} /> {t("tasks.stop")}</button> : <><button className="secondary-button compact-button" onClick={() => void rerun(task)}><Play size={13} /> {t("tasks.rerun")}</button><button className="icon-button danger" title={t("tasks.deleteWithSessions")} onClick={() => void remove(task)} aria-label={t("tasks.deleteWithSessions")}><Trash2 size={14} /></button></>}</div>
+              <div className="task-session-links"><button className="secondary-button compact-button task-sessions-button" onClick={() => setSessionListTask(task)}><MessageSquareText size={14} /> {t("tasks.sessionsWithCount", { count: taskSessionIds(task).length })}</button></div>
+              <div className="task-actions"><button className="secondary-button compact-button" onClick={() => setSessionTask(task)}><Plus size={13} /> {t("tasks.newSession")}</button>{["queued", "dispatching", "running"].includes(task.status) ? <button className="danger-button compact-button task-primary-action" onClick={() => void abort(task)}><CircleStop size={13} /> {t("tasks.stop")}</button> : <button className="secondary-button compact-button task-primary-action" onClick={() => void rerun(task)}><Play size={13} /> {t("tasks.rerun")}</button>}<TaskActionsMenu task={task} onConfigure={() => setScheduleTask(task)} onToggle={() => void toggleSchedule(task)} onDelete={() => void remove(task)} /></div>
             </div>
           </article>
         ))}
@@ -95,9 +97,25 @@ export function Tasks({ project, refreshKey }: { project: Project; refreshKey: n
       {open && <TaskComposer project={project} agents={snapshot.data?.agents ?? []} commands={commands.data ?? []} providers={snapshot.data?.providers?.available ?? []} config={snapshot.data?.config} defaultModel={selectedDefaultModel(snapshot.data)} onClose={() => setOpen(false)} onCreated={() => { setOpen(false); tasks.reload(); snapshot.reload(); }} />}
       {sessionTask && <SessionComposer project={project} task={sessionTask} agents={snapshot.data?.agents ?? []} commands={commands.data ?? []} providers={snapshot.data?.providers?.available ?? []} config={snapshot.data?.config} defaultModel={sessionTask.model ?? selectedDefaultModel(snapshot.data)} onClose={() => setSessionTask(null)} onCreated={() => { setSessionTask(null); tasks.reload(); snapshot.reload(); }} />}
       {scheduleTask && <TaskScheduleEditor project={project} task={scheduleTask} agents={snapshot.data?.agents ?? []} commands={commands.data ?? []} onClose={() => setScheduleTask(null)} onSaved={() => { setScheduleTask(null); tasks.reload(); }} />}
+      {sessionListTask && <TaskSessionsDialog taskTitle={sessionListTask.title} sessionIds={taskSessionIds(sessionListTask)} sessions={snapshot.data?.sessions ?? []} snapshot={snapshot.data} onOpen={(session) => { setSessionListTask(null); setSelectedSessionId(session.id); }} onDelete={(session) => void removeSession(session)} onClose={() => setSessionListTask(null)} />}
       {selectedSession && <SessionDrawer project={project} session={selectedSession} status={sessionStatus(snapshot.data, selectedSession)} taskStatus={selectedTask?.cron ? selectedSession.control_task?.session_status : selectedTask?.session_id === selectedSession.id ? selectedTask.status : selectedSession.control_task?.session_status} agents={snapshot.data?.agents ?? []} providers={snapshot.data?.providers?.available ?? []} mcp={snapshot.data?.mcp ?? {}} config={snapshot.data?.config} initialAgent={selectedTask?.agent ?? selectedSession.agent ?? ""} initialModel={selectedTask?.model || modelIdOf(selectedSession) || snapshot.data?.config?.model || ""} onDelete={() => void removeSession(selectedSession)} onClose={() => setSelectedSessionId(null)} />}
     </Page>
   );
+}
+
+function TaskActionsMenu({ task, onConfigure, onToggle, onDelete }: { task: Task; onConfigure: () => void; onToggle: () => void; onDelete: () => void }) {
+  const [open, setOpen] = useState(false);
+  const root = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const pointer = (event: PointerEvent) => { if (!root.current?.contains(event.target as Node)) setOpen(false); };
+    const keyboard = (event: KeyboardEvent) => { if (event.key === "Escape") setOpen(false); };
+    document.addEventListener("pointerdown", pointer);
+    document.addEventListener("keydown", keyboard);
+    return () => { document.removeEventListener("pointerdown", pointer); document.removeEventListener("keydown", keyboard); };
+  }, [open]);
+  function choose(action: () => void) { setOpen(false); action(); }
+  return <div className="task-actions-menu" ref={root}><button className="icon-button" aria-label={translate("tasks.moreActions")} title={translate("tasks.moreActions")} aria-expanded={open} onClick={() => setOpen((current) => !current)}><MoreHorizontal size={16} /></button>{open && <div className="task-actions-popover" role="menu"><button role="menuitem" onClick={() => choose(onConfigure)}><Settings size={14} /> {translate("tasks.configureLaunch")}</button>{task.cron && <button role="menuitem" onClick={() => choose(onToggle)}>{task.schedule_enabled ? <Pause size={14} /> : <Play size={14} />} {translate(task.schedule_enabled ? "tasks.pauseSchedule" : "tasks.resumeSchedule")}</button>}<button className="danger-text" role="menuitem" onClick={() => choose(onDelete)}><Trash2 size={14} /> {translate("tasks.deleteWithSessions")}</button></div>}</div>;
 }
 
 function TaskComposer({ project, agents, commands, providers, config, defaultModel, onClose, onCreated }: { project: Project; agents: Agent[]; commands: CommandItem[]; providers: ProviderSummary[]; config?: RuntimeConfig; defaultModel?: string; onClose: () => void; onCreated: () => void }) {
