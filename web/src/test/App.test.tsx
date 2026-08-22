@@ -51,7 +51,7 @@ describe("OpenCode Control", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/api/v1/projects")) return response([project]);
-      if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.2.1", projects: 1 });
+      if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.2.2", projects: 1 });
       if (path.includes("/api/v1/events") && (!init?.method || init.method === "GET")) return response({ events: [], unread: 0 });
       if (path.includes("/api/v1/events/") && init?.method === "POST") return response(path.endsWith("/read-all") ? { read: 0 } : { read: true });
       if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
@@ -97,7 +97,7 @@ describe("OpenCode Control", () => {
     expect(screen.getByText("Подключен")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Текущий проект.*Checkout API/ }));
     expect(screen.getAllByText("Подключен")).toHaveLength(2);
-    expect(screen.getByText("Control 0.2.1")).toBeInTheDocument();
+    expect(screen.getByText("Control 0.2.2")).toBeInTheDocument();
   });
 
   it("opens unread events and deep-links to their session", async () => {
@@ -414,10 +414,16 @@ describe("OpenCode Control", () => {
     fireEvent.click(screen.getByRole("button", { name: "Настройки проекта" }));
     expect(await screen.findByText("/code/checkout/opencode.jsonc")).toBeInTheDocument();
     expect(screen.getAllByText("/home/dev/.config/opencode/opencode.jsonc")).toHaveLength(2);
-    fireEvent.change(screen.getByLabelText("Общая конфигурация OpenCode"), { target: { value: '{"model":"openai/new-global"}' } });
+    const globalEditor = screen.getByLabelText("Общая конфигурация OpenCode");
+    fireEvent.change(globalEditor, { target: { value: '{"model":"openai/new-global"}' } });
+    await waitFor(() => expect(globalEditor).toHaveValue('{"model":"openai/new-global"}'));
     fireEvent.click(screen.getByRole("button", { name: "Сохранить общую" }));
     await waitFor(() => {
-      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => String(input).endsWith("/configuration") && init?.method === "PATCH");
+      const call = vi.mocked(fetch).mock.calls.find(([input, init]) => {
+        if (!String(input).endsWith("/configuration") || init?.method !== "PATCH") return false;
+        return JSON.parse(String(init.body)).scope === "global";
+      });
+      expect(call).toBeDefined();
       expect(JSON.parse(String(call?.[1]?.body))).toEqual({ values: { model: "openai/new-global" }, scope: "global" });
     });
   });
@@ -1105,6 +1111,7 @@ describe("OpenCode Control", () => {
     expect(staleTool.querySelector('.status[data-status="aborted"]')).toHaveTextContent("Остановлено");
     expect(staleTool).not.toHaveTextContent("Выполняется");
     expect(staleTool.closest(".message")).toHaveTextContent("1 мин 00 с");
+    expect(screen.getByText("Продолжить").closest(".message")?.querySelector("time")).not.toHaveTextContent("мин");
   });
 
   it("resizes the session drawer with its left handle", async () => {

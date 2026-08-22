@@ -5,6 +5,14 @@ All notable changes to OpenCode Control are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/). The current release line is
 an alpha and may still change its local data model and API before `1.0.0`.
 
+## [0.2.2] - 2026-08-22
+
+### Fixed
+
+- Removed misleading elapsed durations from user messages while preserving exact timestamps.
+- Stabilized the project/global configuration save test against React scheduling differences
+  on slower CI runners.
+
 ## [0.2.1] - 2026-08-22
 
 ### Fixed
@@ -79,3 +87,4 @@ First release checkpoint for the local-first alpha.
 [0.1.0]: https://github.com/Enzzo657/Opencode-Control/releases/tag/v0.1.0
 [0.2.0]: https://github.com/Enzzo657/Opencode-Control/compare/v0.1.0...v0.2.0
 [0.2.1]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.0...v0.2.1
+[0.2.2]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.1...v0.2.2
