@@ -6,7 +6,7 @@ import { localizedStatus, translate, useI18n } from "../i18n";
 import { PromptBox } from "../PromptBox";
 import { TaskSessionsDialog } from "../TaskSessionsDialog";
 import { describeCron, formatScheduleTime, parseScheduleCron, scheduleCron, scheduledRunLabel, type ScheduleKind } from "../schedule";
-import { mentionedAgents, modelIdOf, relativeTime, rememberComposerSelection, rememberedComposerSelection, selectedDefaultModel, sessionStatus, slashCommand, taskSessionIds } from "../sessionUtils";
+import { mentionedAgents, modelIdOf, relativeTime, rememberComposerSelection, rememberedComposerSelection, selectedDefaultModel, sessionStatus, slashCommand, taskSessionIds, taskStatus } from "../sessionUtils";
 import type { Agent, Attachment, CommandItem, Project, ProviderSummary, RuntimeConfig, Session, Task } from "../types";
 import { Banner, Empty, Field, Modal, Page } from "../ui";
 import { message, useResource } from "../useResource";
@@ -72,11 +72,13 @@ export function Tasks({ project, refreshKey }: { project: Project; refreshKey: n
         <div><small>{t("tasks.defaultLaunch")}</small><strong>{snapshot.data?.config?.default_agent ?? "build"}</strong><span>{snapshot.data?.config?.model ?? t("tasks.lastSelectedModel")}</span></div>
       </div>
       <div className="task-list">
-        {(tasks.data ?? []).map((task) => (
+        {(tasks.data ?? []).map((task) => {
+          const effectiveStatus = taskStatus(snapshot.data, task);
+          return (
           <article className="task-card" key={task.id}>
-            <div className="task-status-rail" data-status={task.status} />
+            <div className="task-status-rail" data-status={effectiveStatus} />
             <div className="task-main">
-              <div className="task-title-row"><TaskStatus value={task.status} /><span className="task-time">{relativeTime(Date.parse(task.created_at))}</span><h3>{task.title}</h3></div>
+              <div className="task-title-row"><TaskStatus value={effectiveStatus} /><span className="task-time">{relativeTime(Date.parse(task.created_at))}</span><h3>{task.title}</h3></div>
               <p title={task.error ?? task.prompt}>{task.error ?? task.prompt}</p>
               {task.cron && <div className="task-schedule"><span><small>{t("tasks.schedule")}</small><strong>{describeCron(task.cron)}</strong></span><span><small>{t("tasks.timezone")}</small><strong>{task.timezone}</strong></span><span><small>{t("tasks.conversationHistory")}</small><strong>{t(task.cron_session_mode === "reuse" ? "tasks.reuseSession" : "tasks.newSessionEachRun")}</strong></span><span><small>{t("tasks.lastRun")}</small><strong title={task.last_scheduled_run?.error ?? undefined}>{scheduledRunLabel(task.last_scheduled_run?.status)}</strong></span><span><small>{t("tasks.nextRun")}</small><strong>{task.schedule_enabled ? formatScheduleTime(task.next_run_at) : t("tasks.schedulePaused")}</strong></span></div>}
             </div>
@@ -88,17 +90,18 @@ export function Tasks({ project, refreshKey }: { project: Project; refreshKey: n
             </div>
             <div className="task-card-footer">
               <div className="task-session-links"><button className="secondary-button compact-button task-sessions-button" onClick={() => setSessionListTask(task)}><MessageSquareText size={14} /> {t("tasks.sessionsWithCount", { count: taskSessionIds(task).length })}</button></div>
-              <div className="task-actions"><button className="secondary-button compact-button" onClick={() => setSessionTask(task)}><Plus size={13} /> {t("tasks.newSession")}</button>{["queued", "dispatching", "running"].includes(task.status) ? <button className="danger-button compact-button task-primary-action" onClick={() => void abort(task)}><CircleStop size={13} /> {t("tasks.stop")}</button> : <button className="secondary-button compact-button task-primary-action" onClick={() => void rerun(task)}><Play size={13} /> {t("tasks.rerun")}</button>}<TaskActionsMenu task={task} onConfigure={() => setScheduleTask(task)} onToggle={() => void toggleSchedule(task)} onDelete={() => void remove(task)} /></div>
+              <div className="task-actions"><button className="secondary-button compact-button" onClick={() => setSessionTask(task)}><Plus size={13} /> {t("tasks.newSession")}</button>{["busy", "dispatching", "in_progress", "pending", "queued", "running", "stalled"].includes(effectiveStatus) ? <button className="danger-button compact-button task-primary-action" onClick={() => void abort(task)}><CircleStop size={13} /> {t("tasks.stop")}</button> : <button className="secondary-button compact-button task-primary-action" onClick={() => void rerun(task)}><Play size={13} /> {t("tasks.rerun")}</button>}<TaskActionsMenu task={task} onConfigure={() => setScheduleTask(task)} onToggle={() => void toggleSchedule(task)} onDelete={() => void remove(task)} /></div>
             </div>
           </article>
-        ))}
+          );
+        })}
         {(tasks.data?.length ?? 0) === 0 && <Empty icon={<Zap />} title={t("tasks.empty")} detail={t("tasks.emptyDetail")} />}
       </div>
       {open && <TaskComposer project={project} agents={snapshot.data?.agents ?? []} commands={commands.data ?? []} providers={snapshot.data?.providers?.available ?? []} config={snapshot.data?.config} defaultModel={selectedDefaultModel(snapshot.data)} onClose={() => setOpen(false)} onCreated={() => { setOpen(false); tasks.reload(); snapshot.reload(); }} />}
       {sessionTask && <SessionComposer project={project} task={sessionTask} agents={snapshot.data?.agents ?? []} commands={commands.data ?? []} providers={snapshot.data?.providers?.available ?? []} config={snapshot.data?.config} defaultModel={sessionTask.model ?? selectedDefaultModel(snapshot.data)} onClose={() => setSessionTask(null)} onCreated={() => { setSessionTask(null); tasks.reload(); snapshot.reload(); }} />}
       {scheduleTask && <TaskScheduleEditor project={project} task={scheduleTask} agents={snapshot.data?.agents ?? []} commands={commands.data ?? []} onClose={() => setScheduleTask(null)} onSaved={() => { setScheduleTask(null); tasks.reload(); }} />}
       {sessionListTask && <TaskSessionsDialog taskTitle={sessionListTask.title} sessionIds={taskSessionIds(sessionListTask)} sessions={snapshot.data?.sessions ?? []} snapshot={snapshot.data} onOpen={(session) => { setSessionListTask(null); setSelectedSessionId(session.id); }} onDelete={(session) => void removeSession(session)} onClose={() => setSessionListTask(null)} />}
-      {selectedSession && <SessionDrawer project={project} session={selectedSession} status={sessionStatus(snapshot.data, selectedSession)} taskStatus={selectedTask?.cron ? selectedSession.control_task?.session_status : selectedTask?.session_id === selectedSession.id ? selectedTask.status : selectedSession.control_task?.session_status} agents={snapshot.data?.agents ?? []} providers={snapshot.data?.providers?.available ?? []} mcp={snapshot.data?.mcp ?? {}} config={snapshot.data?.config} initialAgent={selectedTask?.agent ?? selectedSession.agent ?? ""} initialModel={selectedTask?.model || modelIdOf(selectedSession) || snapshot.data?.config?.model || ""} onDelete={() => void removeSession(selectedSession)} onClose={() => setSelectedSessionId(null)} />}
+      {selectedSession && <SessionDrawer project={project} session={selectedSession} status={sessionStatus(snapshot.data, selectedSession)} taskStatus={selectedTask?.cron ? selectedSession.control_task?.session_status : selectedTask?.session_id === selectedSession.id ? taskStatus(snapshot.data, selectedTask) : selectedSession.control_task?.session_status} agents={snapshot.data?.agents ?? []} providers={snapshot.data?.providers?.available ?? []} mcp={snapshot.data?.mcp ?? {}} config={snapshot.data?.config} initialAgent={selectedTask?.agent ?? selectedSession.agent ?? ""} initialModel={selectedTask?.model || modelIdOf(selectedSession) || snapshot.data?.config?.model || ""} onDelete={() => void removeSession(selectedSession)} onClose={() => setSelectedSessionId(null)} />}
     </Page>
   );
 }
