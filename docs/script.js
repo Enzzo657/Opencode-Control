@@ -189,8 +189,8 @@ function applyLanguage(language) {
 
   if (docLink) {
     docLink.href = language === "ru"
-      ? "https://github.com/opsmon/Opencode-Control/blob/main/README.md"
-      : "https://github.com/opsmon/Opencode-Control/blob/main/README_en.md";
+      ? "https://github.com/Enzzo657/Opencode-Control/blob/main/README.md"
+      : "https://github.com/Enzzo657/Opencode-Control/blob/main/README_en.md";
   }
 
   languageButtons.forEach((button) => {
