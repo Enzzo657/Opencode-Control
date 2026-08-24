@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="OpenCode Control is a local-first control plane for OpenCode projects, agents, sessions, tasks, MCP servers, Git, and artifacts." data-i18n-attr="content:meta.description">
+    <title>OpenCode Control</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml">
+    <link rel="preload" href="images/dashboard-en.png" as="image">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <header class="site-header" aria-label="Primary navigation">
+      <a class="brand" href="#top" aria-label="OpenCode Control home">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" role="img">
+            <path d="M12 3.4 5.1 7.5v8.9l6.9 4.2 6.9-4.2V7.5L12 3.4Zm0 2.4 4.8 2.8v5.7L12 17.2l-4.8-2.9V8.6L12 5.8Zm0 4.1a2.1 2.1 0 1 0 0 4.2 2.1 2.1 0 0 0 0-4.2Z"/>
+          </svg>
+        </span>
+        <span>
+          <strong>OpenCode</strong>
+          <small>Control</small>
+        </span>
+      </a>
+      <nav>
+        <a href="#features" data-i18n="nav.features">Features</a>
+        <a href="#screenshots" data-i18n="nav.screenshots">Screenshots</a>
+        <a href="#quick-start" data-i18n="nav.quickStart">Quick Start</a>
+      </nav>
+      <div class="header-actions">
+        <div class="language-toggle" aria-label="Language">
+          <button type="button" data-lang-switch="en" aria-pressed="true">EN</button>
+          <button type="button" data-lang-switch="ru" aria-pressed="false">RU</button>
+        </div>
+        <a class="header-link" href="https://github.com/opsmon/Opencode-Control">GitHub</a>
+      </div>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-backdrop" aria-hidden="true"></div>
+        <div class="hero-content">
+          <p class="eyebrow" data-i18n="hero.eyebrow">Local-first alpha</p>
+          <h1 id="hero-title">OpenCode Control</h1>
+          <p class="hero-copy" data-i18n="hero.copy">
+            A local control plane for OpenCode projects, agents, tasks, configuration,
+            Git workflows, and generated artifacts.
+          </p>
+          <div class="hero-actions" aria-label="Primary actions">
+            <a class="button primary" href="https://github.com/opsmon/Opencode-Control">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M12 .9a11.1 11.1 0 0 0-3.5 21.6c.55.1.75-.24.75-.53v-2c-3.06.67-3.7-1.3-3.7-1.3-.5-1.27-1.22-1.6-1.22-1.6-1-.69.08-.68.08-.68 1.1.08 1.68 1.14 1.68 1.14.98 1.68 2.57 1.2 3.2.92.1-.71.38-1.2.7-1.47-2.44-.28-5-1.22-5-5.43 0-1.2.43-2.18 1.13-2.95-.11-.28-.49-1.4.11-2.91 0 0 .92-.3 3.02 1.12A10.5 10.5 0 0 1 12 6.44c.93 0 1.86.13 2.74.37 2.09-1.42 3.01-1.12 3.01-1.12.6 1.51.22 2.63.11 2.91.7.77 1.13 1.75 1.13 2.95 0 4.22-2.57 5.14-5.02 5.42.39.34.74 1.01.74 2.04v2.96c0 .29.2.64.76.53A11.1 11.1 0 0 0 12 .9Z"/>
+              </svg>
+              <span data-i18n="cta.github">View on GitHub</span>
+            </a>
+            <a class="button secondary" href="#quick-start">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m13.5 4 6.5 8-6.5 8-1.55-1.26L16.39 13H4v-2h12.39l-4.44-5.74L13.5 4Z"/>
+              </svg>
+              <span data-i18n="cta.start">Get Started</span>
+            </a>
+            <a class="button ghost" href="https://github.com/opsmon/Opencode-Control/blob/main/README_en.md" data-doc-link>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M5 3.5h10.2L19 7.3v13.2H5v-17Zm9.4 1.8V8h2.8l-2.8-2.7ZM7 5.5v13h10v-8.7h-4.6V5.5H7Zm2 7h6v1.8H9v-1.8Zm0 3h4.8v1.8H9v-1.8Z"/>
+              </svg>
+              <span data-i18n="cta.docs">Documentation</span>
+            </a>
+          </div>
+          <dl class="hero-facts" aria-label="Project facts">
+            <div>
+              <dt data-i18n="facts.runsOn">Runs on</dt>
+              <dd data-i18n="facts.platforms">macOS and Linux</dd>
+            </div>
+            <div>
+              <dt data-i18n="facts.dataModel">Data model</dt>
+              <dd data-i18n="facts.localData">Local SQLite and files</dd>
+            </div>
+            <div>
+              <dt data-i18n="facts.license">License</dt>
+              <dd>MIT</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="product-preview" aria-labelledby="preview-title">
+        <div class="section-heading">
+          <p class="eyebrow" data-i18n="preview.eyebrow">Product Preview</p>
+          <h2 id="preview-title" data-i18n="preview.title">A dashboard for day-to-day agent operations.</h2>
+          <p data-i18n="preview.copy">
+            OpenCode Control keeps the execution engine in OpenCode, then adds the workspace,
+            runtime, usage, and project controls around it.
+          </p>
+        </div>
+        <figure class="browser-frame">
+          <div class="frame-bar" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+            <strong>127.0.0.1:8765</strong>
+          </div>
+          <img src="images/dashboard-en.png" alt="OpenCode Control dashboard with usage metrics, model breakdown, project runtime, and navigation." width="1440" height="1000" data-shot="dashboard" data-i18n-attr="alt:preview.alt">
+          <figcaption data-i18n="preview.caption">Dashboard view with usage, cost, model ranking, project runtime, and local project navigation.</figcaption>
+        </figure>
+      </section>
+
+      <section class="features" id="features" aria-labelledby="features-title">
+        <div class="section-heading compact">
+          <p class="eyebrow" data-i18n="features.eyebrow">Features</p>
+          <h2 id="features-title" data-i18n="features.title">Real controls around real OpenCode workflows.</h2>
+        </div>
+        <div class="feature-grid">
+          <article>
+            <span class="icon-shell">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3h11A2.5 2.5 0 0 1 20 5.5v13A2.5 2.5 0 0 1 17.5 21h-11A2.5 2.5 0 0 1 4 18.5v-13Zm2 .5v12.5c0 .28.22.5.5.5h11a.5.5 0 0 0 .5-.5V6H6Zm2.5 3H15v2H8.5V9Zm0 4H13v2H8.5v-2Z"/></svg>
+            </span>
+            <h3 data-i18n="feature.projects.title">Projects and runtime</h3>
+            <p data-i18n="feature.projects.copy">Manage multiple local projects, managed <code>opencode serve</code> processes, external loopback endpoints, and restored servers.</p>
+          </article>
+          <article>
+            <span class="icon-shell">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5a3 3 0 0 1 3-3h10a3 3 0 0 1 3 3v8a3 3 0 0 1-3 3H9.8L5 20v-4.4A3 3 0 0 1 4 13V5Zm3-1a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h.2v1.7L9 14h8a1 1 0 0 0 1-1V5a1 1 0 0 0-1-1H7Zm1.5 3H15v2H8.5V7Zm0 4H13v2H8.5v-2Z"/></svg>
+            </span>
+            <h3 data-i18n="feature.sessions.title">Sessions and Tasks</h3>
+            <p data-i18n="feature.sessions.copy">Continue conversations, answer permission requests, run managed Tasks, rerun or abort work, and schedule recurring agent runs.</p>
+          </article>
+          <article>
+            <span class="icon-shell">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 3h2v3h3v2h-3v3h-2V8H8V6h3V3ZM5 10h2v8h10v-8h2v8a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2v-8Zm4 4h6v2H9v-2Z"/></svg>
+            </span>
+            <h3 data-i18n="feature.config.title">Native configuration</h3>
+            <p data-i18n="feature.config.copy">Edit project and global Agents, Skills, Commands, MCP, providers, secrets, <code>AGENTS.md</code>, and OpenCode JSON/JSONC config.</p>
+          </article>
+          <article>
+            <span class="icon-shell">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h14v14H5V5Zm2 2v10h10V7H7Zm2 8V9h2v6H9Zm4 0v-4h2v4h-2Z"/></svg>
+            </span>
+            <h3 data-i18n="feature.dashboard.title">Usage dashboard</h3>
+            <p data-i18n="feature.dashboard.copy">Track tokens, cache reuse, cost, Sessions, providers, models, agents, and project-level breakdowns locally.</p>
+          </article>
+          <article>
+            <span class="icon-shell">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10.5 4a6.5 6.5 0 0 1 5.16 10.45l4.45 4.44-1.42 1.42-4.44-4.45A6.5 6.5 0 1 1 10.5 4Zm0 2a4.5 4.5 0 1 0 0 9 4.5 4.5 0 0 0 0-9Z"/></svg>
+            </span>
+            <h3 data-i18n="feature.search.title">Search and artifacts</h3>
+            <p data-i18n="feature.search.copy">Search local Session history with deep links, then preview images, PDFs, CSV, JSON, Markdown, logs, ZIP files, and more.</p>
+          </article>
+          <article>
+            <span class="icon-shell">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 3h10v4h3v6h-3v8H7v-8H4V7h3V3Zm2 2v2h6V5H9Zm8 6h1V9H6v2h1v-1h10v1Zm-8 1v7h6v-7H9Z"/></svg>
+            </span>
+            <h3 data-i18n="feature.git.title">Git and safety</h3>
+            <p data-i18n="feature.git.copy">Use status, diff, stage, commit, revert, and guarded reset while config writes stay atomic with preflight and rollback.</p>
+          </article>
+        </div>
+      </section>
+
+      <section class="how" aria-labelledby="how-title">
+        <div class="section-heading compact">
+          <p class="eyebrow" data-i18n="how.eyebrow">How It Works</p>
+          <h2 id="how-title" data-i18n="how.title">OpenCode stays the engine. Control becomes the operating layer.</h2>
+        </div>
+        <div class="flow" aria-label="OpenCode Control architecture summary">
+          <div>
+            <span>01</span>
+            <strong data-i18n="how.browser.title">Browser UI</strong>
+            <small data-i18n="how.browser.copy">Local web interface</small>
+          </div>
+          <svg viewBox="0 0 64 24" aria-hidden="true"><path d="M2 12h56m0 0-8-7m8 7-8 7"/></svg>
+          <div>
+            <span>02</span>
+            <strong>OpenCode Control</strong>
+            <small data-i18n="how.control.copy">Orchestration, state, search, events</small>
+          </div>
+          <svg viewBox="0 0 64 24" aria-hidden="true"><path d="M2 12h56m0 0-8-7m8 7-8 7"/></svg>
+          <div>
+            <span>03</span>
+            <strong data-i18n="how.runtime.title">OpenCode runtimes</strong>
+            <small data-i18n="how.runtime.copy">Managed or external project servers</small>
+          </div>
+        </div>
+        <p class="how-note" data-i18n="how.note">
+          The app listens on loopback, stores Control state on your machine, and keeps OpenCode
+          files such as Agents, Skills, Commands, MCP, and <code>AGENTS.md</code> native.
+        </p>
+      </section>
+
+      <section class="screenshots" id="screenshots" aria-labelledby="screenshots-title">
+        <div class="section-heading">
+          <p class="eyebrow" data-i18n="screens.eyebrow">Screenshots</p>
+          <h2 id="screenshots-title" data-i18n="screens.title">See OpenCode Control in action.</h2>
+          <p data-i18n="screens.copy">Real product screens from the repository, arranged around common agent workflows.</p>
+        </div>
+        <article class="screenshot-row">
+          <img src="images/sessions-en.png" alt="OpenCode Control Sessions screen." width="1440" height="1000" loading="lazy" data-shot="sessions" data-i18n-attr="alt:screen.sessions.alt">
+          <div>
+            <h3 data-i18n="screen.sessions.title">Session history with context</h3>
+            <p data-i18n="screen.sessions.copy">Grouped Task runs, exact timestamps, statuses, usage, Markdown, tool calls, attachments, todos, and child subagent Sessions.</p>
+          </div>
+        </article>
+        <article class="screenshot-row reverse">
+          <img src="images/tasks-en.png" alt="OpenCode Control Tasks screen." width="1440" height="1000" loading="lazy" data-shot="tasks" data-i18n-attr="alt:screen.tasks.alt">
+          <div>
+            <h3 data-i18n="screen.tasks.title">Managed and scheduled Tasks</h3>
+            <p data-i18n="screen.tasks.copy">Create manual or recurring agent runs, pause or resume schedules, rerun work, abort active runs, and inspect run history.</p>
+          </div>
+        </article>
+        <article class="screenshot-row">
+          <img src="images/mcp-en.png" alt="OpenCode Control MCP servers screen." width="1440" height="1000" loading="lazy" data-shot="mcp" data-i18n-attr="alt:screen.mcp.alt">
+          <div>
+            <h3 data-i18n="screen.mcp.title">MCP configuration you can trust</h3>
+            <p data-i18n="screen.mcp.copy">Compare global config, project overrides, and live runtime connection state before applying changes to OpenCode.</p>
+          </div>
+        </article>
+        <article class="screenshot-row reverse">
+          <img src="images/artifacts-en.png" alt="OpenCode Control Artifacts screen." width="1440" height="1000" loading="lazy" data-shot="artifacts" data-i18n-attr="alt:screen.artifacts.alt">
+          <div>
+            <h3 data-i18n="screen.artifacts.title">Artifact previews without broad filesystem scans</h3>
+            <p data-i18n="screen.artifacts.copy">Open generated images, PDFs, CSV, JSON, Markdown, text, logs, and ZIP archives from explicit artifact locations.</p>
+          </div>
+        </article>
+      </section>
+
+      <section class="quick-start" id="quick-start" aria-labelledby="quick-start-title">
+        <div>
+          <p class="eyebrow" data-i18n="quick.eyebrow">Quick Start</p>
+          <h2 id="quick-start-title" data-i18n="quick.title">Install from a local clone.</h2>
+          <p data-i18n="quick.copy">
+            The installer builds the frontend and Python wheel, installs <code>opencode-control</code>
+            with <code>uv tool</code>, then starts the local browser UI.
+          </p>
+        </div>
+        <div class="terminal">
+          <div class="terminal-bar">
+            <span>bash</span>
+            <button type="button" class="copy-button" data-copy-target="install-commands">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 7a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2V7Zm2 0v10h8V7h-8ZM4 3h10v2H6v10H4V3Z"/></svg>
+              <span data-copy-label data-i18n="quick.copyButton">Copy</span>
+            </button>
+          </div>
+          <pre><code id="install-commands">git clone https://github.com/opsmon/Opencode-Control.git OpenCode-Control
+cd OpenCode-Control
+./install.sh</code></pre>
+          <p class="terminal-note" data-i18n="quick.note">After installation, run <code>opencode-control start</code> to open the local Control UI again.</p>
+        </div>
+      </section>
+
+      <section class="open-source" aria-labelledby="open-source-title">
+        <div>
+          <p class="eyebrow" data-i18n="open.eyebrow">Open Source</p>
+          <h2 id="open-source-title" data-i18n="open.title">Inspect the code, open an issue, or contribute a fix.</h2>
+          <p data-i18n="open.copy">OpenCode Control is MIT licensed and designed as a local-first layer around the OpenCode CLI and its native project files.</p>
+        </div>
+        <a class="button primary" href="https://github.com/opsmon/Opencode-Control">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M12 .9a11.1 11.1 0 0 0-3.5 21.6c.55.1.75-.24.75-.53v-2c-3.06.67-3.7-1.3-3.7-1.3-.5-1.27-1.22-1.6-1.22-1.6-1-.69.08-.68.08-.68 1.1.08 1.68 1.14 1.68 1.14.98 1.68 2.57 1.2 3.2.92.1-.71.38-1.2.7-1.47-2.44-.28-5-1.22-5-5.43 0-1.2.43-2.18 1.13-2.95-.11-.28-.49-1.4.11-2.91 0 0 .92-.3 3.02 1.12A10.5 10.5 0 0 1 12 6.44c.93 0 1.86.13 2.74.37 2.09-1.42 3.01-1.12 3.01-1.12.6 1.51.22 2.63.11 2.91.7.77 1.13 1.75 1.13 2.95 0 4.22-2.57 5.14-5.02 5.42.39.34.74 1.01.74 2.04v2.96c0 .29.2.64.76.53A11.1 11.1 0 0 0 12 .9Z"/>
+          </svg>
+          <span data-i18n="cta.repository">View repository</span>
+        </a>
+      </section>
+    </main>
+
+    <footer>
+      <strong>OpenCode Control</strong>
+      <span data-i18n="footer.license">MIT License</span>
+      <a href="https://github.com/opsmon/Opencode-Control">GitHub</a>
+    </footer>
+
+    <script src="script.js"></script>
+  </body>
+</html>
