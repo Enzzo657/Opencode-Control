@@ -76,6 +76,31 @@ def test_removes_multiple_trailing_members_without_overlapping_edits() -> None:
     assert json.loads(result) == {"keep": True}
 
 
+def test_replaces_last_member_without_overlapping_remove_and_add_edits() -> None:
+    source = (
+        "{\n"
+        '  "models": {\n'
+        '    "qwen": { "name": "Qwen" },\n'
+        '    "ornith": { "name": "Ornith" },\n'
+        '    "old": { "name": "Old" }\n'
+        "  }\n"
+        "}\n"
+    )
+    proposed = {
+        "models": {
+            "qwen": {"name": "Qwen"},
+            "ornith": {"name": "Ornith"},
+            "new": {"name": "New"},
+        }
+    }
+
+    result = patch_jsonc(source, proposed)
+
+    assert Parser(result).parse().value == proposed
+    assert '"old"' not in result
+    assert '"new"' in result
+
+
 def test_rejects_array_replacement_that_would_drop_comments() -> None:
     source = (
         '{\n  "command": [\n    "tool", // keep why this argument exists\n'

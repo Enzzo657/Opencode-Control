@@ -230,11 +230,31 @@ def _diff_object(
     for key, member in current.items():
         if key in proposed:
             _diff(source, member.value, proposed[key], edits)
-    removed_keys = {member.key for member in removed}
-    for member in removed:
+    paired = min(len(removed), len(added))
+    for member, (key, value) in zip(removed[:paired], added[:paired], strict=True):
+        _replace_member(source, member, key, value, edits)
+    remaining_removed = removed[paired:]
+    remaining_added = added[paired:]
+    removed_keys = {member.key for member in remaining_removed}
+    for member in remaining_removed:
         edits.extend(_remove_member_edits(source, node, member, removed_keys))
-    if added:
-        edits.extend(_add_member_edits(source, node, added))
+    if remaining_added:
+        edits.extend(_add_member_edits(source, node, remaining_added))
+
+
+def _replace_member(
+    source: str, member: Member, key: str, value: Any, edits: list[Edit]
+) -> None:
+    if _contains_comment(source[member.start : member.value.end]):
+        raise JsoncEditError("changing this value would remove an existing comment")
+    rendered = _format_value(source, member.value.start, value)
+    edits.append(
+        Edit(
+            member.start,
+            member.value.end,
+            f"{json.dumps(key, ensure_ascii=False)}: {rendered}",
+        )
+    )
 
 
 def _remove_member_edits(

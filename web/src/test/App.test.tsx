@@ -51,7 +51,7 @@ describe("OpenCode Control", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/api/v1/projects")) return response([project]);
-      if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.3.1", projects: 1 });
+      if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.3.2", projects: 1 });
       if (path.includes("/api/v1/events") && (!init?.method || init.method === "GET")) return response({ events: [], unread: 0 });
       if (path.includes("/api/v1/events/") && init?.method === "POST") return response(path.endsWith("/read-all") ? { read: 0 } : { read: true });
       if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
@@ -97,7 +97,7 @@ describe("OpenCode Control", () => {
     expect(screen.getByText("Подключен")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Текущий проект.*Checkout API/ }));
     expect(screen.getAllByText("Подключен")).toHaveLength(2);
-    expect(screen.getByText("Control 0.3.1")).toBeInTheDocument();
+    expect(screen.getByText("Control 0.3.2")).toBeInTheDocument();
   });
 
   it("announces a backend update without interrupting the open interface", async () => {
@@ -1624,6 +1624,24 @@ describe("OpenCode Control", () => {
     const drawer = await screen.findByRole("dialog", { name: "Сессия Fix checkout" });
     expect(drawer.querySelector('.status[data-status="stalled"]')).toHaveTextContent("Нет прогресса");
     expect(screen.getByRole("button", { name: "Остановить ответ" })).toBeInTheDocument();
+  });
+
+  it("shows a later runtime failure on a task persisted as completed", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/snapshot")) {
+        const original = await fallback(input, init);
+        const payload = await original.json();
+        payload.statuses = { ses_1: { type: "failed", error: "Provider failed" } };
+        return response(payload);
+      }
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(screen.getByRole("button", { name: "Задачи" }));
+    expect(await screen.findByText("Ошибка")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Запустить повторно" })).toBeInTheDocument();
   });
 
   it("shows the effective Skill name separately from its directory", async () => {
