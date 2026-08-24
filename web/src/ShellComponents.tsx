@@ -1,6 +1,6 @@
-import { Bot, Braces, Check, ChevronDown, CircleStop, FolderGit2, Globe2, Network, Play, Search, SquareTerminal } from "lucide-react";
+import { Bot, Braces, Check, ChevronDown, CircleStop, FolderGit2, FolderOpen, Globe2, Network, Play, Search, SquareTerminal } from "lucide-react";
 import { useRef, useState, type FormEvent, type ReactNode } from "react";
-import { api, jsonBody } from "./api";
+import { api, ApiError, jsonBody } from "./api";
 import { translate, useI18n } from "./i18n";
 import { themes } from "./theme";
 import type { Project } from "./types";
@@ -29,9 +29,62 @@ export function ServerControl({ project, onChange }: { project: Project; onChang
 }
 
 export function ProjectDialog({ projects, onClose, onCreated, onSelect }: { projects: Project[]; onClose: () => void; onCreated: (project: Project) => void; onSelect: (id: string) => void }) {
-  const [name, setName] = useState(""); const [root, setRoot] = useState(""); const [endpoint, setEndpoint] = useState(""); const [error, setError] = useState<string | null>(null); const [busy, setBusy] = useState(false);
-  async function submit(event: FormEvent) { event.preventDefault(); setBusy(true); try { const project = await api<Project>("/api/v1/projects", { method: "POST", ...jsonBody({ name, root, endpoint: endpoint || null }) }); onCreated(project); } catch (reason) { setError(message(reason)); } finally { setBusy(false); } }
-  return <Modal title={translate("projectDialog.title")} subtitle={translate("projectDialog.subtitle")} onClose={onClose}><div className="project-list">{projects.map((project) => <button key={project.id} onClick={() => onSelect(project.id)}><span className="project-avatar">{project.name.slice(0, 2).toUpperCase()}</span><span><strong>{project.name}</strong><small>{project.root}</small></span><Status value={project.server.state === "running" ? "connected" : project.server.state} /></button>)}</div><div className="modal-divider"><span>{translate("projectDialog.add")}</span></div><form className="form-stack" onSubmit={(event) => void submit(event)}>{error && <Banner tone="danger">{error}</Banner>}<Field label={translate("common.name")}><input value={name} onChange={(event) => setName(event.target.value)} required placeholder={translate("projectDialog.namePlaceholder")} /></Field><Field label={translate("projectDialog.folder")}><input className="mono" value={root} onChange={(event) => setRoot(event.target.value)} required placeholder="/Users/you/code/payments" /></Field><Field label={translate("projectDialog.externalEndpoint")} hint={translate("projectDialog.externalEndpointHint")}><input className="mono" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="http://127.0.0.1:4096" /></Field><button className="primary-button full" disabled={busy}>{busy ? translate("projectDialog.adding") : translate("projectDialog.add")}</button></form></Modal>;
+  const [name, setName] = useState("");
+  const [root, setRoot] = useState("");
+  const [endpoint, setEndpoint] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [selectingDirectory, setSelectingDirectory] = useState(false);
+
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    setBusy(true);
+    try {
+      const project = await api<Project>("/api/v1/projects", { method: "POST", ...jsonBody({ name, root, endpoint: endpoint || null }) });
+      onCreated(project);
+    } catch (reason) {
+      setError(message(reason));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function selectDirectory() {
+    setSelectingDirectory(true);
+    try {
+      const selected = await api<{ path: string | null }>("/api/v1/system/select-directory", { method: "POST", ...jsonBody({}) });
+      if (!selected.path) return;
+      setRoot(selected.path);
+      const parts = selected.path.split("/").filter(Boolean);
+      const folderName = parts[parts.length - 1] ?? "";
+      if (folderName) setName((current) => current.trim() ? current : folderName);
+      setError(null);
+    } catch (reason) {
+      setError(reason instanceof ApiError && reason.status === 409
+        ? translate("projectDialog.folderPickerBusy")
+        : reason instanceof ApiError && [501, 503, 504].includes(reason.status)
+          ? translate("projectDialog.folderPickerUnavailable")
+          : message(reason));
+    } finally {
+      setSelectingDirectory(false);
+    }
+  }
+
+  return <Modal title={translate("projectDialog.title")} subtitle={translate("projectDialog.subtitle")} onClose={onClose}>
+    <div className="project-list">{projects.map((project) => <button key={project.id} onClick={() => onSelect(project.id)}><span className="project-avatar">{project.name.slice(0, 2).toUpperCase()}</span><span><strong>{project.name}</strong><small>{project.root}</small></span><Status value={project.server.state === "running" ? "connected" : project.server.state} /></button>)}</div>
+    <div className="modal-divider"><span>{translate("projectDialog.add")}</span></div>
+    <form className="form-stack" onSubmit={(event) => void submit(event)}>
+      {error && <Banner tone="danger">{error}</Banner>}
+      <Field label={translate("common.name")}><input value={name} onChange={(event) => setName(event.target.value)} required placeholder={translate("projectDialog.namePlaceholder")} /></Field>
+      <div className="field">
+        <label htmlFor="project-directory">{translate("projectDialog.folder")}</label>
+        <div className="directory-input"><input id="project-directory" className="mono" value={root} onChange={(event) => setRoot(event.target.value)} required placeholder="/Users/you/code/payments" /><button type="button" className="secondary-button" onClick={() => void selectDirectory()} disabled={selectingDirectory || busy}><FolderOpen size={16} /> {translate(selectingDirectory ? "projectDialog.selectingFolder" : "projectDialog.selectFolder")}</button></div>
+        <small>{translate("projectDialog.folderHint")}</small>
+      </div>
+      <Field label={translate("projectDialog.externalEndpoint")} hint={translate("projectDialog.externalEndpointHint")}><input className="mono" value={endpoint} onChange={(event) => setEndpoint(event.target.value)} placeholder="http://127.0.0.1:4096" /></Field>
+      <button className="primary-button full" disabled={busy || selectingDirectory}>{busy ? translate("projectDialog.adding") : translate("projectDialog.add")}</button>
+    </form>
+  </Modal>;
 }
 
 export function ThemeDialog({ value, onChange, onClose }: { value: string; onChange: (value: string) => void; onClose: () => void }) {

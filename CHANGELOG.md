@@ -5,6 +5,16 @@ All notable changes to OpenCode Control are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/). The current release line is
 an alpha and may still change its local data model and API before `1.0.0`.
 
+## [0.3.0] - 2026-08-24
+
+### Added
+
+- Added a native project directory picker to the project registration dialog.
+- Uses Finder on macOS and `zenity` or `kdialog` on Linux while preserving manual path
+  entry for headless environments.
+- Automatically suggests the selected folder name without replacing a custom project
+  name.
+
 ## [0.2.4] - 2026-08-23
 
 ### Fixed
@@ -117,3 +127,4 @@ First release checkpoint for the local-first alpha.
 [0.2.2]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.1...v0.2.2
 [0.2.3]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.2...v0.2.3
 [0.2.4]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.3...v0.2.4
+[0.3.0]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.4...v0.3.0

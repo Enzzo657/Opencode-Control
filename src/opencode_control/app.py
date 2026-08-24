@@ -13,6 +13,7 @@ import math
 import mimetypes
 import re
 import secrets
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -401,6 +402,7 @@ class ControlState:
         self.skill_import_previews: dict[str, dict[str, Any]] = {}
         self.skill_import_lock = threading.RLock()
         self.skill_import_slots = threading.BoundedSemaphore(4)
+        self.directory_picker_lock = threading.Lock()
         self.dashboard_cache: dict[tuple[str, str, str], tuple[datetime, dict[str, Any]]] = {}
         self.dashboard_lock = threading.RLock()
         self._command_slots = threading.BoundedSemaphore(8)
@@ -483,6 +485,67 @@ def csrf_guard(
 
 
 WriteGuard = Annotated[None, Depends(csrf_guard)]
+
+
+def _select_project_directory() -> str | None:
+    if sys.platform == "darwin":
+        executable = "/usr/bin/osascript"
+        command = [
+            executable,
+            "-e",
+            'POSIX path of (choose folder with prompt "Select an OpenCode project folder")',
+        ]
+    elif sys.platform.startswith("linux"):
+        executable = shutil.which("zenity")
+        if executable:
+            command = [
+                executable,
+                "--file-selection",
+                "--directory",
+                "--title=Select an OpenCode project folder",
+            ]
+        else:
+            executable = shutil.which("kdialog")
+            if not executable:
+                raise HTTPException(
+                    status_code=501,
+                    detail="native directory picker is unavailable on this system",
+                )
+            command = [
+                executable,
+                "--getexistingdirectory",
+                str(Path.home()),
+                "Select an OpenCode project folder",
+            ]
+    else:
+        raise HTTPException(
+            status_code=501,
+            detail="native directory picker is unavailable on this system",
+        )
+    try:
+        result = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=300,
+            check=False,
+        )
+    except FileNotFoundError as error:
+        raise HTTPException(
+            status_code=501,
+            detail="native directory picker is unavailable on this system",
+        ) from error
+    except subprocess.TimeoutExpired as error:
+        raise HTTPException(status_code=504, detail="directory picker timed out") from error
+    selected = result.stdout.strip()
+    if result.returncode != 0:
+        detail = result.stderr.casefold()
+        if not detail or "cancel" in detail or "-128" in detail:
+            return None
+        raise HTTPException(status_code=503, detail="native directory picker failed to open")
+    if not selected:
+        return None
+    return str(resolve_project_root(selected))
 
 
 def _global_opencode_configs() -> tuple[WorkspaceRoot, dict[Path, dict[str, Any]]]:
@@ -2590,6 +2653,15 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
     def delete_secret(name: str, guard: WriteGuard) -> Response:
         remove_secret(name)
         return Response(status_code=204)
+
+    @app.post("/api/v1/system/select-directory")
+    def select_directory(guard: WriteGuard) -> dict[str, str | None]:
+        if not state.directory_picker_lock.acquire(blocking=False):
+            raise HTTPException(status_code=409, detail="directory picker is already open")
+        try:
+            return {"path": _select_project_directory()}
+        finally:
+            state.directory_picker_lock.release()
 
     @app.post("/api/v1/projects", status_code=201)
     def add_project(payload: ProjectCreate, guard: WriteGuard) -> dict[str, Any]:
