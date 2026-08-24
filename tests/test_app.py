@@ -2959,6 +2959,111 @@ def test_command_runs_natively_and_rejects_busy_session(
         assert completed["error"] is None
 
 
+def test_task_reconciliation_waits_for_a_finished_assistant_message(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "project"
+    root.mkdir()
+    completed_at = (datetime.now(UTC).timestamp() + 1) * 1000
+    messages: list[dict[str, Any]] = [
+        {
+            "info": {
+                "id": "msg_user",
+                "role": "user",
+                "time": {"created": completed_at - 500},
+            },
+            "parts": [{"type": "text", "text": "Keep working"}],
+        }
+    ]
+
+    class FakeOpenCodeClient:
+        def __init__(self, endpoint: str, directory: str, **kwargs: Any) -> None:
+            return
+
+        def request(
+            self,
+            method: str,
+            path: str,
+            *,
+            body: dict[str, Any] | None = None,
+            directory: bool = True,
+        ) -> dict[str, Any]:
+            return {"worktree": str(root)}
+
+        def ensure_session_directory(
+            self, session_id: str, *, missing_ok: bool = False
+        ) -> bool:
+            return True
+
+        def snapshot(self) -> dict[str, Any]:
+            return {
+                "state": "connected",
+                "errors": [],
+                "sessions": [{"id": "ses_task", "title": "Long task"}],
+                "statuses": {},
+                "agents": [],
+                "mcp": {},
+                "providers": {},
+                "config": {},
+            }
+
+        def session_messages(self, session_id: str) -> list[dict[str, Any]]:
+            assert session_id == "ses_task"
+            return messages
+
+    class FutureDateTime(datetime):
+        @classmethod
+        def now(cls, tz: Any = None) -> datetime:
+            return datetime.now(tz) + timedelta(seconds=10)
+
+    monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
+    with _client(tmp_path) as client:
+        project_id = _project(client, root, endpoint="http://127.0.0.1:4096")["id"]
+        control = client.app.state.control
+        task = control.store.create_task(
+            project_id,
+            title="Long task",
+            prompt="Keep working",
+            agent="build",
+            model="ollama-home/qwen-test",
+        )
+        control.store.update_task(
+            project_id,
+            str(task["id"]),
+            status="running",
+            session_id="ses_task",
+        )
+        control.store.add_task_session(project_id, str(task["id"]), "ses_task")
+        monkeypatch.setattr(app_module, "datetime", FutureDateTime)
+
+        client.get(f"/api/v1/projects/{project_id}/snapshot")
+        waiting = control.store.get_task(project_id, str(task["id"]))
+        assert waiting is not None
+        assert waiting["status"] == "running"
+
+        messages.append(
+            {
+                "info": {
+                    "id": "msg_assistant",
+                    "role": "assistant",
+                    "time": {"created": completed_at - 400},
+                },
+                "parts": [{"type": "step-start"}],
+            }
+        )
+        client.get(f"/api/v1/projects/{project_id}/snapshot")
+        unfinished = control.store.get_task(project_id, str(task["id"]))
+        assert unfinished is not None
+        assert unfinished["status"] == "running"
+
+        messages[-1]["info"]["time"]["completed"] = completed_at
+        messages[-1]["parts"].append({"type": "step-finish", "reason": "stop"})
+        client.get(f"/api/v1/projects/{project_id}/snapshot")
+        completed = control.store.get_task(project_id, str(task["id"]))
+        assert completed is not None
+        assert completed["status"] == "completed"
+
+
 def test_deleted_command_session_ignores_late_background_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

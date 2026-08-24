@@ -5,6 +5,15 @@ All notable changes to OpenCode Control are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/). The current release line is
 an alpha and may still change its local data model and API before `1.0.0`.
 
+## [0.3.1] - 2026-08-24
+
+### Fixed
+
+- Keeps tasks running until their linked OpenCode session produces an explicit terminal
+  assistant message instead of treating a transiently missing runtime status as completion.
+- Shows a task as running while its linked session reports active work, even if an earlier
+  synchronization race persisted the task as completed.
+
 ## [0.3.0] - 2026-08-24
 
 ### Added
@@ -128,3 +137,4 @@ First release checkpoint for the local-first alpha.
 [0.2.3]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.2...v0.2.3
 [0.2.4]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.3...v0.2.4
 [0.3.0]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.4...v0.3.0
+[0.3.1]: https://github.com/Enzzo657/Opencode-Control/compare/v0.3.0...v0.3.1

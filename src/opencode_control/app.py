@@ -3477,17 +3477,30 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             except ValueError:
                 age = 0
             has_known_session = session_id in session_ids
-            if has_known_session and not active and (failed or age >= 3):
+            if not has_known_session or active:
+                continue
+            if failed:
                 if task.get("cron"):
                     next_status = "scheduled" if task.get("schedule_enabled") else "paused"
                 else:
-                    next_status = "failed" if failed else "completed"
+                    next_status = "failed"
                 state.store.update_task(
                     project_id,
                     str(task["id"]),
                     status=next_status,
                     error=failure_error,
                 )
+                continue
+            if age < 3:
+                continue
+            try:
+                message_client = client_for_session(project_id, session_id)
+                if message_client is None:
+                    continue
+                messages = message_client.session_messages(session_id)
+            except (OpenCodeError, HTTPException):
+                continue
+            reconcile_task_session_messages(project_id, session_id, messages)
 
     @app.get("/api/v1/projects/{project_id}/tasks")
     def tasks(project_id: str) -> list[dict[str, Any]]:
