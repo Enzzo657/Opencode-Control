@@ -3042,7 +3042,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         if (
             task is None
             or task.get("session_id") != session_id
-            or task.get("status") not in {"dispatching", "running", "failed"}
+            or task.get("status") not in {"dispatching", "running", "failed", "completed"}
         ):
             return
         last_user = -1
@@ -3092,6 +3092,20 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             return
         raw_parts = message.get("parts")
         parts = raw_parts if isinstance(raw_parts, list) else []
+        finish_reason = info.get("finish")
+        if not isinstance(finish_reason, str):
+            finish_reason = next(
+                (
+                    str(part["reason"])
+                    for part in reversed(parts)
+                    if isinstance(part, dict)
+                    and part.get("type") == "step-finish"
+                    and isinstance(part.get("reason"), str)
+                ),
+                None,
+            )
+        if finish_reason == "tool-calls":
+            return
         finished = (
             bool(message_time.get("completed"))
             or info.get("finish") == "stop"
@@ -3430,7 +3444,13 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                 or not state.store.has_active_scheduled_run(project_id, str(item["id"]))
             )
         ]
-        if not running:
+        repairable = (
+            [item for item in result if item["status"] == "completed"]
+            if snapshot is not None
+            else []
+        )
+        candidates = [*running, *repairable]
+        if not candidates:
             return
         if snapshot is None:
             try:
@@ -3461,7 +3481,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             "running",
             "stalled",
         }
-        for task in running:
+        for task in candidates:
             session_id = task.get("session_id")
             if not isinstance(session_id, str):
                 continue
@@ -3480,6 +3500,16 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             if not has_known_session or active:
                 continue
             if failed:
+                if task["status"] == "completed":
+                    try:
+                        message_client = client_for_session(project_id, session_id)
+                        if message_client is None:
+                            continue
+                        messages = message_client.session_messages(session_id)
+                    except (OpenCodeError, HTTPException):
+                        continue
+                    reconcile_task_session_messages(project_id, session_id, messages)
+                    continue
                 if task.get("cron"):
                     next_status = "scheduled" if task.get("schedule_enabled") else "paused"
                 else:
@@ -3490,6 +3520,8 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     status=next_status,
                     error=failure_error,
                 )
+                continue
+            if task["status"] == "completed":
                 continue
             if age < 3:
                 continue

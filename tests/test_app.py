@@ -2965,6 +2965,7 @@ def test_task_reconciliation_waits_for_a_finished_assistant_message(
     root = tmp_path / "project"
     root.mkdir()
     completed_at = (datetime.now(UTC).timestamp() + 1) * 1000
+    runtime_statuses: dict[str, dict[str, str]] = {}
     messages: list[dict[str, Any]] = [
         {
             "info": {
@@ -3000,7 +3001,7 @@ def test_task_reconciliation_waits_for_a_finished_assistant_message(
                 "state": "connected",
                 "errors": [],
                 "sessions": [{"id": "ses_task", "title": "Long task"}],
-                "statuses": {},
+                "statuses": runtime_statuses,
                 "agents": [],
                 "mcp": {},
                 "providers": {},
@@ -3057,11 +3058,56 @@ def test_task_reconciliation_waits_for_a_finished_assistant_message(
         assert unfinished["status"] == "running"
 
         messages[-1]["info"]["time"]["completed"] = completed_at
-        messages[-1]["parts"].append({"type": "step-finish", "reason": "stop"})
+        messages[-1]["info"]["finish"] = "tool-calls"
+        messages[-1]["parts"].append({"type": "step-finish", "reason": "tool-calls"})
+        client.get(f"/api/v1/projects/{project_id}/snapshot")
+        tool_call = control.store.get_task(project_id, str(task["id"]))
+        assert tool_call is not None
+        assert tool_call["status"] == "running"
+
+        messages.append(
+            {
+                "info": {
+                    "id": "msg_final",
+                    "role": "assistant",
+                    "finish": "stop",
+                    "time": {
+                        "created": completed_at + 100,
+                        "completed": completed_at + 200,
+                    },
+                },
+                "parts": [
+                    {"type": "step-start"},
+                    {"type": "text", "text": "Done"},
+                    {"type": "step-finish", "reason": "stop"},
+                ],
+            }
+        )
         client.get(f"/api/v1/projects/{project_id}/snapshot")
         completed = control.store.get_task(project_id, str(task["id"]))
         assert completed is not None
         assert completed["status"] == "completed"
+
+        runtime_statuses["ses_task"] = {"type": "failed", "error": "Provider failed"}
+        messages.append(
+            {
+                "info": {
+                    "id": "msg_error",
+                    "role": "assistant",
+                    "error": "Provider failed",
+                    "time": {
+                        "created": completed_at + 300,
+                        "completed": completed_at + 400,
+                    },
+                },
+                "parts": [],
+            }
+        )
+        client.get(f"/api/v1/projects/{project_id}/snapshot")
+        failed = control.store.get_task(project_id, str(task["id"]))
+        assert failed is not None
+        assert failed["status"] == "failed"
+        assert failed["error"] == "Provider failed"
 
 
 def test_deleted_command_session_ignores_late_background_error(

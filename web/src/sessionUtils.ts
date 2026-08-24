@@ -4,7 +4,7 @@ import type { Agent, Session, Snapshot, Task } from "./types";
 export function compact(value: number) { return new Intl.NumberFormat(intlLocale(), { notation: value > 9999 ? "compact" : "standard", maximumFractionDigits: 1 }).format(value); }
 export function statusOf(snapshot: Snapshot | null | undefined, sessionId: string) { const status = snapshot?.statuses[sessionId]; return status?.type ?? status?.status ?? "idle"; }
 export function sessionStatus(snapshot: Snapshot | null | undefined, session: Session) { const runtime = snapshot?.statuses[session.id]; const runtimeStatus = runtime?.type ?? runtime?.status; return runtimeStatus && runtimeStatus !== "idle" ? runtimeStatus : session.control_task?.session_status ?? runtimeStatus ?? "idle"; }
-export function taskStatus(snapshot: Snapshot | null | undefined, task: Task) { const runtimeStatus = task.session_id ? statusOf(snapshot, task.session_id) : "idle"; return task.status === "completed" && ["busy", "dispatching", "in_progress", "pending", "queued", "running", "stalled"].includes(runtimeStatus) ? runtimeStatus : task.status; }
+export function taskStatus(snapshot: Snapshot | null | undefined, task: Task) { const runtimeStatus = task.session_id ? statusOf(snapshot, task.session_id) : "idle"; return task.status === "completed" && ["busy", "dispatching", "error", "failed", "in_progress", "pending", "queued", "running", "stalled"].includes(runtimeStatus) ? runtimeStatus : task.status; }
 
 export function modelIdOf(session?: Session) { const id = session?.model?.modelID ?? session?.model?.id; return id ? `${session?.model?.providerID ? `${session.model.providerID}/` : ""}${id}` : ""; }
 export function modelOf(session: Session) { return modelIdOf(session) || translate("session.defaultModel"); }
