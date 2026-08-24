@@ -87,6 +87,83 @@ def test_spa_shell_is_never_cached(tmp_path: Path) -> None:
     assert response.headers["cache-control"] == "no-store"
 
 
+def test_native_directory_picker_selects_cancels_and_rejects_unsupported_platforms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    selected = tmp_path / "Selected Project"
+    selected.mkdir()
+    calls: list[tuple[list[str], dict[str, Any]]] = []
+
+    def run(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        calls.append((command, kwargs))
+        return SimpleNamespace(returncode=0, stdout=f"{selected}/\n", stderr="")
+
+    monkeypatch.setattr(app_module.sys, "platform", "darwin")
+    monkeypatch.setattr(app_module.subprocess, "run", run)
+    with _client(tmp_path) as client:
+        assert client.post("/api/v1/system/select-directory").status_code == 403
+        headers = _csrf(client)
+        picker_lock = client.app.state.control.directory_picker_lock
+        picker_lock.acquire()
+        try:
+            assert client.post(
+                "/api/v1/system/select-directory", headers=headers
+            ).status_code == 409
+        finally:
+            picker_lock.release()
+        response = client.post("/api/v1/system/select-directory", headers=headers)
+        assert response.status_code == 200
+        assert response.json() == {"path": str(selected)}
+        command, options = calls[0]
+        assert command[0] == "/usr/bin/osascript"
+        assert "choose folder" in command[2]
+        assert options == {
+            "capture_output": True,
+            "text": True,
+            "timeout": 300,
+            "check": False,
+        }
+
+        monkeypatch.setattr(
+            app_module.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                returncode=1, stdout="", stderr="execution error: User canceled. (-128)"
+            ),
+        )
+        cancelled = client.post("/api/v1/system/select-directory", headers=headers)
+        assert cancelled.status_code == 200
+        assert cancelled.json() == {"path": None}
+
+        monkeypatch.setattr(app_module.sys, "platform", "win32")
+        unsupported = client.post("/api/v1/system/select-directory", headers=headers)
+        assert unsupported.status_code == 501
+
+        monkeypatch.setattr(app_module.sys, "platform", "linux")
+        monkeypatch.setattr(
+            app_module.shutil,
+            "which",
+            lambda name: "/usr/bin/kdialog" if name == "kdialog" else None,
+        )
+        linux_calls: list[list[str]] = []
+        monkeypatch.setattr(
+            app_module.subprocess,
+            "run",
+            lambda command, **kwargs: (
+                linux_calls.append(command)
+                or SimpleNamespace(returncode=0, stdout=f"{selected}\n", stderr="")
+            ),
+        )
+        linux = client.post("/api/v1/system/select-directory", headers=headers)
+        assert linux.status_code == 200
+        assert linux.json() == {"path": str(selected)}
+        assert linux_calls[0][:2] == ["/usr/bin/kdialog", "--getexistingdirectory"]
+
+        monkeypatch.setattr(app_module.shutil, "which", lambda name: None)
+        headless = client.post("/api/v1/system/select-directory", headers=headers)
+        assert headless.status_code == 501
+
+
 def _project(client: TestClient, root: Path, *, endpoint: str | None = None) -> dict[str, Any]:
     response = client.post(
         "/api/v1/projects",

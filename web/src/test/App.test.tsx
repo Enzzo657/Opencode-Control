@@ -51,7 +51,7 @@ describe("OpenCode Control", () => {
     vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
       const path = String(input);
       if (path.endsWith("/api/v1/projects")) return response([project]);
-      if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.2.4", projects: 1 });
+      if (path.endsWith("/api/v1/health")) return response({ healthy: true, version: "0.3.0", projects: 1 });
       if (path.includes("/api/v1/events") && (!init?.method || init.method === "GET")) return response({ events: [], unread: 0 });
       if (path.includes("/api/v1/events/") && init?.method === "POST") return response(path.endsWith("/read-all") ? { read: 0 } : { read: true });
       if (path.includes("/api/v1/dashboard")) return response(dashboardUsage(path.includes("scope=global") ? "global" : "project"));
@@ -97,7 +97,7 @@ describe("OpenCode Control", () => {
     expect(screen.getByText("Подключен")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Текущий проект.*Checkout API/ }));
     expect(screen.getAllByText("Подключен")).toHaveLength(2);
-    expect(screen.getByText("Control 0.2.4")).toBeInTheDocument();
+    expect(screen.getByText("Control 0.3.0")).toBeInTheDocument();
   });
 
   it("announces a backend update without interrupting the open interface", async () => {
@@ -136,7 +136,7 @@ describe("OpenCode Control", () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Дашборд" });
     const trigger = await screen.findByRole("button", { name: "Открыть центр событий" });
-    expect(trigger).toHaveTextContent("1");
+    await waitFor(() => expect(trigger).toHaveTextContent("1"));
     fireEvent.click(trigger);
     expect(await screen.findByRole("region", { name: "События" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Текущий" })).toHaveClass("active");
@@ -558,6 +558,31 @@ describe("OpenCode Control", () => {
     render(<App />);
     expect(await screen.findByText(/Весь OpenCode/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Добавить первый проект" })).toBeInTheDocument();
+  });
+
+  it("selects a native project folder and preserves a custom project name", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    let selections = 0;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      if (String(input).endsWith("/api/v1/system/select-directory") && init?.method === "POST") { const index = selections++; return index === 0 ? response({ path: "/code/Selected Project" }) : index === 1 ? response({ path: "/code/Another Project" }) : response({ detail: "native directory picker is unavailable" }, 501); }
+      return fallback(input, init);
+    });
+
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(screen.getByRole("button", { name: /Текущий проект.*Checkout API/ }));
+    fireEvent.click(await screen.findByRole("button", { name: "Выбрать" }));
+    expect(await screen.findByDisplayValue("/code/Selected Project")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Selected Project")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByDisplayValue("Selected Project"), { target: { value: "Custom workspace" } });
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать" }));
+    expect(await screen.findByDisplayValue("/code/Another Project")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Custom workspace")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Выбрать" }));
+    expect(await screen.findByText("Системный выбор папки недоступен. Введите путь вручную.")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("/code/Another Project")).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.filter(([input, init]) => String(input).endsWith("/api/v1/system/select-directory") && init?.method === "POST")).toHaveLength(3);
   });
 
   it("shows persistent startup diagnostics and OpenCode compatibility", async () => {
