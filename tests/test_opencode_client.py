@@ -427,6 +427,79 @@ def test_session_runtime_projects_todos_and_permissions(
     assert calls[-1] == ("POST", "/permission/per_1/reply", {"reply": "once"})
 
 
+def test_session_questions_reply_and_reject(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
+    calls: list[tuple[str, str, Any]] = []
+    pending = [
+        {
+            "id": "que_1",
+            "sessionID": "ses_1",
+            "questions": [
+                {
+                    "header": "Target",
+                    "question": "Where should files go?",
+                    "options": [
+                        {"label": "Current repo", "description": "Write here"},
+                        {"label": "Other repo", "description": "Write elsewhere"},
+                    ],
+                },
+                {
+                    "header": "Features",
+                    "question": "Which features?",
+                    "options": [{"label": "Flux", "description": "Use Flux"}],
+                    "multiple": True,
+                    "custom": False,
+                },
+            ],
+        },
+        {
+            "id": "que_other",
+            "sessionID": "ses_other",
+            "questions": [],
+        },
+    ]
+
+    def fake_request(method: str, path: str, **kwargs: Any) -> Any:
+        calls.append((method, path, kwargs.get("body")))
+        if path == "/question":
+            return pending
+        return True
+
+    monkeypatch.setattr(client, "request", fake_request)
+    assert client.session_questions("ses_1") == [
+        {
+            "id": "que_1",
+            "questions": [
+                {
+                    "header": "Target",
+                    "question": "Where should files go?",
+                    "options": [
+                        {"label": "Current repo", "description": "Write here"},
+                        {"label": "Other repo", "description": "Write elsewhere"},
+                    ],
+                    "multiple": False,
+                    "custom": True,
+                },
+                {
+                    "header": "Features",
+                    "question": "Which features?",
+                    "options": [{"label": "Flux", "description": "Use Flux"}],
+                    "multiple": True,
+                    "custom": False,
+                },
+            ],
+        }
+    ]
+    client.reply_question("ses_1", "que_1", [["Current repo"], ["Flux"]])
+    assert calls[-1] == (
+        "POST",
+        "/question/que_1/reply",
+        {"answers": [["Current repo"], ["Flux"]]},
+    )
+    client.reject_question("ses_1", "que_1")
+    assert calls[-1] == ("POST", "/question/que_1/reject", {})
+
+
 def test_messages_hide_synthetic_compaction_continuation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

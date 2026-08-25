@@ -351,6 +351,22 @@ class PermissionReply(StrictModel):
     reply: Literal["once", "always", "reject"]
 
 
+class QuestionReply(StrictModel):
+    answers: list[list[str]] = Field(min_length=1, max_length=50)
+
+    @model_validator(mode="after")
+    def validate_answers(self) -> QuestionReply:
+        if any(not answer or len(answer) > 50 for answer in self.answers):
+            raise ValueError("each question requires between 1 and 50 answers")
+        if any(
+            not value.strip() or len(value) > 10_000 or "\0" in value
+            for answer in self.answers
+            for value in answer
+        ):
+            raise ValueError("question answer is invalid")
+        return self
+
+
 class EventReadAll(StrictModel):
     project_id: str | None = Field(default=None, max_length=100)
 
@@ -3281,6 +3297,41 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         client.reply_permission(session_id, permission_id, payload.reply)
         state.store.resolve_permission_event(project_id, session_id, permission_id)
         return {"replied": True}
+
+    @app.get("/api/v1/projects/{project_id}/sessions/{session_id}/questions")
+    def session_questions(project_id: str, session_id: str) -> list[dict[str, Any]]:
+        client = client_for_session(project_id, session_id)
+        assert client is not None
+        return client.session_questions(session_id)
+
+    @app.post(
+        "/api/v1/projects/{project_id}/sessions/{session_id}/questions/{question_id}/reply"
+    )
+    def reply_session_question(
+        project_id: str,
+        session_id: str,
+        question_id: str,
+        payload: QuestionReply,
+        guard: WriteGuard,
+    ) -> dict[str, bool]:
+        client = client_for_session(project_id, session_id)
+        assert client is not None
+        client.reply_question(session_id, question_id, payload.answers)
+        return {"replied": True}
+
+    @app.post(
+        "/api/v1/projects/{project_id}/sessions/{session_id}/questions/{question_id}/reject"
+    )
+    def reject_session_question(
+        project_id: str,
+        session_id: str,
+        question_id: str,
+        guard: WriteGuard,
+    ) -> dict[str, bool]:
+        client = client_for_session(project_id, session_id)
+        assert client is not None
+        client.reject_question(session_id, question_id)
+        return {"rejected": True}
 
     @app.post("/api/v1/projects/{project_id}/sessions", status_code=201)
     def create_session(

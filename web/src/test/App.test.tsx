@@ -1118,6 +1118,30 @@ describe("OpenCode Control", () => {
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).includes("/permissions/per_1/reply") && init?.method === "POST")).toBe(true));
   });
 
+  it("answers and rejects pending OpenCode questions", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.includes("/sessions/ses_1/questions") && (!init?.method || init.method === "GET")) return response([{ id: "que_1", questions: [{ header: "Target", question: "Where should files go?", options: [{ label: "Current repo", description: "Write here" }], multiple: false, custom: true }, { header: "Features", question: "Which features?", options: [{ label: "Flux", description: "Use Flux" }, { label: "ESO", description: "Use External Secrets" }], multiple: true, custom: false }] }]);
+      if (path.includes("/questions/que_1/reply") && init?.method === "POST") return response({ replied: true });
+      if (path.includes("/questions/que_1/reject") && init?.method === "POST") return response({ rejected: true });
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(await screen.findByText("Fix checkout"));
+    expect(await screen.findByText("Требуется ответ")).toBeInTheDocument();
+    expect(screen.getByText("Where should files go?")).toBeInTheDocument();
+    fireEvent.change(screen.getByPlaceholderText("Введите другой вариант…"), { target: { value: "New GitOps repo" } });
+    fireEvent.click(screen.getByRole("checkbox", { name: /Flux/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /ESO/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Ответить и продолжить" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).includes("/questions/que_1/reply") && init?.method === "POST" && String(init.body).includes('[["New GitOps repo"],["Flux","ESO"]]'))).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Отклонить вопрос" }));
+    await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).includes("/questions/que_1/reject") && init?.method === "POST")).toBe(true));
+  });
+
   it("shows complete shell commands and output like the OpenCode CLI", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
