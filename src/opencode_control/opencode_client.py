@@ -491,6 +491,94 @@ class OpenCodeClient:
             body={"reply": reply},
         )
 
+    def session_questions(self, session_id: str) -> list[dict[str, Any]]:
+        value = self.request("GET", "/question")
+        if isinstance(value, dict):
+            value = value.get("data") or value.get("questions") or []
+        if not isinstance(value, list):
+            return []
+        result: list[dict[str, Any]] = []
+        for item in value:
+            if (
+                not isinstance(item, dict)
+                or (item.get("sessionID") or item.get("session_id")) != session_id
+                or not isinstance(item.get("id") or item.get("requestID"), str)
+                or not isinstance(item.get("questions"), list)
+            ):
+                continue
+            questions: list[dict[str, Any]] = []
+            for question in item["questions"][:50]:
+                if (
+                    not isinstance(question, dict)
+                    or not isinstance(question.get("question"), str)
+                    or not isinstance(question.get("header"), str)
+                ):
+                    continue
+                options = question.get("options")
+                normalized_options: list[dict[str, str]] = []
+                if isinstance(options, list):
+                    for option in options[:50]:
+                        if not isinstance(option, dict) or not isinstance(
+                            option.get("label"), str
+                        ):
+                            continue
+                        description = option.get("description")
+                        normalized_options.append(
+                            {
+                                "label": option["label"][:500],
+                                "description": description[:2000]
+                                if isinstance(description, str)
+                                else "",
+                            }
+                        )
+                questions.append(
+                    {
+                        "question": question["question"][:10_000],
+                        "header": question["header"][:500],
+                        "options": normalized_options,
+                        "multiple": question.get("multiple") is True,
+                        # OpenCode enables custom answers by default when omitted.
+                        "custom": question.get("custom") is not False,
+                    }
+                )
+            if not questions:
+                continue
+            result.append(
+                {
+                    "id": str(item.get("id") or item.get("requestID")),
+                    "questions": questions,
+                }
+            )
+            if len(result) >= 50:
+                break
+        return result
+
+    def reply_question(
+        self, session_id: str, question_id: str, answers: list[list[str]]
+    ) -> None:
+        request = next(
+            (
+                item
+                for item in self.session_questions(session_id)
+                if item["id"] == question_id
+            ),
+            None,
+        )
+        if request is None:
+            raise OpenCodeError("question request does not belong to this session")
+        if len(answers) != len(request["questions"]):
+            raise OpenCodeError("question answer count does not match the request")
+        self.request(
+            "POST",
+            f"/question/{_segment(question_id)}/reply",
+            body={"answers": answers},
+        )
+
+    def reject_question(self, session_id: str, question_id: str) -> None:
+        if not any(item["id"] == question_id for item in self.session_questions(session_id)):
+            raise OpenCodeError("question request does not belong to this session")
+        self.request("POST", f"/question/{_segment(question_id)}/reject", body={})
+
     def prompt_async(
         self,
         session_id: str,

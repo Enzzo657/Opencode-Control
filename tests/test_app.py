@@ -1493,6 +1493,27 @@ def test_task_launch_uses_dedicated_opencode_session(
         def session_permissions(self, session_id: str) -> list[dict[str, Any]]:
             return [{"id": "per_1", "permission": "bash", "patterns": ["pytest"]}]
 
+        def session_questions(self, session_id: str) -> list[dict[str, Any]]:
+            return [
+                {
+                    "id": "que_1",
+                    "questions": [
+                        {
+                            "header": "Target",
+                            "question": "Where should files go?",
+                            "options": [
+                                {
+                                    "label": "Current repo",
+                                    "description": "Write here",
+                                }
+                            ],
+                            "multiple": False,
+                            "custom": True,
+                        }
+                    ],
+                }
+            ]
+
         def session_messages(self, session_id: str) -> list[dict[str, Any]]:
             return [
                 {
@@ -1503,6 +1524,14 @@ def test_task_launch_uses_dedicated_opencode_session(
 
         def reply_permission(self, session_id: str, permission_id: str, reply: str) -> None:
             calls.append(("permission", (session_id, permission_id, reply)))
+
+        def reply_question(
+            self, session_id: str, question_id: str, answers: list[list[str]]
+        ) -> None:
+            calls.append(("question", (session_id, question_id, answers)))
+
+        def reject_question(self, session_id: str, question_id: str) -> None:
+            calls.append(("question_reject", (session_id, question_id)))
 
     monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
     with _client(tmp_path) as client:
@@ -1642,6 +1671,28 @@ def test_task_launch_uses_dedicated_opencode_session(
         assert next(
             item for item in resolved_events if item["id"] == permission_event["id"]
         )["read_at"] is not None
+        questions = client.get(
+            f"/api/v1/projects/{project_id}/sessions/ses_task/questions"
+        )
+        assert questions.status_code == 200
+        assert questions.json()[0]["id"] == "que_1"
+        question_reply = client.post(
+            f"/api/v1/projects/{project_id}/sessions/ses_task/questions/que_1/reply",
+            headers=_csrf(client),
+            json={"answers": [["Current repo"]]},
+        )
+        assert question_reply.status_code == 200
+        assert calls[-1] == (
+            "question",
+            ("ses_task", "que_1", [["Current repo"]]),
+        )
+        question_reject = client.post(
+            f"/api/v1/projects/{project_id}/sessions/ses_task/questions/que_1/reject",
+            headers=_csrf(client),
+            json={},
+        )
+        assert question_reject.status_code == 200
+        assert calls[-1] == ("question_reject", ("ses_task", "que_1"))
         read_all = client.post(
             "/api/v1/events/read-all",
             headers=_csrf(client),

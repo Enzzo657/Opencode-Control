@@ -124,6 +124,9 @@ type MessageTokens = { total?: number; input?: number; output?: number; reasonin
 type SessionMessage = { info?: { id?: string; role?: string; tokens?: MessageTokens; time?: { created?: number; completed?: number }; agent?: string; modelID?: string; providerID?: string; variant?: string; cost?: number; finish?: string; error?: string }; parts?: SessionPart[] };
 type SessionTodo = { content: string; status: "pending" | "in_progress" | "completed" | "cancelled"; priority: "high" | "medium" | "low" };
 type SessionPermission = { id: string; permission: string; patterns: string[] };
+type SessionQuestionOption = { label: string; description: string };
+type SessionQuestion = { header: string; question: string; options: SessionQuestionOption[]; multiple: boolean; custom: boolean };
+type SessionQuestionRequest = { id: string; questions: SessionQuestion[] };
 
 function SessionPartView({ part, index, now, project }: { part: SessionPart; index: number; now: number; project: Project }) {
   if (part.type === "text" && part.text) return <MessageMarkdown content={part.text} projectId={project.id} projectRoot={project.root} />;
@@ -157,6 +160,41 @@ function SessionPartView({ part, index, now, project }: { part: SessionPart; ind
 
 function PermissionRequestCard({ permission, onReply }: { permission: SessionPermission; onReply: (reply: "once" | "always" | "reject") => void }) {
   return <section className="permission-request-card"><header><CircleStop size={15} /><span><strong>{translate("session.permission.required")}</strong><small>{permission.permission}</small></span></header>{permission.patterns.length > 0 && <div className="permission-patterns">{permission.patterns.map((pattern) => <code key={pattern}>{pattern}</code>)}</div>}<div className="permission-request-actions"><button className="primary-button" onClick={() => onReply("once")}>{translate("session.permission.allowOnce")}</button><button className="secondary-button" onClick={() => onReply("always")}>{translate("session.permission.allowAlways")}</button><button className="text-button danger-text" onClick={() => onReply("reject")}>{translate("session.permission.reject")}</button></div></section>;
+}
+
+function QuestionRequestCard({ request, onReply, onReject }: { request: SessionQuestionRequest; onReply: (answers: string[][]) => Promise<void>; onReject: () => Promise<void> }) {
+  const [selected, setSelected] = useState<string[][]>(() => request.questions.map(() => []));
+  const [custom, setCustom] = useState<string[]>(() => request.questions.map(() => ""));
+  const [busy, setBusy] = useState(false);
+  const answers = request.questions.map((question, index) => [...selected[index] ?? [], ...(question.custom && custom[index]?.trim() ? [custom[index].trim()] : [])]);
+  const complete = answers.every((answer) => answer.length > 0);
+  function select(index: number, label: string, multiple: boolean) {
+    setSelected((current) => current.map((answer, answerIndex) => answerIndex !== index ? answer : multiple ? answer.includes(label) ? answer.filter((value) => value !== label) : [...answer, label] : [label]));
+    if (!multiple) setCustom((current) => current.map((value, answerIndex) => answerIndex === index ? "" : value));
+  }
+  function enterCustom(index: number, value: string, multiple: boolean) {
+    setCustom((current) => current.map((answer, answerIndex) => answerIndex === index ? value : answer));
+    if (!multiple && value) setSelected((current) => current.map((answer, answerIndex) => answerIndex === index ? [] : answer));
+  }
+  async function submit(event: FormEvent) {
+    event.preventDefault();
+    if (!complete) return;
+    setBusy(true);
+    try { await onReply(answers); } finally { setBusy(false); }
+  }
+  async function reject() {
+    setBusy(true);
+    try { await onReject(); } finally { setBusy(false); }
+  }
+  return <form className="question-request-card" onSubmit={(event) => void submit(event)}>
+    <header><MessageSquareText size={16} /><span><strong>{translate("session.question.required")}</strong><small>{translate("session.question.waiting")}</small></span></header>
+    <div className="question-list">{request.questions.map((question, index) => <fieldset key={`${question.header}-${index}`}>
+      <legend>{question.header}</legend><p>{question.question}</p>
+      <div className="question-options">{question.options.map((option) => <label key={option.label}><input type={question.multiple ? "checkbox" : "radio"} name={`${request.id}-${index}`} checked={selected[index]?.includes(option.label) ?? false} onChange={() => select(index, option.label, question.multiple)} /><span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span></label>)}</div>
+      {question.custom && <label className="question-custom"><span>{translate("session.question.custom")}</span><input value={custom[index] ?? ""} onChange={(event) => enterCustom(index, event.target.value, question.multiple)} placeholder={translate("session.question.customPlaceholder")} /></label>}
+    </fieldset>)}</div>
+    <div className="question-request-actions"><button className="primary-button" disabled={busy || !complete}>{busy ? "…" : translate("session.question.submit")}</button><button type="button" className="text-button danger-text" disabled={busy} onClick={() => void reject()}>{translate("session.question.reject")}</button></div>
+  </form>;
 }
 
 function GitDiffViewer({ project, path, revision }: { project: Project; path: string; revision: string }) {
@@ -281,6 +319,7 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
   const messages = { ...messageResource, data: messageResource.data ? normalizeSupersededMessages(messageResource.data.map((entry) => entry.info?.error && !entry.parts?.length ? { ...entry, parts: [{ type: "text", text: "" }] } : entry)) : null };
   const todos = useResource<SessionTodo[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/todos`, session.id, 3000);
   const permissions = useResource<SessionPermission[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/permissions`, session.id, 1000);
+  const questions = useResource<SessionQuestionRequest[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/questions`, session.id, 1000);
   const git = useResource<GitState>(`/api/v1/projects/${project.id}/git`, session.id, 3000);
   const commands = useResource<CommandItem[]>(`/api/v1/projects/${project.id}/commands`, project.id);
   const [savedSelection] = useState(() => readSessionSelection(project.id, session.id));
@@ -463,6 +502,18 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
       setError(null); permissions.reload(); messages.reload();
     } catch (reason) { setError(message(reason)); }
   }
+  async function replyQuestion(questionId: string, answers: string[][]) {
+    try {
+      await api(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/questions/${encodeURIComponent(questionId)}/reply`, { method: "POST", ...jsonBody({ answers }) });
+      setError(null); questions.reload(); messages.reload();
+    } catch (reason) { setError(message(reason)); throw reason; }
+  }
+  async function rejectQuestion(questionId: string) {
+    try {
+      await api(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/questions/${encodeURIComponent(questionId)}/reject`, { method: "POST", ...jsonBody({}) });
+      setError(null); questions.reload(); messages.reload();
+    } catch (reason) { setError(message(reason)); throw reason; }
+  }
   function resizeDrawer(width: number) {
     const next = Math.min(Math.max(width, 560), window.innerWidth - 16);
     setDrawerWidth(next);
@@ -483,23 +534,23 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
         <aside className="session-inspector">
           <section><header><Network size={14} /><strong>{translate("session.inspector.mcpRuntime")}</strong><span>{mcpEntries.length}</span></header><div className="runtime-list-compact">{mcpEntries.map(([name, value]) => <div key={name}><i data-status={value.status} /><span>{name}</span><small>{statusLabel(value.status ?? "unknown")}</small></div>)}{mcpEntries.length === 0 && <p>{translate("session.inspector.noMcpConnected")}</p>}</div></section>
           {activeTodos.length > 0 && <section><header><Check size={14} /><strong>{translate("session.inspector.workPlan")}</strong><span>{activeTodos.length}</span></header><div className="todo-list">{activeTodos.map((todo, index) => <div className={todo.status} key={`${todo.content}-${index}`}><span className="todo-index">{index + 1}</span><span><strong>{todo.content}</strong><small>{todo.status === "in_progress" ? translate("session.inspector.todoInProgress") : translate("session.inspector.todoWaiting")} · {priorityLabel(todo.priority)}</small></span></div>)}</div></section>}
-          {(todos.error || permissions.error) && <p className="inspector-error">{translate("session.inspector.runtimeDataError")}</p>}
+          {(todos.error || permissions.error || questions.error) && <p className="inspector-error">{translate("session.inspector.runtimeDataError")}</p>}
         </aside>
         </div>
-      {(permissions.data?.length ?? 0) > 0 && <div className="session-runtime-dock"><div className="permission-dock">{permissions.data?.map((permission) => <PermissionRequestCard key={permission.id} permission={permission} onReply={(reply) => void replyPermission(permission.id, reply)} />)}</div></div>}
-      <SessionReplyComposer error={error} permissionsError={permissions.error} agent={agent} onAgentChange={setAgent} model={model} onModelChange={setModel} variant={variant} onVariantChange={setVariant} agents={agents} commands={commands.data ?? []} providers={providers} config={config} busy={busy} active={responseActive} stopping={aborting} onStop={() => void abort()} onSubmit={submit} onError={setError} /></div></div>
+      {((permissions.data?.length ?? 0) > 0 || (questions.data?.length ?? 0) > 0) && <div className="session-runtime-dock"><div className="permission-dock">{questions.data?.map((request) => <QuestionRequestCard key={request.id} request={request} onReply={(answers) => replyQuestion(request.id, answers)} onReject={() => rejectQuestion(request.id)} />)}{permissions.data?.map((permission) => <PermissionRequestCard key={permission.id} permission={permission} onReply={(reply) => void replyPermission(permission.id, reply)} />)}</div></div>}
+      <SessionReplyComposer error={error} runtimeError={permissions.error || questions.error} agent={agent} onAgentChange={setAgent} model={model} onModelChange={setModel} variant={variant} onVariantChange={setVariant} agents={agents} commands={commands.data ?? []} providers={providers} config={config} busy={busy} active={responseActive} stopping={aborting} onStop={() => void abort()} onSubmit={submit} onError={setError} /></div></div>
     </aside>
   </div>;
 }
 
-function SessionReplyComposer({ error, permissionsError, agent, onAgentChange, model, onModelChange, variant, onVariantChange, agents, commands, providers, config, busy, active, stopping, onStop, onSubmit, onError }: { error: string | null; permissionsError: string | null; agent: string; onAgentChange: (value: string) => void; model: string; onModelChange: (value: string) => void; variant: string; onVariantChange: (value: string) => void; agents: Agent[]; commands: CommandItem[]; providers: ProviderSummary[]; config?: RuntimeConfig; busy: boolean; active: boolean; stopping: boolean; onStop: () => void; onSubmit: (prompt: string, attachments: Attachment[]) => Promise<boolean | undefined>; onError: (value: string | null) => void }) {
+function SessionReplyComposer({ error, runtimeError, agent, onAgentChange, model, onModelChange, variant, onVariantChange, agents, commands, providers, config, busy, active, stopping, onStop, onSubmit, onError }: { error: string | null; runtimeError: string | null; agent: string; onAgentChange: (value: string) => void; model: string; onModelChange: (value: string) => void; variant: string; onVariantChange: (value: string) => void; agents: Agent[]; commands: CommandItem[]; providers: ProviderSummary[]; config?: RuntimeConfig; busy: boolean; active: boolean; stopping: boolean; onStop: () => void; onSubmit: (prompt: string, attachments: Attachment[]) => Promise<boolean | undefined>; onError: (value: string | null) => void }) {
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (await onSubmit(prompt, attachments)) { setPrompt(""); setAttachments([]); }
   }
-  return <form className="session-reply" onSubmit={(event) => void submit(event)}>{error && <Banner tone="danger">{error}</Banner>}{permissionsError && <Banner tone="danger">{translate("session.reply.permissionsError")} {permissionsError}</Banner>}<PromptBox prompt={prompt} onPromptChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onError={onError} agent={agent} onAgentChange={onAgentChange} model={model} onModelChange={onModelChange} variant={variant} onVariantChange={onVariantChange} agents={agents} commands={commands} providers={providers} config={config} placeholder={translate("session.reply.placeholder")} submitLabel={translate("session.reply.submit")} busy={busy} active={active} stopping={stopping} onStop={onStop} mentionsEnabled /></form>;
+  return <form className="session-reply" onSubmit={(event) => void submit(event)}>{error && <Banner tone="danger">{error}</Banner>}{runtimeError && <Banner tone="danger">{translate("session.reply.runtimeError")} {runtimeError}</Banner>}<PromptBox prompt={prompt} onPromptChange={setPrompt} attachments={attachments} onAttachmentsChange={setAttachments} onError={onError} agent={agent} onAgentChange={onAgentChange} model={model} onModelChange={onModelChange} variant={variant} onVariantChange={onVariantChange} agents={agents} commands={commands} providers={providers} config={config} placeholder={translate("session.reply.placeholder")} submitLabel={translate("session.reply.submit")} busy={busy} active={active} stopping={stopping} onStop={onStop} mentionsEnabled /></form>;
 }
 
 function latestContextTokens(messages: SessionMessage[]) { for (let index = messages.length - 1; index >= 0; index -= 1) { const message = messages[index]; const tokens = message.info?.role === "assistant" ? message.info.tokens : undefined; if (!tokens) continue; const total = (tokens.input ?? 0) + (tokens.output ?? 0) + (tokens.reasoning ?? 0) + (tokens.cache?.read ?? 0) + (tokens.cache?.write ?? 0); if (total > 0) return total; } return null; }

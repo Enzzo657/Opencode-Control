@@ -5,6 +5,15 @@ All notable changes to OpenCode Control are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/). The current release line is
 an alpha and may still change its local data model and API before `1.0.0`.
 
+## [0.3.3] - 2026-08-25
+
+### Added
+
+- Shows pending OpenCode `question` requests inside a Session with single-choice,
+  multiple-choice and custom answers.
+- Lets users reply to or reject a question request so a waiting agent can continue without
+  switching to the OpenCode CLI.
+
 ## [0.3.2] - 2026-08-24
 
 ### Fixed
@@ -150,3 +159,4 @@ First release checkpoint for the local-first alpha.
 [0.3.0]: https://github.com/Enzzo657/Opencode-Control/compare/v0.2.4...v0.3.0
 [0.3.1]: https://github.com/Enzzo657/Opencode-Control/compare/v0.3.0...v0.3.1
 [0.3.2]: https://github.com/Enzzo657/Opencode-Control/compare/v0.3.1...v0.3.2
+[0.3.3]: https://github.com/Enzzo657/Opencode-Control/compare/v0.3.2...v0.3.3
