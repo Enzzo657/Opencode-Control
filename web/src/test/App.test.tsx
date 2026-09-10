@@ -979,7 +979,7 @@ describe("OpenCode Control", () => {
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
     expect(await screen.findByRole("button", { name: "Отправить в эту сессию" })).toBeInTheDocument();
-    expect(screen.getByText(/stop · 9 с всего/)).toBeInTheDocument();
+    expect(await screen.findByText(/stop · 9 с всего/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Остановить ответ" })).not.toBeInTheDocument();
   });
 
