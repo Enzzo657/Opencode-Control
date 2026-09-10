@@ -83,6 +83,7 @@ class OpenCodeClient:
         query: dict[str, str | int] | None = None,
         max_response_bytes: int = 8 * 1024 * 1024,
         timeout: float | None = None,
+        include_headers: bool = False,
     ) -> Any:
         context = self.guard() if self.guard else nullcontext()
         with context:
@@ -94,6 +95,7 @@ class OpenCodeClient:
                 query=query,
                 max_response_bytes=max_response_bytes,
                 timeout=timeout,
+                include_headers=include_headers,
             )
 
     def _request(
@@ -106,6 +108,7 @@ class OpenCodeClient:
         query: dict[str, str | int] | None = None,
         max_response_bytes: int = 8 * 1024 * 1024,
         timeout: float | None = None,
+        include_headers: bool = False,
     ) -> Any:
         if method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
             raise OpenCodeError("unsupported OpenCode method")
@@ -139,6 +142,7 @@ class OpenCodeClient:
                 headers=headers,
             )
             response = connection.getresponse()
+            response_headers = {key.lower(): value for key, value in response.getheaders()}
             if 300 <= response.status < 400:
                 raise OpenCodeError("OpenCode redirect rejected")
             raw = response.read(max_response_bytes + 1)
@@ -146,9 +150,12 @@ class OpenCodeClient:
                 raise OpenCodeResponseTooLarge("OpenCode response is too large")
             if not 200 <= response.status < 300:
                 raise OpenCodeHTTPError(response.status)
-            if not raw or response.status == 204:
-                return None
-            return json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+            value = (
+                None
+                if not raw or response.status == 204
+                else json.loads(raw.decode("utf-8"), parse_constant=_reject_constant)
+            )
+            return (value, response_headers) if include_headers else value
         except (OSError, http.client.HTTPException, UnicodeDecodeError, ValueError) as error:
             if isinstance(error, OpenCodeError):
                 raise
@@ -372,6 +379,31 @@ class OpenCodeClient:
             max_response_bytes=128 * 1024 * 1024,
         )
         return _messages(value)
+
+    def session_messages_page(
+        self, session_id: str, *, limit: int = 100, before: str | None = None
+    ) -> dict[str, Any]:
+        if not 1 <= limit <= 200:
+            raise OpenCodeError("message page limit must be between 1 and 200")
+        if before is not None and (
+            not before or len(before) > 4096 or any(ord(char) < 32 for char in before)
+        ):
+            raise OpenCodeError("message cursor is invalid")
+        query: dict[str, str | int] = {"limit": limit}
+        if before is not None:
+            query["before"] = before
+        value, headers = self.request(
+            "GET",
+            f"/session/{_segment(session_id)}/message",
+            query=query,
+            max_response_bytes=128 * 1024 * 1024,
+            include_headers=True,
+        )
+        cursor = headers.get("x-next-cursor")
+        return {
+            "messages": _messages(value),
+            "next_cursor": cursor if isinstance(cursor, str) and cursor else None,
+        }
 
     def commands(self) -> list[dict[str, Any]]:
         value = self.request("GET", "/command")

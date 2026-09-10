@@ -1522,6 +1522,15 @@ def test_task_launch_uses_dedicated_opencode_session(
                 }
             ]
 
+        def session_messages_page(
+            self, session_id: str, *, limit: int, before: str | None
+        ) -> dict[str, Any]:
+            calls.append(("message_page", (session_id, limit, before)))
+            return {
+                "messages": self.session_messages(session_id),
+                "next_cursor": "cursor-2" if before is None else None,
+            }
+
         def reply_permission(self, session_id: str, permission_id: str, reply: str) -> None:
             calls.append(("permission", (session_id, permission_id, reply)))
 
@@ -1616,9 +1625,11 @@ def test_task_launch_uses_dedicated_opencode_session(
         assert failed is not None
         assert failed["status"] == "failed"
         assert failed["error"] == "token limit exhausted"
-        messages = client.get(
+        message_page = client.get(
             f"/api/v1/projects/{project_id}/sessions/ses_task/messages"
         ).json()
+        messages = message_page["messages"]
+        assert message_page["next_cursor"] == "cursor-2"
         assert messages[-1] == {
             "info": {
                 "id": f"control-error-{response.json()['id']}",
@@ -1627,6 +1638,13 @@ def test_task_launch_uses_dedicated_opencode_session(
             },
             "parts": [],
         }
+        older_page = client.get(
+            f"/api/v1/projects/{project_id}/sessions/ses_task/messages",
+            params={"limit": 100, "before": "cursor-2"},
+        )
+        assert older_page.status_code == 200
+        assert older_page.json()["next_cursor"] is None
+        assert calls[-1] == ("message_page", ("ses_task", 100, "cursor-2"))
         runtime_statuses.clear()
 
         client.app.state.control.store.update_task(
@@ -1800,8 +1818,14 @@ def test_task_launch_uses_dedicated_opencode_session(
         historical_messages = client.get(
             f"/api/v1/projects/{project_id}/sessions/ses_extra/messages"
         ).json()
-        assert failed_messages[-1]["info"]["error"] == "OpenCode server is unavailable"
-        assert not any(item.get("info", {}).get("error") for item in historical_messages)
+        assert (
+            failed_messages["messages"][-1]["info"]["error"]
+            == "OpenCode server is unavailable"
+        )
+        assert not any(
+            item.get("info", {}).get("error")
+            for item in historical_messages["messages"]
+        )
         control.store.update_task(
             project_id,
             response.json()["id"],
@@ -2928,6 +2952,11 @@ def test_command_runs_natively_and_rejects_busy_session(
         def session_messages(self, session_id: str) -> list[dict[str, Any]]:
             return messages
 
+        def session_messages_page(
+            self, session_id: str, *, limit: int, before: str | None
+        ) -> dict[str, Any]:
+            return {"messages": messages[-limit:], "next_cursor": None}
+
     monkeypatch.setattr(app_module, "OpenCodeClient", FakeOpenCodeClient)
     with _client(tmp_path) as client:
         project_id = _project(client, root, endpoint="http://127.0.0.1:4096")["id"]
@@ -3003,7 +3032,10 @@ def test_command_runs_natively_and_rejects_busy_session(
             f"/api/v1/projects/{project_id}/sessions/ses_command/messages"
         )
         assert response.status_code == 200
-        assert not any(item.get("info", {}).get("error") for item in response.json())
+        assert not any(
+            item.get("info", {}).get("error")
+            for item in response.json()["messages"]
+        )
         completed = control.store.get_task(project_id, str(task["id"]))
         assert completed is not None
         assert completed["status"] == "completed"

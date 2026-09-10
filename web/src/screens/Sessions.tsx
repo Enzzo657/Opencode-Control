@@ -1,5 +1,5 @@
 import { Activity, ArrowDown, ArrowUp, Bot, Check, CircleDollarSign, CircleHelp, CircleStop, Cpu, File, FileCode2, GitBranch, GitCommitHorizontal, Maximize2, MessageSquareText, Minimize2, Minus, Network, Plus, RefreshCw, Search, SquareTerminal, Trash2, X } from "lucide-react";
-import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type FormEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { api, jsonBody } from "../api";
 import { intlLocale, localizedStatus, translate, useI18n } from "../i18n";
 import { MessageMarkdown } from "../MessageMarkdown";
@@ -9,6 +9,7 @@ import { TaskSessionsDialog } from "../TaskSessionsDialog";
 import type { Agent, Attachment, CommandItem, GitState, Project, ProviderSummary, RuntimeConfig, Session, Snapshot, Task } from "../types";
 import { Banner, Empty, Field, Modal, Page, Panel, ScopeGuide, Status } from "../ui";
 import { message, useResource } from "../useResource";
+import { usePagedMessages } from "../usePagedMessages";
 import { useSnapshotResource } from "../useSnapshotResource";
 
 type SessionSearchTarget = { sessionId: string; messageId: string | null; query: string };
@@ -128,10 +129,13 @@ type SessionQuestionOption = { label: string; description: string };
 type SessionQuestion = { header: string; question: string; options: SessionQuestionOption[]; multiple: boolean; custom: boolean };
 type SessionQuestionRequest = { id: string; questions: SessionQuestion[] };
 
-function SessionPartView({ part, index, now, project }: { part: SessionPart; index: number; now: number; project: Project }) {
+const SessionPartView = memo(function SessionPartView({ part, index, project }: { part: SessionPart; index: number; now?: number; project: Project }) {
+  const [expanded, setExpanded] = useState(false);
+  const running = (part.type === "reasoning" && part.time?.start !== undefined && part.time.end === undefined) || (part.type === "tool" && part.state?.time?.start !== undefined && part.state.time.end === undefined && ["pending", "running"].includes(part.state.status));
+  const now = useLiveNow(running);
   if (part.type === "text" && part.text) return <MessageMarkdown content={part.text} projectId={project.id} projectRoot={project.root} />;
   if (part.type === "file") return <div className="message-files"><span><File size={12} /> {part.filename ?? part.mime ?? translate("session.event.file")}</span></div>;
-  if (part.type === "reasoning" && part.text) return <details className="reasoning-event"><summary title={absoluteDateTime(part.time?.start)}>{part.time?.start !== undefined ? `${clockTime(part.time.start)} · ${translate("session.event.reasoningDuration", { value0: formatMilliseconds((part.time.end ?? now) - part.time.start) })}` : translate("session.event.reasoning")}</summary><MessageMarkdown content={part.text} projectId={project.id} projectRoot={project.root} /></details>;
+  if (part.type === "reasoning" && part.text) return <details className="reasoning-event" onToggle={(event) => setExpanded(event.currentTarget.open)}><summary title={absoluteDateTime(part.time?.start)}>{part.time?.start !== undefined ? `${clockTime(part.time.start)} · ${translate("session.event.reasoningDuration", { value0: formatMilliseconds((part.time.end ?? now) - part.time.start) })}` : translate("session.event.reasoning")}</summary>{expanded && <MessageMarkdown content={part.text} projectId={project.id} projectRoot={project.root} />}</details>;
   if (part.type === "subtask") return <div className="cli-event"><Bot size={13} /><span><strong>{translate("agents.subagent")} {part.agent ?? ""}</strong>{part.text}</span></div>;
   if (part.type === "patch") return <div className="cli-event"><FileCode2 size={13} /><span><strong>{translate("session.event.filesChanged")}</strong>{part.files?.join(", ") || translate("session.event.fileListUnavailable")}</span></div>;
   if (part.type === "agent") return <div className="cli-event"><Bot size={13} /><span>{translate("session.event.agent")} <strong>{part.name ?? translate("session.event.defaultAgent")}</strong></span></div>;
@@ -146,17 +150,17 @@ function SessionPartView({ part, index, now, project }: { part: SessionPart; ind
   const isShell = part.tool === "bash" || part.tool === "shell";
   const duration = part.state.time?.start !== undefined ? formatDuration((part.state.time.end ?? now) - part.state.time.start) : null;
   const details = [part.state.time?.start !== undefined ? clockTime(part.state.time.start) : null, isMcp ? `MCP / ${part.tool}` : part.tool, duration, part.state.exit_code !== undefined ? `exit ${part.state.exit_code}` : null, isShell ? part.state.workdir : null].filter(Boolean).join(" · ");
-  return <details className={`tool-event ${part.state.status} ${isShell ? "shell-tool" : ""}`}>
-    <summary title={absoluteDateTime(part.state.time?.start)}><span className="tool-event-icon">{isMcp ? <Network size={14} /> : <SquareTerminal size={14} />}</span><span><strong>{isShell && part.state.command ? `$ ${part.state.command}` : part.state.title || part.tool}</strong><small>{details}</small></span><Status value={part.state.status} /></summary>
-    {!isShell && part.state.command && <pre className="tool-command"><code>{part.state.command}</code></pre>}
+  return <details className={`tool-event ${part.state.status} ${isShell ? "shell-tool" : ""}`} onToggle={(event) => setExpanded(event.currentTarget.open)}>
+    <summary title={absoluteDateTime(part.state.time?.start)} onClick={() => setExpanded((current) => !current)}><span className="tool-event-icon">{isMcp ? <Network size={14} /> : <SquareTerminal size={14} />}</span><span><strong>{isShell && part.state.command ? `$ ${part.state.command}` : part.state.title || part.tool}</strong><small>{details}</small></span><Status value={part.state.status} /></summary>
+    {expanded && <>{!isShell && part.state.command && <pre className="tool-command"><code>{part.state.command}</code></pre>}
     {!part.state.command && part.state.input && <pre className="tool-command"><code>{part.state.input}</code></pre>}
     {part.state.output && <pre className="tool-output"><code>{part.state.output}</code></pre>}
     {isShell && part.state.status === "running" && !part.state.output && <div className="tool-output-waiting">{translate("session.tool.outputPending")}</div>}
     {part.state.truncated && <div className="tool-output-notice">{translate("session.tool.outputTruncated")}</div>}
-    {part.state.error && <pre className="tool-error"><code>{part.state.error}</code></pre>}
+    {part.state.error && <pre className="tool-error"><code>{part.state.error}</code></pre>}</>}
     <span className="sr-only">tool-{index}</span>
   </details>;
-}
+});
 
 function PermissionRequestCard({ permission, onReply }: { permission: SessionPermission; onReply: (reply: "once" | "always" | "reject") => void }) {
   return <section className="permission-request-card"><header><CircleStop size={15} /><span><strong>{translate("session.permission.required")}</strong><small>{permission.permission}</small></span></header>{permission.patterns.length > 0 && <div className="permission-patterns">{permission.patterns.map((pattern) => <code key={pattern}>{pattern}</code>)}</div>}<div className="permission-request-actions"><button className="primary-button" onClick={() => onReply("once")}>{translate("session.permission.allowOnce")}</button><button className="secondary-button" onClick={() => onReply("always")}>{translate("session.permission.allowAlways")}</button><button className="text-button danger-text" onClick={() => onReply("reject")}>{translate("session.permission.reject")}</button></div></section>;
@@ -191,7 +195,7 @@ function QuestionRequestCard({ request, onReply, onReject }: { request: SessionQ
     <div className="question-list">{request.questions.map((question, index) => <fieldset key={`${question.header}-${index}`}>
       <legend>{question.header}</legend><p>{question.question}</p>
       <div className="question-options">{question.options.map((option) => <label key={option.label}><input type={question.multiple ? "checkbox" : "radio"} name={`${request.id}-${index}`} checked={selected[index]?.includes(option.label) ?? false} onChange={() => select(index, option.label, question.multiple)} /><span><strong>{option.label}</strong>{option.description && <small>{option.description}</small>}</span></label>)}</div>
-      {question.custom && <label className="question-custom"><span>{translate("session.question.custom")}</span><input value={custom[index] ?? ""} onChange={(event) => enterCustom(index, event.target.value, question.multiple)} placeholder={translate("session.question.customPlaceholder")} /></label>}
+      {question.custom && <label className="question-custom"><span>{translate("session.question.custom")}</span><textarea rows={3} value={custom[index] ?? ""} onChange={(event) => enterCustom(index, event.target.value, question.multiple)} placeholder={translate("session.question.customPlaceholder")} /></label>}
     </fieldset>)}</div>
     <div className="question-request-actions"><button className="primary-button" disabled={busy || !complete}>{busy ? "…" : translate("session.question.submit")}</button><button type="button" className="text-button danger-text" disabled={busy} onClick={() => void reject()}>{translate("session.question.reject")}</button></div>
   </form>;
@@ -233,15 +237,16 @@ function SessionGitPanel({ project, state, onReload, onClose }: { project: Proje
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState("");
   const [width, setWidth] = useState(() => {
-    const saved = Number(window.localStorage.getItem("control-git-panel-width"));
-    return saved >= 400 ? saved : 480;
+    const saved = Number(window.localStorage.getItem("control-git-panel-width-v2"));
+    const preferred = saved >= 380 ? saved : window.innerWidth / 2;
+    return Math.min(Math.max(preferred, 380), Math.max(380, window.innerWidth - 480));
   });
   const selectedPath = state.changes.some((item) => item.path === selected) ? selected : state.changes[0]?.path;
   function resize(nextWidth: number) {
     const workspaceWidth = document.querySelector<HTMLElement>(".session-workspace.with-git")?.clientWidth || window.innerWidth;
     const next = Math.min(Math.max(nextWidth, 380), Math.max(380, workspaceWidth - 480));
     setWidth(next);
-    window.localStorage.setItem("control-git-panel-width", String(next));
+    window.localStorage.setItem("control-git-panel-width-v2", String(next));
   }
   function startResize(event: ReactPointerEvent<HTMLDivElement>) {
     event.preventDefault();
@@ -250,6 +255,10 @@ function SessionGitPanel({ project, state, onReload, onClose }: { project: Proje
     const stop = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", stop); };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", stop);
+  }
+  function resetSplit() {
+    const workspaceWidth = document.querySelector<HTMLElement>(".session-workspace.with-git")?.clientWidth || window.innerWidth;
+    resize(workspaceWidth / 2);
   }
   const stagedChanges = state.changes.filter((change) => change.staged);
   const unstagedChanges = state.changes.filter((change) => change.unstaged);
@@ -300,7 +309,7 @@ function SessionGitPanel({ project, state, onReload, onClose }: { project: Proje
   }
   const revision = state.revision ?? state.changes.map((item) => `${item.status}:${item.path}`).join("|");
   return <aside className={`git-panel${diffFocused ? " diff-focused" : ""}`} style={{ width }}>
-    <div className="git-panel-resize" role="separator" aria-label={translate("session.git.resizePanel")} aria-orientation="vertical" tabIndex={0} onPointerDown={startResize} onDoubleClick={() => resize(440)} onKeyDown={(event) => { if (event.key === "ArrowLeft") resize(width - 30); if (event.key === "ArrowRight") resize(width + 30); }} />
+    <div className="git-panel-resize" role="separator" aria-label={translate("session.git.resizePanel")} aria-orientation="vertical" tabIndex={0} onPointerDown={startResize} onDoubleClick={resetSplit} onKeyDown={(event) => { if (event.key === "ArrowLeft") resize(width - 30); if (event.key === "ArrowRight") resize(width + 30); }} />
     <header><span><GitBranch size={15} /><strong>{state.branch || "detached HEAD"}</strong></span><button className="icon-button" aria-label={translate("session.git.hidePanel")} onClick={onClose}><X size={14} /></button></header>
     <div className="git-index-toolbar"><div className="git-index-summary"><label><input type="checkbox" aria-label={translate("session.git.selectAllChanges")} checked={state.changes.length > 0 && checkedChanges.length === state.changes.length} onChange={(event) => setCheckedPaths(event.target.checked ? state.changes.map((item) => item.path) : [])} /><span><strong>{translate("session.git.staging")}</strong><small>{translate("session.git.stagedCount")} {stagedChanges.length}  {translate("session.git.unstagedCount")} {unstagedChanges.length}  {translate("session.git.selectedCount")} {checkedChanges.length}</small></span></label></div><div className="git-index-actions"><button className="index-add" aria-label={translate("session.git.stageSelected")} title={translate("session.git.stageSelectedHint")} disabled={busy || checkedUnstaged.length === 0} onClick={() => void updateIndex("stage", checkedUnstaged.map((item) => item.path))}><Plus size={13} />  {translate("session.git.selectedShort")}</button><button aria-label={translate("session.git.unstageSelected")} title={translate("session.git.unstageSelectedHint")} disabled={busy || checkedStaged.length === 0} onClick={() => void updateIndex("unstage", checkedStaged.map((item) => item.path))}><Minus size={13} />  {translate("session.git.selectedShort")}</button><button className="index-add" aria-label={translate("session.git.stageAll")} title={translate("session.git.stageAllHint")} disabled={busy || unstagedChanges.length === 0} onClick={() => void updateIndex("stage", unstagedChanges.map((item) => item.path))}><Plus size={13} />  {translate("session.git.allShort")}</button><button aria-label={translate("session.git.clearIndex")} title={translate("session.git.clearIndexHint")} disabled={busy || stagedChanges.length === 0} onClick={() => void updateIndex("unstage", stagedChanges.map((item) => item.path))}><Minus size={13} />  {translate("session.git.allShort")}</button></div></div>
     <details className="git-help"><summary role="button" aria-label={translate("session.git.helpAria")} title={translate("session.git.helpTitle")}><CircleHelp size={16} /></summary><ol><li>{translate("session.git.helpSelectFiles")} <strong>{translate("session.git.stageSelected")}</strong>.</li><li><strong>{translate("session.git.unstageSelected")}</strong>  {translate("session.git.helpUnstage")}</li><li>{translate("session.git.helpCommitMessage")} <strong>{translate("session.git.createCommit")}</strong>.</li><li><strong>{translate("session.git.resetAction")}</strong>  {translate("session.git.resetExplanation")}</li><li><strong>{translate("session.git.revertAction")}</strong>  {translate("session.git.revertExplanation")}</li></ol></details>
@@ -314,18 +323,23 @@ function SessionGitPanel({ project, state, onReload, onClose }: { project: Proje
 }
 
 export function SessionDrawer({ project, session, status, taskStatus, agents, providers, mcp, config, initialAgent = "", initialModel, searchTarget = null, onDelete, onClose }: { project: Project; session: Session; status: string; taskStatus?: string; agents: Agent[]; providers: ProviderSummary[]; mcp: Record<string, { status?: string; error?: string }>; config?: RuntimeConfig; initialAgent?: string; initialModel: string; searchTarget?: SessionSearchTarget | null; onDelete?: () => void; onClose: () => void }) {
-  const messageResource = useResource<SessionMessage[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/messages`, session.id, 3000);
+  const [gitVisibility, setGitVisibility] = useState<"auto" | "shown" | "hidden">("auto");
+  const polling = activeSessionStatus(taskStatus ?? status) ? 3000 : undefined;
+  const messageResource = usePagedMessages<SessionMessage>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/messages`, session.id, polling);
   // The message article is also the container for provider errors, including errors without parts.
-  const messages = { ...messageResource, data: messageResource.data ? normalizeSupersededMessages(messageResource.data.map((entry) => entry.info?.error && !entry.parts?.length ? { ...entry, parts: [{ type: "text", text: "" }] } : entry)) : null };
-  const todos = useResource<SessionTodo[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/todos`, session.id, 3000);
-  const permissions = useResource<SessionPermission[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/permissions`, session.id, 1000);
-  const questions = useResource<SessionQuestionRequest[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/questions`, session.id, 1000);
-  const git = useResource<GitState>(`/api/v1/projects/${project.id}/git`, session.id, 3000);
+  const normalizedMessages = useMemo(() => messageResource.data ? normalizeSupersededMessages(messageResource.data.map((entry) => entry.info?.error && !entry.parts?.length ? { ...entry, parts: [{ type: "text", text: "" }] } : entry)) : null, [messageResource.data]);
+  const messages = { ...messageResource, data: normalizedMessages };
+  const todos = useResource<SessionTodo[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/todos`, session.id, polling);
+  const permissions = useResource<SessionPermission[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/permissions`, session.id, polling ? 1000 : undefined);
+  const questions = useResource<SessionQuestionRequest[]>(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/questions`, session.id, polling ? 1000 : undefined);
+  const git = useResource<GitState>(`/api/v1/projects/${project.id}/git`, session.id, gitVisibility === "shown" ? 3000 : undefined);
   const commands = useResource<CommandItem[]>(`/api/v1/projects/${project.id}/commands`, project.id);
   const [savedSelection] = useState(() => readSessionSelection(project.id, session.id));
   const [selectionRestored, setSelectionRestored] = useState(() => savedSelection !== null);
-  const [agent, setAgent] = useState(() => { const candidate = (savedSelection?.agent ?? initialAgent) || session.agent || ""; return agents.some((item) => !item.hidden && item.mode !== "subagent" && item.name === candidate) ? candidate : ""; }); const [model, setModel] = useState(() => savedSelection?.model ?? initialModel); const [variant, setVariant] = useState(() => savedSelection?.variant ?? (session.model?.variant === "default" ? "" : session.model?.variant ?? "")); const [busy, setBusy] = useState(false); const [aborting, setAborting] = useState(false); const [aborted, setAborted] = useState(false); const [taskStatusOverride, setTaskStatusOverride] = useState<string | null>(null); const [pendingFrom, setPendingFrom] = useState<{ id?: string; count: number } | null>(null); const [showScrollToBottom, setShowScrollToBottom] = useState(false); const [error, setError] = useState<string | null>(null); const [now, setNow] = useState(0); const [drawerWidth, setDrawerWidth] = useState(() => Math.min(Math.max(Number(window.localStorage.getItem("control-session-drawer-width")) || 960, 560), window.innerWidth - 16)); const [gitVisibility, setGitVisibility] = useState<"auto" | "shown" | "hidden">("auto");
+  const [agent, setAgent] = useState(() => { const candidate = (savedSelection?.agent ?? initialAgent) || session.agent || ""; return agents.some((item) => !item.hidden && item.mode !== "subagent" && item.name === candidate) ? candidate : ""; }); const [model, setModel] = useState(() => savedSelection?.model ?? initialModel); const [variant, setVariant] = useState(() => savedSelection?.variant ?? (session.model?.variant === "default" ? "" : session.model?.variant ?? "")); const [busy, setBusy] = useState(false); const [aborting, setAborting] = useState(false); const [aborted, setAborted] = useState(false); const [taskStatusOverride, setTaskStatusOverride] = useState<string | null>(null); const [pendingFrom, setPendingFrom] = useState<{ id?: string; count: number } | null>(null); const [showScrollToBottom, setShowScrollToBottom] = useState(false); const [error, setError] = useState<string | null>(null);
   const streamRef = useRef<HTMLDivElement>(null);
+  const prependAnchor = useRef<{ count: number } | null>(null);
+  const scrollSettleTimers = useRef<number[]>([]);
   const initialScroll = useRef(true);
   const stickToBottom = useRef(true);
   const scrollingToBottom = useRef(false);
@@ -335,12 +349,14 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
   useEffect(() => { setActiveSearchMessageId(searchTarget?.messageId ?? null); }, [searchTarget?.messageId]);
   const messageCount = messages.data?.length ?? 0;
   const lastMessage = messages.data?.[messageCount - 1];
-  const matchingSearchMessageIds = searchTarget?.query ? (messages.data ?? []).flatMap((entry) => entry.info?.id && sessionMessageSearchText(entry).toLocaleLowerCase().includes(searchTarget.query.toLocaleLowerCase()) ? [entry.info.id] : []) : [];
+  const searchQuery = searchTarget?.query.toLocaleLowerCase();
+  const matchingSearchMessageIds = searchQuery ? (messages.data ?? []).flatMap((entry) => entry.info?.id && sessionMessageSearchText(entry).toLocaleLowerCase().includes(searchQuery) ? [entry.info.id] : []) : [];
   const activeSearchIndex = activeSearchMessageId ? matchingSearchMessageIds.indexOf(activeSearchMessageId) : -1;
-  const contextTokens = latestContextTokens(messages.data ?? []);
-  const activeTodos = (todos.data ?? []).filter((todo) => todo.status !== "completed" && todo.status !== "cancelled");
-  const mcpEntries = Object.entries(mcp).filter(([, value]) => value.status === "connected").sort(([left], [right]) => left.localeCompare(right));
-  const liveStatus = runtimeStatus(messages.data ?? [], now);
+  const contextTokens = useMemo(() => latestContextTokens(messages.data ?? []), [messages.data]);
+  const activeTodos = useMemo(() => (todos.data ?? []).filter((todo) => todo.status !== "completed" && todo.status !== "cancelled"), [todos.data]);
+  const mcpEntries = useMemo(() => Object.entries(mcp).filter(([, value]) => value.status === "connected").sort(([left], [right]) => left.localeCompare(right)), [mcp]);
+  const liveStatus = runtimeStatus(messages.data ?? [], messages.updatedAt);
+  const now = messages.updatedAt;
   const displayedStatus = taskStatusOverride ?? taskStatus ?? status;
   const stopped = aborted || displayedStatus === "aborted";
   const recovered = (displayedStatus === "failed" || displayedStatus === "error") && successfulAssistantAfter(messages.data ?? [], session.control_task?.session_updated_at);
@@ -349,6 +365,7 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
   const effectiveStatus = stopped ? "aborted" : busy || pendingFrom ? "busy" : observedStatus;
   const responseActive = !stopped && (busy || aborting || pendingFrom !== null || activeSessionStatus(observedStatus));
   const gitVisible = git.data?.available === true && (gitVisibility === "shown" || (gitVisibility === "auto" && git.data.changes.length > 0));
+  useEffect(() => { const closeOnEscape = (event: KeyboardEvent) => { if (event.key === "Escape") onClose(); }; window.addEventListener("keydown", closeOnEscape); return () => window.removeEventListener("keydown", closeOnEscape); }, [onClose]);
   useEffect(() => { setTaskStatusOverride(null); }, [taskStatus, session.control_task?.session_status]);
   useEffect(() => {
     if (selectionRestored || messages.data === null) return;
@@ -363,6 +380,16 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
     const changed = messageCount !== pendingFrom.count || lastMessage.info?.id !== pendingFrom.id;
     if (changed && lastMessage.info?.role === "assistant" && messageFinished(lastMessage)) setPendingFrom(null);
   }, [lastMessage, messageCount, pendingFrom]);
+  useLayoutEffect(() => {
+    const anchor = prependAnchor.current;
+    const stream = streamRef.current;
+    if (!anchor || !stream || messageCount <= anchor.count) return;
+    stream.scrollTop = 0;
+    stickToBottom.current = false;
+    scrollingToBottom.current = false;
+    setShowScrollToBottom(stream.scrollHeight > stream.clientHeight);
+    prependAnchor.current = null;
+  }, [messageCount]);
   useLayoutEffect(() => {
     const messageId = activeSearchMessageId;
     const stream = streamRef.current;
@@ -439,17 +466,13 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
         setShowScrollToBottom(false);
       });
     };
-    const mutations = new MutationObserver(keepLatestVisible);
-    mutations.observe(stream, { childList: true, subtree: true, characterData: true });
-    const sizes = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(keepLatestVisible);
-    sizes?.observe(stream);
+    stream.addEventListener("load", keepLatestVisible, true);
     const trackPosition = () => { const atBottom = scrollAtBottom(stream); if (scrollingToBottom.current && !atBottom) return; scrollingToBottom.current = false; stickToBottom.current = atBottom; setShowScrollToBottom(!atBottom); };
     stream.addEventListener("scroll", trackPosition, { passive: true });
     void document.fonts?.ready.then(keepLatestVisible);
     keepLatestVisible();
-    return () => { cancelAnimationFrame(frame); mutations.disconnect(); sizes?.disconnect(); stream.removeEventListener("scroll", trackPosition); };
+    return () => { cancelAnimationFrame(frame); scrollSettleTimers.current.forEach((timer) => window.clearTimeout(timer)); stream.removeEventListener("load", keepLatestVisible, true); stream.removeEventListener("scroll", trackPosition); };
   }, []);
-  useEffect(() => { setNow(Date.now()); const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, []);
   async function submit(prompt: string, attachments: Attachment[]) {
     if (!prompt.trim() && !attachments.length) return;
     const baseline = { id: lastMessage?.info?.id, count: messageCount };
@@ -482,9 +505,18 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
   function scrollToBottom() {
     const stream = streamRef.current;
     if (!stream) return;
+    scrollSettleTimers.current.forEach((timer) => window.clearTimeout(timer));
     stickToBottom.current = true;
     scrollingToBottom.current = true;
     stream.scrollTo({ top: stream.scrollHeight, behavior: "smooth" });
+    const settle = () => {
+      if (streamRef.current !== stream) return;
+      stream.scrollTop = stream.scrollHeight;
+      stickToBottom.current = true;
+      scrollingToBottom.current = false;
+      setShowScrollToBottom(false);
+    };
+    scrollSettleTimers.current = [200, 600, 1200].map((delay) => window.setTimeout(settle, delay));
     setShowScrollToBottom(false);
   }
   function moveSearchMatch(direction: -1 | 1) {
@@ -496,6 +528,18 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
     parameters.set("message", nextId);
     history.replaceState({}, "", `/sessions?${parameters}`);
   }
+  const loadOlderPage = messages.loadOlder;
+  const loadOlder = useCallback(async () => {
+    const stream = streamRef.current;
+    if (!stream) return;
+    prependAnchor.current = { count: messageCount };
+    if (!await loadOlderPage()) prependAnchor.current = null;
+  }, [loadOlderPage, messageCount]);
+  useEffect(() => {
+    if (!activeSearchMessageId || messages.data === null || messages.loadingOlder || !messages.hasMore) return;
+    if (messages.data.some((entry) => entry.info?.id === activeSearchMessageId)) return;
+    void loadOlder();
+  }, [activeSearchMessageId, loadOlder, messages.data, messages.hasMore, messages.loadingOlder]);
   async function replyPermission(permissionId: string, reply: "once" | "always" | "reject") {
     try {
       await api(`/api/v1/projects/${project.id}/sessions/${encodeURIComponent(session.id)}/permissions/${encodeURIComponent(permissionId)}/reply`, { method: "POST", ...jsonBody({ reply }) });
@@ -514,22 +558,11 @@ export function SessionDrawer({ project, session, status, taskStatus, agents, pr
       setError(null); questions.reload(); messages.reload();
     } catch (reason) { setError(message(reason)); throw reason; }
   }
-  function resizeDrawer(width: number) {
-    const next = Math.min(Math.max(width, 560), window.innerWidth - 16);
-    setDrawerWidth(next);
-    window.localStorage.setItem("control-session-drawer-width", String(next));
-  }
-  function startResize(event: ReactPointerEvent<HTMLDivElement>) {
-    event.preventDefault();
-    const move = (next: PointerEvent) => resizeDrawer(window.innerWidth - next.clientX);
-    const stop = () => { window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", stop); };
-    window.addEventListener("pointermove", move);
-    window.addEventListener("pointerup", stop);
-  }
-  return <div className="drawer-scrim" onClick={(event) => { if (event.target === event.currentTarget) onClose(); }}>
-    <aside className={`drawer drawer-with-composer resizable-drawer${gitVisible ? " git-visible" : ""}`} style={{ "--drawer-width": `${drawerWidth}px` } as CSSProperties} role="dialog" aria-modal="true" aria-label={translate("session.drawer.ariaLabel", { value0: session.title ?? session.id })} onClick={(event) => event.stopPropagation()}><div className="drawer-resize-handle" role="separator" aria-label={translate("session.drawer.resize")} aria-orientation="vertical" tabIndex={0} onPointerDown={startResize} onDoubleClick={() => resizeDrawer(960)} onKeyDown={(event) => { if (event.key === "ArrowLeft") resizeDrawer(drawerWidth + 40); if (event.key === "ArrowRight") resizeDrawer(drawerWidth - 40); }} />
+  return <div className="drawer-scrim">
+    <aside className={`drawer drawer-with-composer${gitVisible ? " git-visible" : ""}`} role="dialog" aria-modal="true" aria-label={translate("session.drawer.ariaLabel", { value0: session.title ?? session.id })}>
       <header><div className="drawer-title"><div className="drawer-title-row"><Status value={effectiveStatus} /><h2>{session.control_task?.title ?? session.title ?? translate("session.drawer.untitled")}</h2></div></div><div className="drawer-header-actions">{git.data?.available && !gitVisible && <button className="icon-button" title={translate("session.drawer.showGitPanel")} aria-label={translate("session.drawer.showGitPanel")} onClick={() => setGitVisibility("shown")}><GitBranch size={15} /></button>}{onDelete && <button className="icon-button danger" title={translate("session.drawer.delete")} aria-label={translate("session.drawer.delete")} onClick={onDelete}><Trash2 size={15} /></button>}<button className="icon-button" title={translate("session.drawer.close")} aria-label={translate("session.drawer.close")} onClick={onClose}><X /></button></div></header>
       <div className="drawer-metrics"><span><i><Activity size={16} /></i><span><small>{translate("session.drawer.context")}</small><b>{contextTokens === null ? "—" : new Intl.NumberFormat(intlLocale()).format(contextTokens)}</b></span></span><span><i><CircleDollarSign size={16} /></i><span><small>{translate("session.drawer.cost")}</small><b>${(session.cost ?? 0).toFixed(4)}</b></span></span><span><i><Bot size={16} /></i><span><small>{translate("session.drawer.agent")}</small><b>{agent || translate("common.default")}</b></span></span><span><i><Cpu size={16} /></i><span><small>{translate("session.drawer.model")}</small><b>{model || translate("common.default")}</b></span></span></div>
+      {messages.hasMore && <button type="button" className="history-load-more" disabled={messages.loadingOlder} onClick={() => void loadOlder()}>{messages.loadingOlder ? "…" : translate("session.drawer.loadOlder", { value0: 100 })}</button>}
        <div className={`session-workspace ${gitVisible ? "with-git" : ""}`}>{git.data?.available && gitVisible && <SessionGitPanel project={project} state={git.data} onReload={() => { setGitVisibility("shown"); git.reload(); }} onClose={() => setGitVisibility("hidden")} />}<div className="session-conversation"><div className="session-chat-content"><div className="message-stream-wrap"><div className="message-stream" ref={streamRef} onScroll={(event) => setShowScrollToBottom(!scrollAtBottom(event.currentTarget))}>{messages.error && <Banner tone="danger">{translate("session.drawer.previewError")} {messages.error}</Banner>}{(messages.data ?? []).map((entry, index) => entry.parts?.length ? <article className={`message ${entry.info?.role ?? "assistant"}${entry.info?.id === activeSearchMessageId ? " search-target" : ""}`} data-message-id={entry.info?.id} key={entry.info?.id ?? index}>{entry.info?.id === activeSearchMessageId && <div className="search-match-label"><Search size={13} /> {translate("search.matchInMessage")} <mark>{searchTarget?.query}</mark>{activeSearchIndex >= 0 && <span className="search-match-count">{activeSearchIndex + 1}/{matchingSearchMessageIds.length}</span>}<span className="search-match-actions"><button type="button" disabled={matchingSearchMessageIds.length < 2} onClick={() => moveSearchMatch(-1)} aria-label={translate("search.previousMatch")} title={translate("search.previousMatch")}><ArrowUp size={13} /></button><button type="button" disabled={matchingSearchMessageIds.length < 2} onClick={() => moveSearchMatch(1)} aria-label={translate("search.nextMatch")} title={translate("search.nextMatch")}><ArrowDown size={13} /></button></span></div>}<small className="message-meta"><span>{entry.info?.role === "user" ? translate("session.drawer.you") : entry.info?.agent ?? "OpenCode"}{entry.info?.role !== "user" && (entry.info?.providerID || entry.info?.modelID) ? ` · ${[entry.info.providerID, entry.info.modelID].filter(Boolean).join("/")}` : ""}</span><span className="message-turn-stats">{entry.info?.tokens?.output !== undefined && translate("session.drawer.tokens", { value0: compact(entry.info.tokens.output) })}{entry.info?.cost !== undefined && ` · $${entry.info.cost.toFixed(4)}`}{entry.info?.time?.created !== undefined && <time title={absoluteDateTime(entry.info.time.created)}> · {absoluteDateTime(entry.info.time.created)}{entry.info.role !== "user" && <> · {formatDuration((entry.info.time.completed ?? now) - entry.info.time.created)}</>}</time>}</span></small>{entry.info?.error && <div className="message-error"><CircleStop size={13} /> {entry.info.error}</div>}{entry.parts.map((part, partIndex) => <SessionPartView part={part} index={partIndex} now={now} project={project} key={`${part.type}-${partIndex}`} />)}</article> : null)}{messages.data?.length === 0 && !messages.error && <Empty icon={<MessageSquareText />} title={translate("session.drawer.noMessages")} detail={translate("session.drawer.noMessagesDetail")} />}</div>{showScrollToBottom && <button type="button" className="chat-scroll-bottom" aria-label={translate("session.drawer.latestMessage")} title={translate("session.drawer.latestMessage")} onClick={scrollToBottom}><ArrowDown size={18} /></button>}</div>
         <aside className="session-inspector">
           <section><header><Network size={14} /><strong>{translate("session.inspector.mcpRuntime")}</strong><span>{mcpEntries.length}</span></header><div className="runtime-list-compact">{mcpEntries.map(([name, value]) => <div key={name}><i data-status={value.status} /><span>{name}</span><small>{statusLabel(value.status ?? "unknown")}</small></div>)}{mcpEntries.length === 0 && <p>{translate("session.inspector.noMcpConnected")}</p>}</div></section>
@@ -594,7 +627,8 @@ function clearSearchHighlight() {
   (CSS as unknown as { highlights?: SearchHighlightRegistry }).highlights?.delete("session-search-hit");
 }
 function messageFinished(message: SessionMessage) { return message.info?.time?.completed !== undefined || Boolean(message.info?.error) || Boolean(message.parts?.some((part) => part.type === "step-finish")); }
-function normalizeSupersededMessages(messages: SessionMessage[]) { return messages.map((entry, index) => { if (entry.info?.role !== "assistant" || messageFinished(entry)) return entry; const nextCreated = messages.slice(index + 1).map((item) => item.info?.time?.created).find((value): value is number => value !== undefined); const created = entry.info.time?.created; if (nextCreated === undefined || created === undefined) return entry; const completed = Math.max(created, nextCreated); return { ...entry, info: { ...entry.info, time: { ...entry.info.time, completed } }, parts: entry.parts?.map((part) => { if (part.type === "reasoning" && part.time?.start !== undefined && part.time.end === undefined) return { ...part, time: { ...part.time, end: Math.max(part.time.start, completed) } }; if (part.type !== "tool" || !part.state || !["pending", "running"].includes(part.state.status)) return part; const start = part.state.time?.start; return { ...part, state: { ...part.state, status: "aborted" as const, time: start === undefined ? part.state.time : { ...part.state.time, end: Math.max(start, completed) } } }; }) }; }); }
+function normalizeSupersededMessages(messages: SessionMessage[]) { let nextCreated: number | undefined; const result = new Array<SessionMessage>(messages.length); for (let index = messages.length - 1; index >= 0; index -= 1) { const entry = messages[index]; const created = entry.info?.time?.created; if (entry.info?.role === "assistant" && !messageFinished(entry) && nextCreated !== undefined && created !== undefined) { const completed = Math.max(created, nextCreated); result[index] = { ...entry, info: { ...entry.info, time: { ...entry.info.time, completed } }, parts: entry.parts?.map((part) => { if (part.type === "reasoning" && part.time?.start !== undefined && part.time.end === undefined) return { ...part, time: { ...part.time, end: Math.max(part.time.start, completed) } }; if (part.type !== "tool" || !part.state || !["pending", "running"].includes(part.state.status)) return part; const start = part.state.time?.start; return { ...part, state: { ...part.state, status: "aborted" as const, time: start === undefined ? part.state.time : { ...part.state.time, end: Math.max(start, completed) } } }; }) }; } else result[index] = entry; if (created !== undefined) nextCreated = created; } return result; }
+function useLiveNow(active: boolean) { const [now, setNow] = useState(() => Date.now()); useEffect(() => { if (!active) return; setNow(Date.now()); const timer = window.setInterval(() => setNow(Date.now()), 1000); return () => window.clearInterval(timer); }, [active]); return now; }
 function runtimeStatus(messages: SessionMessage[], now: number) { for (let index = messages.length - 1; index >= 0; index -= 1) { const entry = messages[index]; if (entry.info?.error) return "failed"; const unfinished = entry.info?.role === "user" || (entry.info?.role === "assistant" && !messageFinished(entry)); if (!unfinished) { if (entry.info?.role === "assistant") return null; continue; } const created = entry.info?.time?.created; return created !== undefined && now > 0 && now - created > 15 * 60 * 1000 ? null : "busy"; } return null; }
 function successfulAssistantAfter(messages: SessionMessage[], updatedAt?: string) { const cutoff = updatedAt ? Date.parse(updatedAt) : Number.NaN; if (!Number.isFinite(cutoff)) return false; return messages.some((entry) => { if (entry.info?.role !== "assistant" || entry.info.error || !messageFinished(entry)) return false; const occurred = entry.info.time?.completed ?? entry.info.time?.created; if (occurred === undefined) return false; const milliseconds = occurred > 100_000_000_000 ? occurred : occurred * 1000; return milliseconds > cutoff; }); }
 function latestUserSelection(messages: SessionMessage[]) { for (let index = messages.length - 1; index >= 0; index -= 1) { const info = messages[index].info; if (info?.role !== "user") continue; return { agent: info.agent, model: info.providerID && info.modelID ? `${info.providerID}/${info.modelID}` : undefined, variant: info.variant }; } return null; }

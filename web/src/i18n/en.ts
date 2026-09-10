@@ -778,6 +778,7 @@ export const en = {
   "session.drawer.noMessages": "No messages",
   "session.drawer.noMessagesDetail": "Send your first message in the form below.",
   "session.drawer.latestMessage": "Go to latest post",
+  "session.drawer.loadOlder": "Load previous {value0}",
 "session.inspector.mcpRuntime": "MCP in Runtime",
 "session.inspector.noMcpConnected": "No MCPs connected",
 "session.inspector.workPlan": "Work plan",

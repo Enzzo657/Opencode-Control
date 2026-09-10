@@ -5,6 +5,18 @@ All notable changes to OpenCode Control are documented in this file.
 The project follows [Semantic Versioning](https://semver.org/). The current release line is
 an alpha and may still change its local data model and API before `1.0.0`.
 
+## [0.3.4] - 2026-09-09
+
+### Fixed
+
+- Loads long session histories in cursor-paginated pages of 100 messages and avoids
+  overlapping or unnecessary polling work.
+- Keeps the session drawer open on backdrop clicks and removes its unrelated outer resize
+  handle while retaining Git panel resizing.
+- Allows multiline, vertically resizable question answers and substantially larger session
+  prompts.
+- Defers hidden tool and reasoning content to reduce Markdown and DOM work in large sessions.
+
 ## [0.3.3] - 2026-08-25
 
 ### Added
@@ -160,3 +172,4 @@ First release checkpoint for the local-first alpha.
 [0.3.1]: https://github.com/Enzzo657/Opencode-Control/compare/v0.3.0...v0.3.1
 [0.3.2]: https://github.com/Enzzo657/Opencode-Control/compare/v0.3.1...v0.3.2
 [0.3.3]: https://github.com/Enzzo657/Opencode-Control/compare/v0.3.2...v0.3.3
+[0.3.4]: https://github.com/Enzzo657/Opencode-Control/compare/v0.3.3...v0.3.4

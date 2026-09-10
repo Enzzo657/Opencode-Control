@@ -19,6 +19,10 @@ function response(value: unknown, status = 200): Response {
   });
 }
 
+function messagePage(messages: unknown[], nextCursor: string | null = null) {
+  return { messages, next_cursor: nextCursor };
+}
+
 function dashboardUsage(scope: "project" | "global" = "project") {
   return {
     scope, period: "today", timezone: "UTC", generated_at: "2026-01-01T00:00:00Z", partial: false, unavailable_projects: [],
@@ -80,7 +84,7 @@ describe("OpenCode Control", () => {
           server: project.server,
         });
       }
-      if (path.includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_1", role: "assistant", time: { created: Date.now(), completed: Date.now() } }, parts: [{ type: "text", text: "Rotate deployment token" }] }]);
+      if (path.includes("/sessions/ses_1/messages")) return response(messagePage([{ info: { id: "msg_1", role: "assistant", time: { created: Date.now(), completed: Date.now() } }, parts: [{ type: "text", text: "Rotate deployment token" }] }]));
       if (path.includes("/mcp/global")) return response({ context7: { type: "remote", url: "https://example.test/mcp", enabled: true } });
       if (path.endsWith("/api/v1/secrets") && (!init?.method || init.method === "GET")) return response([{ name: "context7_api_key", path: "/home/dev/.config/opencode/secrets/context7_api_key", reference: "{file:~/.config/opencode/secrets/context7_api_key}" }]);
       if (path.endsWith("/api/v1/session")) return response({ csrf_token: "csrf" });
@@ -349,10 +353,10 @@ describe("OpenCode Control", () => {
   it("restores a message deep link and moves between matching messages", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      if (String(input).includes("/sessions/ses_1/messages")) return response([
+      if (String(input).includes("/sessions/ses_1/messages")) return response(messagePage([
         { info: { id: "msg_1", role: "assistant", time: { created: 1, completed: 2 } }, parts: [{ type: "text", text: "Deploy the first revision" }] },
         { info: { id: "msg_2", role: "assistant", time: { created: 3, completed: 4 } }, parts: [{ type: "text", text: "Deploy the second revision" }] },
-      ]);
+      ]));
       return fallback(input, init);
     });
     history.replaceState({}, "", `/sessions?project=${project.id}&session=ses_1&message=msg_1&q=deploy`);
@@ -854,11 +858,11 @@ describe("OpenCode Control", () => {
         payload.sessions[0].control_task = { ...payload.sessions[0].control_task, status: "scheduled", session_status: "failed", session_error: "server unavailable", session_updated_at: new Date(Date.now() - 45_000).toISOString() };
         return response(payload);
       }
-      if (path.includes("/sessions/ses_1/messages")) return response([
+      if (path.includes("/sessions/ses_1/messages")) return response(messagePage([
         { info: { id: "msg_failed", role: "assistant", error: "server unavailable", time: { created: Date.now() - 60_000 } }, parts: [{ type: "text", text: "" }] },
         { info: { id: "msg_user", role: "user", time: { created: Date.now() - 30_000 } }, parts: [{ type: "text", text: "continue" }] },
         { info: { id: "msg_done", role: "assistant", finish: "stop", time: { created: Date.now() - 20_000, completed: Date.now() - 10_000 } }, parts: [{ type: "text", text: "Done" }, { type: "step-finish" }] },
-      ]);
+      ]));
       return fallback(input, init);
     });
 
@@ -875,7 +879,7 @@ describe("OpenCode Control", () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const path = String(input);
-      if (path.includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_live", role: "assistant", time: { created: Date.now() } }, parts: [{ type: "step-start" }] }]);
+      if (path.includes("/sessions/ses_1/messages")) return response(messagePage([{ info: { id: "msg_live", role: "assistant", time: { created: Date.now() } }, parts: [{ type: "step-start" }] }]));
       return fallback(input, init);
     });
     render(<App />);
@@ -942,7 +946,7 @@ describe("OpenCode Control", () => {
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const path = String(input);
       if (path.endsWith("/tasks") && (!init?.method || init.method === "GET")) return response([{ id: "task_1", project_id: project.id, title: "Fix checkout task", prompt: "Fix it", agent: "plan", model: "openai/gpt-other", status: "aborted", session_id: "ses_1", session_ids: ["ses_1"], error: null, created_at: "2026-01-01T00:00:00Z", updated_at: "2026-01-01T00:00:00Z" }]);
-      if (path.includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_waiting", role: "user", agent: "plan", model: { providerID: "openai", modelID: "gpt-other" } }, parts: [{ type: "text", text: "Последнее сообщение перед остановкой" }] }]);
+      if (path.includes("/sessions/ses_1/messages")) return response(messagePage([{ info: { id: "msg_waiting", role: "user", agent: "plan", model: { providerID: "openai", modelID: "gpt-other" } }, parts: [{ type: "text", text: "Последнее сообщение перед остановкой" }] }]));
       if (path.endsWith("/snapshot")) {
         const original = await fallback(input, init);
         const payload = await original.json();
@@ -967,7 +971,7 @@ describe("OpenCode Control", () => {
   it("treats step-finish as a completed response without completed time", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_done", role: "assistant", time: { created: Date.now() - 1000 } }, parts: [{ type: "step-start" }, { type: "step-finish", reason: "stop", duration: 9000 }] }]);
+      if (String(input).includes("/sessions/ses_1/messages")) return response(messagePage([{ info: { id: "msg_done", role: "assistant", time: { created: Date.now() - 1000 } }, parts: [{ type: "step-start" }, { type: "step-finish", reason: "stop", duration: 9000 }] }]));
       return fallback(input, init);
     });
     render(<App />);
@@ -1012,7 +1016,7 @@ describe("OpenCode Control", () => {
   it("renders session messages as safe Markdown", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_1", role: "assistant", tokens: { input: 210, output: 864, reasoning: 1331, cache: { read: 116352, write: 0 } } }, parts: [{ type: "text", text: "# Проверка\n\n**готово**\n\n- первый пункт\n\n<script>alert(1)</script>" }] }]);
+      if (String(input).includes("/sessions/ses_1/messages")) return response(messagePage([{ info: { id: "msg_1", role: "assistant", tokens: { input: 210, output: 864, reasoning: 1331, cache: { read: 116352, write: 0 } } }, parts: [{ type: "text", text: "# Проверка\n\n**готово**\n\n- первый пункт\n\n<script>alert(1)</script>" }] }]));
       return fallback(input, init);
     });
     render(<App />);
@@ -1029,7 +1033,7 @@ describe("OpenCode Control", () => {
   it("opens local project images in an in-app gallery", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_image", role: "assistant" }, parts: [{ type: "text", text: "Создан [рисунок](output.png)\n\nФайл находится здесь: `/code/checkout/output.png`\n\n![вложенный](images/preview.webp)\n\n![remote](https://example.test/image.png)" }] }]);
+      if (String(input).includes("/sessions/ses_1/messages")) return response(messagePage([{ info: { id: "msg_image", role: "assistant" }, parts: [{ type: "text", text: "Создан [рисунок](output.png)\n\nФайл находится здесь: `/code/checkout/output.png`\n\n![вложенный](images/preview.webp)\n\n![remote](https://example.test/image.png)" }] }]));
       return fallback(input, init);
     });
     render(<App />);
@@ -1066,7 +1070,7 @@ describe("OpenCode Control", () => {
       const path = String(input);
       if (path.endsWith("/api/v1/projects")) return response([project]);
       if (path.includes("/snapshot")) return response({ state: "connected", errors: [], sessions: [{ id: "ses_1", title: "Fix checkout", agent: "build" }], statuses: { ses_1: { type: "busy" } }, agents: [{ name: "build", mode: "primary" }], mcp: {}, providers: { connected: ["openai"], available: [{ id: "openai", model_count: 1, models: ["openai/gpt-test"] }] }, config: { model: "openai/gpt-test" }, server: project.server });
-      if (path.includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_error", role: "assistant", agent: "build", providerID: "openai", modelID: "gpt-test", error: "Forbidden" }, parts: [] }]);
+      if (path.includes("/sessions/ses_1/messages")) return response(messagePage([{ info: { id: "msg_error", role: "assistant", agent: "build", providerID: "openai", modelID: "gpt-test", error: "Forbidden" }, parts: [] }]));
       if (path.endsWith("/api/v1/session")) return response({ csrf_token: "csrf" });
       return response([]);
     }));
@@ -1083,7 +1087,7 @@ describe("OpenCode Control", () => {
   it("does not keep a stale unfinished response running", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_stale", role: "assistant", time: { created: Date.now() - 16 * 60 * 1000 } }, parts: [{ type: "step-start" }] }]);
+      if (String(input).includes("/sessions/ses_1/messages")) return response(messagePage([{ info: { id: "msg_stale", role: "assistant", time: { created: Date.now() - 16 * 60 * 1000 } }, parts: [{ type: "step-start" }] }]));
       return fallback(input, init);
     });
     render(<App />);
@@ -1098,7 +1102,7 @@ describe("OpenCode Control", () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
       const path = String(input);
-      if (path.includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_tool", role: "assistant" }, parts: [{ type: "tool", tool: "context7_query-docs", state: { status: "completed", title: "Получить документацию", output: "Готово" } }] }]);
+      if (path.includes("/sessions/ses_1/messages")) return response(messagePage([{ info: { id: "msg_tool", role: "assistant" }, parts: [{ type: "tool", tool: "context7_query-docs", state: { status: "completed", title: "Получить документацию", output: "Готово" } }] }]));
       if (path.includes("/sessions/ses_1/todos")) return response([{ content: "Проверить файл", status: "in_progress", priority: "high" }, { content: "Старый пункт", status: "completed", priority: "low" }]);
       if (path.includes("/sessions/ses_1/permissions") && (!init?.method || init.method === "GET")) return response([{ id: "per_1", permission: "bash", patterns: ["npm test"] }]);
       if (path.includes("/permissions/per_1/reply") && init?.method === "POST") return response({ replied: true });
@@ -1133,7 +1137,9 @@ describe("OpenCode Control", () => {
     fireEvent.click(await screen.findByText("Fix checkout"));
     expect(await screen.findByText("Требуется ответ")).toBeInTheDocument();
     expect(screen.getByText("Where should files go?")).toBeInTheDocument();
-    fireEvent.change(screen.getByPlaceholderText("Введите другой вариант…"), { target: { value: "New GitOps repo" } });
+    const customAnswer = screen.getByPlaceholderText("Введите другой вариант…");
+    expect(customAnswer.tagName).toBe("TEXTAREA");
+    fireEvent.change(customAnswer, { target: { value: "New GitOps repo" } });
     fireEvent.click(screen.getByRole("checkbox", { name: /Flux/ }));
     fireEvent.click(screen.getByRole("checkbox", { name: /ESO/ }));
     fireEvent.click(screen.getByRole("button", { name: "Ответить и продолжить" }));
@@ -1145,7 +1151,7 @@ describe("OpenCode Control", () => {
   it("shows complete shell commands and output like the OpenCode CLI", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_shell", role: "assistant" }, parts: [{ type: "tool", tool: "bash", state: { status: "completed", command: "python3 script.py --all", workdir: "/tmp/project", output: "Fetching…\nfirst result\nlast result", full_output: true, exit_code: 0, time: { start: 1000, end: 7500 } } }] }]);
+      if (String(input).includes("/sessions/ses_1/messages")) return response(messagePage([{ info: { id: "msg_shell", role: "assistant" }, parts: [{ type: "tool", tool: "bash", state: { status: "completed", command: "python3 script.py --all", workdir: "/tmp/project", output: "Fetching…\nfirst result\nlast result", full_output: true, exit_code: 0, time: { start: 1000, end: 7500 } } }] }]));
       return fallback(input, init);
     });
     render(<App />);
@@ -1166,7 +1172,7 @@ describe("OpenCode Control", () => {
   it("derives busy status and elapsed time from an unfinished message", async () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      if (String(input).includes("/sessions/ses_1/messages")) return response([{ info: { id: "msg_live", role: "assistant", time: { created: Date.now() - 5_000 } }, parts: [{ type: "step-start" }, { type: "tool", tool: "webfetch", state: { status: "running", title: "Загрузка", time: { start: Date.now() - 3_000 } } }] }]);
+      if (String(input).includes("/sessions/ses_1/messages")) return response(messagePage([{ info: { id: "msg_live", role: "assistant", time: { created: Date.now() - 5_000 } }, parts: [{ type: "step-start" }, { type: "tool", tool: "webfetch", state: { status: "running", title: "Загрузка", time: { start: Date.now() - 3_000 } } }] }]));
       return fallback(input, init);
     });
     render(<App />);
@@ -1187,11 +1193,11 @@ describe("OpenCode Control", () => {
     const fallback = vi.mocked(fetch).getMockImplementation()!;
     const started = Date.now() - 3_600_000;
     vi.mocked(fetch).mockImplementation(async (input, init) => {
-      if (String(input).includes("/sessions/ses_1/messages")) return response([
+      if (String(input).includes("/sessions/ses_1/messages")) return response(messagePage([
         { info: { id: "msg_stale", role: "assistant", time: { created: started }, tokens: { output: 0 }, cost: 0 }, parts: [{ type: "step-start" }, { type: "tool", tool: "read", state: { status: "running", title: "Старое чтение", time: { start: started + 1_000 } } }] },
         { info: { id: "msg_next_user", role: "user", time: { created: started + 60_000 } }, parts: [{ type: "text", text: "Продолжить" }] },
         { info: { id: "msg_done", role: "assistant", time: { created: started + 61_000, completed: started + 63_000 } }, parts: [{ type: "text", text: "Готово" }, { type: "step-finish", reason: "stop" }] },
-      ]);
+      ]));
       return fallback(input, init);
     });
     render(<App />);
@@ -1206,14 +1212,45 @@ describe("OpenCode Control", () => {
     expect(screen.getByText("Продолжить").closest(".message")?.querySelector("time")).not.toHaveTextContent("мин");
   });
 
-  it("resizes the session drawer with its left handle", async () => {
+  it("keeps the session open on backdrop clicks and closes it with Escape", async () => {
     render(<App />);
     await screen.findByRole("heading", { name: "Дашборд" });
     fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
     fireEvent.click(await screen.findByText("Fix checkout"));
-    const handle = await screen.findByRole("separator", { name: "Изменить ширину окна сессии" });
-    fireEvent.keyDown(handle, { key: "ArrowRight" });
-    expect(Number(window.localStorage.getItem("control-session-drawer-width"))).toBeLessThan(960);
+    const dialog = await screen.findByRole("dialog", { name: "Сессия Fix checkout" });
+    expect(screen.queryByRole("separator", { name: "Изменить ширину окна сессии" })).not.toBeInTheDocument();
+    fireEvent.click(dialog.parentElement!);
+    expect(dialog).toBeInTheDocument();
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Сессия Fix checkout" })).not.toBeInTheDocument());
+  });
+
+  it("loads message history in cursor pages without duplicates", async () => {
+    const fallback = vi.mocked(fetch).getMockImplementation()!;
+    vi.mocked(fetch).mockImplementation(async (input, init) => {
+      const path = String(input);
+      if (path.includes("/sessions/ses_1/messages") && path.includes("before=cursor-1")) return response(messagePage([
+        { info: { id: "msg_old", role: "assistant" }, parts: [{ type: "text", text: "Older page" }] },
+        { info: { id: "msg_latest", role: "assistant" }, parts: [{ type: "text", text: "Latest page" }] },
+      ]));
+      if (path.includes("/sessions/ses_1/messages")) return response(messagePage([
+        { info: { id: "msg_latest", role: "assistant" }, parts: [{ type: "text", text: "Latest page" }] },
+      ], "cursor-1"));
+      return fallback(input, init);
+    });
+    render(<App />);
+    await screen.findByRole("heading", { name: "Дашборд" });
+    fireEvent.click(screen.getByRole("button", { name: "Сессии" }));
+    fireEvent.click(await screen.findByText("Fix checkout"));
+    expect(await screen.findByText("Latest page")).toBeInTheDocument();
+    const stream = document.querySelector<HTMLElement>(".message-stream")!;
+    Object.defineProperties(stream, { scrollHeight: { configurable: true, value: 1000 }, clientHeight: { configurable: true, value: 200 }, scrollTop: { configurable: true, writable: true, value: 400 } });
+    fireEvent.click(await screen.findByRole("button", { name: "Загрузить предыдущие 100" }));
+    expect(await screen.findByText("Older page")).toBeInTheDocument();
+    expect(stream.scrollTop).toBe(0);
+    expect(screen.getAllByText("Latest page")).toHaveLength(1);
+    expect(vi.mocked(fetch).mock.calls.some(([input]) => String(input).includes("before=cursor-1"))).toBe(true);
+    expect(screen.queryByRole("button", { name: "Загрузить предыдущие 100" })).not.toBeInTheDocument();
   });
 
   it("shows Git changes, diff and creates a commit", async () => {
@@ -1248,7 +1285,7 @@ describe("OpenCode Control", () => {
     await waitFor(() => expect(dialog.querySelector(".session-inspector")).toHaveTextContent("Проверить Git index"));
     expect(dialog.querySelector(".git-panel")?.parentElement).toHaveClass("session-workspace");
     for (let index = 0; index < 9; index += 1) fireEvent.keyDown(screen.getByRole("separator", { name: "Изменить ширину Git-панели" }), { key: "ArrowRight" });
-    expect(Number(window.localStorage.getItem("control-git-panel-width"))).toBeGreaterThan(520);
+    expect(Number(window.localStorage.getItem("control-git-panel-width-v2"))).toBeGreaterThan(520);
     await waitFor(() => expect(document.querySelector(".git-diff")).toHaveTextContent("+new"));
     fireEvent.click(screen.getByRole("button", { name: "Развернуть diff" }));
     expect(dialog.querySelector(".git-panel")).toHaveClass("diff-focused");
@@ -1273,6 +1310,9 @@ describe("OpenCode Control", () => {
     expect(await screen.findByText(/control-backup\/test-def5678/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Обратить изменения abc1234" }));
     await waitFor(() => expect(vi.mocked(fetch).mock.calls.some(([input, init]) => String(input).endsWith("/git/revert") && init?.method === "POST")).toBe(true));
+    fireEvent.click(screen.getByRole("button", { name: "Скрыть Git-панель" }));
+    expect(dialog).not.toHaveClass("git-visible");
+    expect(dialog.querySelector(".git-panel")).not.toBeInTheDocument();
   });
 
   it("saves a new agent in the selected global scope", async () => {

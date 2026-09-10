@@ -516,7 +516,6 @@ body { font-size: 15px; }
 .attachment-preview span, .message-files span, .reply-hint { font-size: 12px; }.attachment-field > small { font-size: 12px; }
 
 .drawer-scrim { place-items: stretch end; padding: 0; }.drawer { width: min(960px, 86vw); height: 100vh; border: 0; border-left: 1px solid var(--line-strong); border-radius: 0; box-shadow: -20px 0 70px rgb(0 0 0 / 35%); }
-.resizable-drawer { position: relative; width: min(var(--drawer-width, 960px), calc(100vw - 16px)); }.drawer-resize-handle { position: absolute; z-index: 5; top: 0; bottom: 0; left: -5px; width: 10px; cursor: ew-resize; touch-action: none; }.drawer-resize-handle::after { content: ""; position: absolute; top: calc(50% - 28px); left: 3px; width: 3px; height: 56px; background: var(--line-strong); border-radius: 3px; transition: background .15s, box-shadow .15s; }.drawer-resize-handle:hover::after, .drawer-resize-handle:focus::after { background: var(--accent); box-shadow: 0 0 12px var(--accent); }
 .drawer-with-composer { grid-template-rows: auto auto minmax(0, 1fr) auto; }.drawer > header { align-items: center; padding: 12px 18px; }.drawer h2 { display: inline; margin: 0 10px 0 0; font-size: 19px; }.drawer code { font-size: 10px; }.session-task-badge { display: inline-flex; margin: 0 0 0 10px; vertical-align: middle; }
 .drawer-metrics { min-height: 58px; }.drawer-metrics span { display: grid; align-content: center; padding: 8px 14px; }.drawer-metrics b { margin-bottom: 1px; font-size: 13px; }
 .message-stream { min-height: 0; padding: 14px 18px 22px; scroll-behavior: smooth; }.message-stream > .banner { margin-bottom: 12px; padding: 8px 11px; font-size: 12px; }
@@ -610,7 +609,7 @@ body { font-size: 15px; }
 }
 
 /* Git and chat form a two-pane workspace with one shared divider. */
-.drawer-with-composer { grid-template-rows: auto auto minmax(0, 1fr); }
+.drawer-with-composer { grid-template-rows: auto auto auto minmax(0, 1fr); }
 .session-workspace { grid-template-columns: minmax(0, 1fr); }
 .session-workspace.with-git { grid-template-columns: auto minmax(0, 1fr); }
 .resizable-drawer.git-visible > .drawer-resize-handle { display: none; }
@@ -656,6 +655,15 @@ body { font-size: 15px; }
   border-top: 1px solid var(--line);
 }
 .session-runtime-dock .permission-dock { max-height: none; }
+.drawer { position: relative; width: 100vw; max-width: none; height: 100dvh; }
+.history-load-more { position: static; z-index: 1; align-self: center; justify-self: center; min-height: 32px; margin: 7px 12px; padding: 0 14px; color: var(--muted); font-size: 11px; font-weight: 700; background: var(--surface-2); border: 1px solid var(--line); border-radius: 16px; cursor: pointer; }.history-load-more:hover { color: var(--text); border-color: var(--accent); }.history-load-more:disabled { color: var(--faint); cursor: wait; }
+.session-workspace { min-width: 0; height: 100%; }
+.drawer-with-composer > .session-workspace { grid-row: 4; }
+.session-conversation, .session-workspace.with-git .session-conversation { grid-template-columns: minmax(0, 1fr); }
+.session-inspector, .session-workspace.with-git .session-inspector { display: none; }
+.question-custom textarea { width: 100%; min-height: 72px; max-height: min(32dvh, 320px); padding: 9px; resize: vertical; overflow-y: auto; color: var(--text); font: inherit; line-height: 1.45; background: var(--editor-bg); border: 1px solid var(--line); border-radius: 6px; }.question-custom textarea:focus { border-color: var(--accent); outline: none; }
+.session-reply { max-height: min(70dvh, 820px); }.session-reply .composer-box > textarea { height: 110px; min-height: 96px; max-height: min(65dvh, 760px); resize: vertical; overflow-y: auto; }
+.message { content-visibility: auto; contain-intrinsic-size: auto 220px; }.message.search-target { content-visibility: visible; }
 .git-panel { max-width: none; grid-template-rows: auto auto auto auto minmax(300px, 1fr) auto; border-right: 0; }
 .git-index-toolbar {
   display: grid;

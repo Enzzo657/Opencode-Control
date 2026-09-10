@@ -776,6 +776,7 @@ export const ru = {
   "session.drawer.noMessages": "Сообщений нет",
   "session.drawer.noMessagesDetail": "Отправьте первое сообщение в форме ниже.",
   "session.drawer.latestMessage": "Перейти к последнему сообщению",
+  "session.drawer.loadOlder": "Загрузить предыдущие {value0}",
   "session.inspector.mcpRuntime": "MCP в Runtime",
   "session.inspector.noMcpConnected": "Подключенных MCP нет",
   "session.inspector.workPlan": "План работы",
