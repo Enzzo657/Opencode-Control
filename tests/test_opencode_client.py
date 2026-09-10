@@ -240,6 +240,45 @@ def test_session_messages_are_complete_and_sanitized(monkeypatch: pytest.MonkeyP
     assert calls == [None]
 
 
+def test_session_messages_page_forwards_cursor_and_returns_next(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = OpenCodeClient("http://127.0.0.1:4096", "/tmp/project")
+    calls: list[dict[str, Any]] = []
+
+    def fake_request(method: str, path: str, **kwargs: Any) -> Any:
+        calls.append({"method": method, "path": path, **kwargs})
+        return (
+            [
+                {
+                    "info": {"id": "msg_1", "role": "user"},
+                    "parts": [{"type": "text", "text": "hello"}],
+                }
+            ],
+            {"x-next-cursor": "cursor-2"},
+        )
+
+    monkeypatch.setattr(client, "request", fake_request)
+    assert client.session_messages_page("ses_1", limit=100, before="cursor-1") == {
+        "messages": [
+            {
+                "info": {"id": "msg_1", "role": "user"},
+                "parts": [{"type": "text", "text": "hello"}],
+            }
+        ],
+        "next_cursor": "cursor-2",
+    }
+    assert calls == [
+        {
+            "method": "GET",
+            "path": "/session/ses_1/message",
+            "query": {"limit": 100, "before": "cursor-1"},
+            "max_response_bytes": 128 * 1024 * 1024,
+            "include_headers": True,
+        }
+    ]
+
+
 def test_session_messages_keep_cli_events_without_provider_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

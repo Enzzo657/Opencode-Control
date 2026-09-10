@@ -3152,13 +3152,20 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
         invalidate_dashboard_cache(project_id)
 
     @app.get("/api/v1/projects/{project_id}/sessions/{session_id}/messages")
-    def session_messages(project_id: str, session_id: str) -> Any:
+    def session_messages(
+        project_id: str,
+        session_id: str,
+        limit: Annotated[int, Query(ge=1, le=200)] = 100,
+        before: Annotated[str | None, Query(max_length=4096)] = None,
+    ) -> Any:
         client = client_for_session(project_id, session_id)
         assert client is not None
-        messages = client.session_messages(session_id)
-        reconcile_task_session_messages(project_id, session_id, messages)
+        page = client.session_messages_page(session_id, limit=limit, before=before)
+        messages = page["messages"]
+        if before is None:
+            reconcile_task_session_messages(project_id, session_id, messages)
         task = state.store.session_task(project_id, session_id)
-        recovered = task is not None and _successful_assistant_after(
+        recovered = before is None and task is not None and _successful_assistant_after(
             messages, task.get("session_updated_at")
         )
         if recovered:
@@ -3166,7 +3173,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
             if run_id is not None:
                 task = state.store.session_task(project_id, session_id)
                 invalidate_dashboard_cache(project_id)
-        if (
+        if before is None and (
             task is not None
             and task.get("session_status") == "failed"
             and isinstance(task.get("session_error"), str)
@@ -3189,7 +3196,7 @@ def create_app(config: ControlConfig | None = None) -> FastAPI:
                     "parts": [],
                 }
             )
-        return messages
+        return page
 
     @app.get("/api/v1/projects/{project_id}/git")
     def project_git(project_id: str) -> dict[str, Any]:
